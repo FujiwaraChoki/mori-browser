@@ -185,10 +185,10 @@ final class BrowserStore: ObservableObject {
             liveIDs.contains(id) ? id : nil
         } ?? restoredTabs.first?.id
         pinnedTabIDs = decoded.pinnedTabIDs.filter { liveIDs.contains($0) }
-        folders = decoded.folders.compactMap { folder in
+        folders = decoded.folders.map { folder in
             var copy = folder
             copy.tabIDs = copy.tabIDs.filter { liveIDs.contains($0) }
-            return copy.tabIDs.isEmpty ? nil : copy
+            return copy
         }
         spaceName = decoded.spaceName.isEmpty ? "Personal" : decoded.spaceName
         spaceEmoji = decoded.spaceEmoji.isEmpty ? "✦" : decoded.spaceEmoji
@@ -212,10 +212,10 @@ final class BrowserStore: ObservableObject {
             tabs: tabs.map { PersistedTab(id: $0.id, url: $0.urlString, title: $0.title) },
             selectedTabID: selectedTabID,
             pinnedTabIDs: pinnedTabIDs.filter { liveIDs.contains($0) },
-            folders: folders.compactMap { folder in
+            folders: folders.map { folder in
                 var copy = folder
                 copy.tabIDs = copy.tabIDs.filter { liveIDs.contains($0) }
-                return copy.tabIDs.isEmpty ? nil : copy
+                return copy
             },
             spaceName: spaceName,
             spaceEmoji: spaceEmoji
@@ -341,7 +341,6 @@ final class BrowserStore: ObservableObject {
         for folderIndex in folders.indices {
             folders[folderIndex].tabIDs.removeAll { $0 == id }
         }
-        folders.removeAll { $0.tabIDs.isEmpty }
         emitExtensionEvent("tabs.onRemoved", args: [
             extensionTabID,
             ["windowId": 1, "isWindowClosing": false]
