@@ -160,6 +160,8 @@ private struct LauncherView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
+            Icon(name: "mori", size: 17, weight: .regular)
+                .foregroundStyle(p.primary.color)
             Icon(name: "magnifyingglass", size: 15, weight: .regular)
                 .foregroundStyle(p.mutedForeground.color)
 

@@ -19,6 +19,7 @@ struct SettingsView: View {
                     appearanceSection
                     mediaSection
                     extensionsSection
+                    aboutSection
                 }
                 .padding(20)
             }
@@ -54,6 +55,27 @@ struct SettingsView: View {
     }
 
     // MARK: Sections
+
+    private var aboutSection: some View {
+        Section(title: "About") {
+            HStack(alignment: .center, spacing: 14) {
+                Icon(name: "mori", size: 40)
+                    .foregroundStyle(p.primary.color)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Mori")
+                        .font(Typography.ui(15, weight: .semibold))
+                        .foregroundStyle(p.foreground.color)
+                    Text("A native macOS browser powered by Chromium (CEF).")
+                        .font(Typography.ui(Typography.base))
+                        .foregroundStyle(p.mutedForeground.color)
+                    Text("Version 0.1.0")
+                        .font(Typography.ui(Typography.label))
+                        .foregroundStyle(p.mutedForeground.color)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+    }
 
     private var generalSection: some View {
         Section(title: "General") {

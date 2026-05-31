@@ -522,7 +522,7 @@ private struct SidebarBottomBar: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                IconButton(systemName: "sparkles",
+                IconButton(systemName: "mori",
                            kind: store.aiPanelVisible ? .primary : .ghost,
                            size: 30) { store.toggleAIPanel() }
                 Spacer()

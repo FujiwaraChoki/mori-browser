@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="mori.svg" width="84" height="84" alt="Mori logo">
+</p>
+
 # Mori
 
 A native macOS AI browser: **SwiftUI + AppKit** chrome wrapping a real

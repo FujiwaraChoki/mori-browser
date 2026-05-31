@@ -55,6 +55,12 @@
       gap: 30px;
     }
 
+    .mark {
+      width: 56px;
+      height: 56px;
+      color: var(--fg);
+      opacity: 0.92;
+    }
     .clock {
       font-size: clamp(56px, 11vw, 92px);
       font-weight: 600;
@@ -127,6 +133,12 @@
 </head>
 <body>
   <main>
+    <svg class="mark" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="currentColor" aria-label="Mori">
+      <path fill-rule="evenodd" clip-rule="evenodd" d="M26 3C26 4.65685 27.3431 6 29 6H30V8H29C27.8744 8 26.8357 7.62806 26 7.00037C26.0002 8.65705 27.3433 10 29 10H30V12H29C27.8744 12 26.8357 11.6281 26 11.0004V15H24V7.00037C23.1643 7.62806 22.1256 8 21 8H20V6H21C22.6569 6 24 4.65685 24 3V2H26V3Z"></path>
+      <path fill-rule="evenodd" clip-rule="evenodd" d="M11 19.5858L15 23.5858V29H7V23.5858L11 19.5858Z"></path>
+      <path fill-rule="evenodd" clip-rule="evenodd" d="M21.4142 10H10.5858L2 18.5858V30H30V18.5858L21.4142 10ZM11 12.4142L4 19.4142V28H18V19.4142L11 12.4142Z"></path>
+      <path d="M7 2C4.23858 2 2 4.23858 2 7C2 9.37733 3.65914 11.3671 5.88267 11.8747L9.17157 8.58579C9.54665 8.21071 10.0554 8 10.5858 8H11.9C11.9656 7.67689 12 7.34247 12 7C12 4.23858 9.76142 2 7 2Z"></path>
+    </svg>
     <div class="clock" id="clock">--:--</div>
 
     <form id="search-form" action="https://www.google.com/search" method="get" autocomplete="off">

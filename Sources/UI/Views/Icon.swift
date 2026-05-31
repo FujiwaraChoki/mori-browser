@@ -12,6 +12,7 @@ enum Nucleo {
     /// SF-style name → (asset name in the catalog, clockwise rotation°).
     /// Directional chevrons reuse one right-pointing asset, rotated.
     static let map: [String: (asset: String, rotation: Double)] = [
+        "mori": ("mori", 0),
         "sparkles": ("sparkles", 0),
         "xmark": ("close", 0),
         "arrow.up": ("arrow-up", 0),
