@@ -70,11 +70,11 @@ The first run builds `libcef_dll_wrapper` from the bundled CEF distribution.
 
 ## Local AI assistant
 
-The Codex-powered assistant is opt-in for public builds because it launches a
-local Codex app server with broad filesystem access for browser automation.
-Launch Mori with `MORI_ENABLE_CODEX_ASSISTANT=1` only on machines where you
-trust that local Codex setup. Dynamic browser tools can additionally be enabled
-with `MORI_CODEX_DYNAMIC_TOOLS=1`.
+The Codex-powered assistant is **enabled by default**. It launches a local
+Codex app server with broad filesystem access for browser automation, so run
+Mori only on machines where you trust that local Codex setup. To opt out,
+launch with `MORI_ENABLE_CODEX_ASSISTANT=0`. Dynamic browser tools can
+additionally be enabled with `MORI_CODEX_DYNAMIC_TOOLS=1`.
 
 ## Extension readiness
 

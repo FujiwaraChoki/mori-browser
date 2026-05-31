@@ -41,7 +41,8 @@ final class CodexBrowserAssistant: ObservableObject {
     @Published var historyError: String?
 
     private weak var store: BrowserStore?
-    private let isEnabled = ProcessInfo.processInfo.environment["MORI_ENABLE_CODEX_ASSISTANT"] == "1"
+    // Enabled by default; opt out by launching with MORI_ENABLE_CODEX_ASSISTANT=0.
+    private let isEnabled = ProcessInfo.processInfo.environment["MORI_ENABLE_CODEX_ASSISTANT"] != "0"
     private let connection = CodexAppServerConnection()
     private var threadId: String?
     private var activeAssistantMessageId: AIMessage.ID?
@@ -152,7 +153,7 @@ final class CodexBrowserAssistant: ObservableObject {
             messages.append(AIMessage(role: .user, text: text))
             messages.append(AIMessage(
                 role: .assistant,
-                text: "Mori's local Codex assistant is disabled. Relaunch with MORI_ENABLE_CODEX_ASSISTANT=1 only if you trust the local Codex app server and want to grant it browser-assistant access."
+                text: "Mori's local Codex assistant is disabled. It's enabled by default; relaunch without MORI_ENABLE_CODEX_ASSISTANT=0 to grant the local Codex app server browser-assistant access again."
             ))
             statusText = "Disabled"
             return
