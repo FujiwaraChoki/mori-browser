@@ -16,6 +16,8 @@ SMOKE_NATIVE_MESSAGING_HOSTS_DIR=""
 SMOKE_CRX_EXTENSION_ID=""
 SMOKE_CRX_PATH=""
 SMOKE_CRX_URL=""
+SMOKE_EXTERNAL_PAGE_URL=""
+SMOKE_CORS_URL=""
 cd "$ROOT_DIR"
 
 external_chrome_pids() {
@@ -339,10 +341,17 @@ PY
   "host_permissions": [
     "<all_urls>"
   ],
+  "externally_connectable": {
+    "matches": [
+      "http://127.0.0.1/*"
+    ]
+  },
   "permissions": [
     "alarms",
     "bookmarks",
     "browsingData",
+    "clipboardRead",
+    "clipboardWrite",
     "cookies",
     "declarativeNetRequest",
     "downloads",
@@ -351,6 +360,7 @@ PY
 	    "management",
 	    "nativeMessaging",
 	    "offscreen",
+	    "proxy",
 	    "sessions",
     "sidePanel",
     "scripting",
@@ -469,6 +479,7 @@ importScripts("worker-extra.js");
 const commandEvents = [];
 const notificationClosedEvents = [];
 const alarmEvents = [];
+const externalMessages = [];
 
 chrome.commands.onCommand.addListener((command) => {
   commandEvents.push(command);
@@ -527,6 +538,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return true;
 });
 
+chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
+  const externalSender = {
+    id: sender && sender.id,
+    url: sender && sender.url,
+    origin: sender && sender.origin,
+    frameId: sender && sender.frameId,
+    tab: sender && sender.tab ? {
+      id: sender.tab.id,
+      url: sender.tab.url,
+      active: sender.tab.active
+    } : null
+  };
+  externalMessages.push({ message, sender: externalSender });
+  if (message && message.type === "fork") {
+    sendResponse({
+      externalPong: true,
+      runtimeId: chrome.runtime.id,
+      message,
+      sender: externalSender,
+      count: externalMessages.length
+    });
+    return true;
+  }
+  return false;
+});
+
 chrome.runtime.onConnect.addListener((port) => {
   port.onMessage.addListener((message) => {
     if (message && message.type === "smoke-port-ping") {
@@ -545,6 +582,9 @@ JS
 <meta charset="utf-8">
 <title>Mori Extension Smoke</title>
 <body>Starting Mori extension smoke...</body>
+<script>
+window.__moriEarlyNavigatorOnline = navigator.onLine === true;
+</script>
 <script src="popup.js"></script>
 HTML
 
@@ -583,6 +623,65 @@ HTML
 
   cat >"$smoke_dir/offscreen.js" <<JS
 document.body.dataset.moriOffscreenSmoke = "$run_id";
+const clipboardTarget = document.createElement("textarea");
+clipboardTarget.id = "mori-offscreen-clipboard-target";
+document.body.appendChild(clipboardTarget);
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!message || message.type !== "clipboard-smoke") {
+    return false;
+  }
+  (async () => {
+    const value = String(message.value || "");
+    const hasPermissions = await chrome.permissions.contains({
+      permissions: ["clipboardRead", "clipboardWrite"]
+    });
+    let original = null;
+    try {
+      original = await navigator.clipboard.readText();
+    } catch (_) {
+      original = null;
+    }
+
+    await navigator.clipboard.writeText(value);
+    const asyncRead = await navigator.clipboard.readText();
+
+    clipboardTarget.value = value;
+    clipboardTarget.focus();
+    clipboardTarget.select();
+    const copyCommand = document.execCommand("copy");
+
+    clipboardTarget.value = "";
+    clipboardTarget.focus();
+    const pasteCommand = document.execCommand("paste");
+    const pasted = clipboardTarget.value;
+    const finalRead = await navigator.clipboard.readText();
+
+    if (original !== null) {
+      await navigator.clipboard.writeText(original);
+    }
+
+    sendResponse({
+      hasPermissions,
+      hasClipboardApi: !!(navigator.clipboard &&
+        navigator.clipboard.writeText &&
+        navigator.clipboard.readText),
+      execCommandWrapped: String(document.execCommand).includes("__moriClipboard"),
+      asyncRead,
+      copyCommand,
+      pasteCommand,
+      pasted,
+      finalRead,
+      restoredOriginal: original !== null
+    });
+  })().catch((error) => {
+    sendResponse({
+      error: error && error.message || String(error)
+    });
+  });
+  return true;
+});
+
 chrome.storage.local.set({
   offscreenLoaded: "$run_id",
   offscreenRuntimeId: chrome.runtime.id,
@@ -601,6 +700,8 @@ JS
   const authPageURL = "file://$smoke_auth_page";
   const slowDownloadURL = "$SMOKE_DOWNLOAD_URL";
   const crxURL = "$SMOKE_CRX_URL";
+  const externalPageURL = "$SMOKE_EXTERNAL_PAGE_URL";
+  const corsURL = "$SMOKE_CORS_URL";
   const crxExtensionId = "$SMOKE_CRX_EXTENSION_ID";
   const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const primaryRunnerKey = "mori-smoke-primary-runner-" + runId;
@@ -640,6 +741,76 @@ JS
       });
       port.postMessage({ type: "smoke-port-ping", runId });
     });
+  }
+
+  async function externalMessageRoundTrip() {
+    const tab = await chrome.tabs.create({ url: externalPageURL, active: true });
+    try {
+      return await retry("external runtime.sendMessage", async () => {
+        const scriptResult = await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          func: () => ({
+            title: document.title,
+            result: document.body && document.body.dataset.result || "",
+            error: document.body && document.body.dataset.error || ""
+          })
+        });
+        const state = scriptResult && scriptResult[0] && scriptResult[0].result;
+        if (!state || state.title !== "external-ok" || !state.result) {
+          throw new Error(state && state.error || "external page not ready");
+        }
+        return {
+          tab,
+          response: JSON.parse(state.result)
+        };
+      });
+    } finally {
+      await chrome.tabs.remove(tab.id);
+    }
+  }
+
+  async function extensionFetchRoundTrip() {
+    const cookieName = "mori_fetch_" + runId.replace(/[^A-Za-z0-9_]/g, "_");
+    await chrome.cookies.remove({ url: corsURL, name: cookieName }).catch(() => null);
+    await chrome.cookies.set({
+      url: corsURL,
+      name: cookieName,
+      value: runId
+    });
+    const postResponse = await withTimeout(fetch(corsURL + "&phase=post", {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Mori-CORS-Smoke": runId
+      },
+      body: JSON.stringify({
+        runId,
+        source: "popup"
+      })
+    }), 3000).catch((error) => {
+      throw new Error("extension fetch POST: " +
+        (error && error.message || String(error)));
+    });
+    const postJSON = await withTimeout(postResponse.json(), 1000);
+    const getResponse = await withTimeout(fetch(corsURL + "&phase=get", {
+      credentials: "include",
+      headers: {
+        "X-Mori-CORS-Smoke": runId + "-get"
+      }
+    }), 3000).catch((error) => {
+      throw new Error("extension fetch GET: " +
+        (error && error.message || String(error)));
+    });
+    const getJSON = await withTimeout(getResponse.json(), 1000);
+    return {
+      postStatus: postResponse.status,
+      postJSON,
+      getStatus: getResponse.status,
+      getJSON,
+      cookieName,
+      cookieValue: runId
+    };
   }
 
   async function contentScriptRoundTrip() {
@@ -1212,6 +1383,25 @@ JS
     };
   }
 
+  async function proxySettingsRoundTrip() {
+    const changes = [];
+    chrome.proxy.settings.onChange.addListener((details) => changes.push(details));
+    await chrome.proxy.settings.clear({});
+    const before = await chrome.proxy.settings.get({});
+    const value = { mode: "direct" };
+    await chrome.proxy.settings.set({ value, scope: "regular" });
+    const afterSet = await chrome.proxy.settings.get({});
+    await chrome.proxy.settings.clear({});
+    const afterClear = await chrome.proxy.settings.get({});
+    await delay(100);
+    return {
+      before,
+      afterSet,
+      afterClear,
+      changes
+    };
+  }
+
   async function historyRoundTrip() {
     const url = smokePageURL + "?history=" + encodeURIComponent(runId);
     const title = "Mori History " + runId;
@@ -1601,6 +1791,23 @@ JS
       contextTypes: [chrome.runtime.ContextType.OFFSCREEN_DOCUMENT],
       documentUrls: [chrome.runtime.getURL("offscreen.html")]
     });
+    const clipboardValue = "mori-offscreen-clipboard-" + runId;
+    const clipboard = await retry("offscreen clipboard", async () => {
+      const result = await chrome.runtime.sendMessage({
+        type: "clipboard-smoke",
+        value: clipboardValue
+      });
+      if (!result || result.error) {
+        throw new Error(result && result.error || "offscreen clipboard did not respond");
+      }
+      if (result.asyncRead !== clipboardValue ||
+          result.finalRead !== clipboardValue ||
+          result.pasted !== clipboardValue) {
+        throw new Error("offscreen clipboard round-trip mismatch: " +
+          JSON.stringify(result));
+      }
+      return result;
+    });
     await chrome.offscreen.closeDocument();
     const afterCloseHasDocument = await retry("offscreen document closed", async () => {
       const result = await chrome.offscreen.hasDocument();
@@ -1614,6 +1821,8 @@ JS
       afterCreateHasDocument,
       afterCloseHasDocument,
       contexts,
+      clipboardValue,
+      clipboard,
       loaded
     };
   }
@@ -1902,6 +2111,8 @@ JS
 	        browser.runtime.onMessage &&
 	        browser.runtime.onMessage.addListener &&
 	        typeof browser.runtime.sendMessage === "function"),
+	      earlyNavigatorOnline: window.__moriEarlyNavigatorOnline === true,
+	      navigatorOnline: navigator.onLine === true,
 	      getURL: chrome.runtime.getURL("popup.html") ===
 	        "mori-extension://" + extensionId + "/popup.html"
 	    };
@@ -1973,6 +2184,8 @@ JS
           return result;
         }));
     const portResponse = await retry("connect", portRoundTrip);
+    const externalMessageResponse = await externalMessageRoundTrip();
+    const extensionFetchResponse = await extensionFetchRoundTrip();
     const contentResponse = await contentScriptRoundTrip();
     const executeScriptResponse = await executeScriptRoundTrip();
     const cssInjectionResponse = await cssInjectionRoundTrip();
@@ -1983,6 +2196,7 @@ JS
     const tabManagementResponse = await tabManagementRoundTrip();
     const windowsResponse = await windowsRoundTrip();
     const permissionsResponse = await permissionsRoundTrip();
+    const proxySettingsResponse = await proxySettingsRoundTrip();
     const historyResponse = await historyRoundTrip();
     const cookiesResponse = await cookiesRoundTrip();
     const browsingDataResponse = await browsingDataRoundTrip();
@@ -2077,11 +2291,49 @@ JS
       response && response.pong === true &&
       response.importScripts === "loaded-" + runId &&
       response.sender && String(response.sender.url || "").includes("/popup.html") &&
+      checks.earlyNavigatorOnline === true &&
+      checks.navigatorOnline === true &&
       commandResponse &&
       commandResponse.commandEvents &&
       commandResponse.commandEvents.includes("mori-smoke-command") &&
       portResponse && portResponse.pong === true &&
       portResponse.sender && String(portResponse.sender.url || "").includes("/popup.html") &&
+      externalMessageResponse &&
+      externalMessageResponse.response &&
+      externalMessageResponse.response.externalPong === true &&
+      externalMessageResponse.response.runtimeId === extensionId &&
+      externalMessageResponse.response.message &&
+      externalMessageResponse.response.message.type === "fork" &&
+      externalMessageResponse.response.message.runId === runId &&
+      externalMessageResponse.response.sender &&
+      !externalMessageResponse.response.sender.id &&
+      externalMessageResponse.response.sender.url === externalPageURL &&
+      externalMessageResponse.response.sender.origin === new URL(externalPageURL).origin &&
+      externalMessageResponse.response.sender.tab &&
+      externalMessageResponse.response.sender.tab.url === externalPageURL &&
+      extensionFetchResponse &&
+      extensionFetchResponse.postStatus === 200 &&
+      extensionFetchResponse.postJSON &&
+      extensionFetchResponse.postJSON.ok === true &&
+      extensionFetchResponse.postJSON.method === "POST" &&
+      (extensionFetchResponse.postJSON.origin === null ||
+        String(extensionFetchResponse.postJSON.origin || "")
+          .startsWith("mori-extension://" + extensionId)) &&
+      extensionFetchResponse.postJSON.header === runId &&
+      String(extensionFetchResponse.postJSON.cookie || "")
+        .includes(extensionFetchResponse.cookieName + "=" +
+          extensionFetchResponse.cookieValue) &&
+      extensionFetchResponse.postJSON.body &&
+      extensionFetchResponse.postJSON.body.runId === runId &&
+      extensionFetchResponse.postJSON.body.source === "popup" &&
+      extensionFetchResponse.getStatus === 200 &&
+      extensionFetchResponse.getJSON &&
+      extensionFetchResponse.getJSON.ok === true &&
+      extensionFetchResponse.getJSON.method === "GET" &&
+      extensionFetchResponse.getJSON.header === runId + "-get" &&
+      String(extensionFetchResponse.getJSON.cookie || "")
+        .includes(extensionFetchResponse.cookieName + "=" +
+          extensionFetchResponse.cookieValue) &&
       contentResponse && contentResponse.contentPong === true &&
       contentResponse.runtimeId === extensionId &&
       contentResponse.marker === runId &&
@@ -2308,6 +2560,30 @@ JS
         event.permissions.includes("notifications") &&
         Array.isArray(event.origins) &&
         event.origins.includes("https://example.com/*")) &&
+      proxySettingsResponse &&
+      proxySettingsResponse.before &&
+      proxySettingsResponse.before.levelOfControl === "controllable_by_this_extension" &&
+      proxySettingsResponse.before.value &&
+      proxySettingsResponse.before.value.mode === "system" &&
+      proxySettingsResponse.afterSet &&
+      proxySettingsResponse.afterSet.levelOfControl === "controlled_by_this_extension" &&
+      proxySettingsResponse.afterSet.value &&
+      proxySettingsResponse.afterSet.value.mode === "direct" &&
+      proxySettingsResponse.afterClear &&
+      proxySettingsResponse.afterClear.levelOfControl === "controllable_by_this_extension" &&
+      proxySettingsResponse.afterClear.value &&
+      proxySettingsResponse.afterClear.value.mode === "system" &&
+      Array.isArray(proxySettingsResponse.changes) &&
+      proxySettingsResponse.changes.some((event) =>
+        event &&
+        event.levelOfControl === "controlled_by_this_extension" &&
+        event.value &&
+        event.value.mode === "direct") &&
+      proxySettingsResponse.changes.some((event) =>
+        event &&
+        event.levelOfControl === "controllable_by_this_extension" &&
+        event.value &&
+        event.value.mode === "system") &&
       historyResponse &&
       Array.isArray(historyResponse.search) &&
       historyResponse.search.some((item) =>
@@ -2459,6 +2735,15 @@ JS
         context &&
         context.contextType === chrome.runtime.ContextType.OFFSCREEN_DOCUMENT &&
         context.documentUrl === chrome.runtime.getURL("offscreen.html")) &&
+      offscreenResponse.clipboard &&
+      offscreenResponse.clipboard.hasPermissions === true &&
+      offscreenResponse.clipboard.hasClipboardApi === true &&
+      offscreenResponse.clipboard.execCommandWrapped === true &&
+      offscreenResponse.clipboard.asyncRead === offscreenResponse.clipboardValue &&
+      offscreenResponse.clipboard.copyCommand === true &&
+      offscreenResponse.clipboard.pasteCommand === true &&
+      offscreenResponse.clipboard.pasted === offscreenResponse.clipboardValue &&
+      offscreenResponse.clipboard.finalRead === offscreenResponse.clipboardValue &&
       browserNamespaceResponse &&
       browserNamespaceResponse.runtimeId === extensionId &&
       browserNamespaceResponse.popupURL === chrome.runtime.getURL("popup.html") &&
@@ -2657,6 +2942,8 @@ JS
       response,
       commandResponse,
       portResponse,
+      externalMessageResponse,
+      extensionFetchResponse,
       contentResponse,
       executeScriptResponse,
       cssInjectionResponse,
@@ -2667,6 +2954,7 @@ JS
       tabManagementResponse,
       windowsResponse,
       permissionsResponse,
+      proxySettingsResponse,
       historyResponse,
       cookiesResponse,
       browsingDataResponse,
@@ -2722,7 +3010,9 @@ start_smoke_download_server() {
   local crx_path="$3"
   python3 - "$port" "$run_id" "$crx_path" >"$ROOT_DIR/build/extension-smoke/download-server.log" 2>&1 <<'PY' &
 import http.server
+import json
 import os
+import urllib.parse
 import socketserver
 import sys
 import time
@@ -2737,6 +3027,64 @@ class Server(socketserver.TCPServer):
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         return
+
+    def trace_cors(self, label):
+        print(
+            f"{label} {self.command} {self.path} "
+            f"origin={self.headers.get('Origin')} "
+            f"header={self.headers.get('X-Mori-CORS-Smoke')} "
+            f"acr_method={self.headers.get('Access-Control-Request-Method')} "
+            f"acr_headers={self.headers.get('Access-Control-Request-Headers')}",
+            file=sys.stderr,
+            flush=True)
+
+    def send_cors_json(self):
+        self.trace_cors("cors-json")
+        length = int(self.headers.get("Content-Length") or "0")
+        raw_body = self.rfile.read(length) if length > 0 else b""
+        parsed_body = None
+        if raw_body:
+            try:
+                parsed_body = json.loads(raw_body.decode("utf-8"))
+            except Exception:
+                parsed_body = raw_body.decode("utf-8", "replace")
+        payload = {
+            "ok": True,
+            "runId": run_id,
+            "method": self.command,
+            "path": self.path,
+            "phase": urllib.parse.parse_qs(
+                urllib.parse.urlparse(self.path).query).get("phase", [None])[0],
+            "origin": self.headers.get("Origin"),
+            "header": self.headers.get("X-Mori-CORS-Smoke"),
+            "cookie": self.headers.get("Cookie"),
+            "contentType": self.headers.get("Content-Type"),
+            "body": parsed_body
+        }
+        data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_OPTIONS(self):
+        if self.path.startswith("/cors-json"):
+            self.trace_cors("cors-options-not-intercepted")
+            self.send_response(418)
+            self.send_header("Content-Type", "text/plain")
+            self.end_headers()
+            self.wfile.write(b"Mori should intercept extension preflights")
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_POST(self):
+        if self.path.startswith("/cors-json"):
+            self.send_cors_json()
+            return
+        self.send_response(404)
+        self.end_headers()
 
     def do_GET(self):
         if self.path.startswith("/extension.crx"):
@@ -2755,6 +3103,41 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 'attachment; filename="' + os.path.basename(crx_path) + '"')
             self.end_headers()
             self.wfile.write(data)
+            return
+        if self.path.startswith("/external-message.html"):
+            body = f"""<!doctype html>
+<meta charset=\"utf-8\">
+<title>external-pending</title>
+<body>External Mori smoke</body>
+<script>
+const extensionId = \"mori-smoke-extension\";
+const runId = {run_id!r};
+async function go() {{
+  try {{
+    const response = await chrome.runtime.sendMessage(extensionId, {{
+      type: \"fork\",
+      runId,
+      external: true
+    }});
+    document.body.dataset.result = JSON.stringify(response);
+    document.title = \"external-ok\";
+  }} catch (error) {{
+    document.body.dataset.error = error && error.message || String(error);
+    document.title = \"external-fail\";
+  }}
+}}
+setTimeout(go, 25);
+</script>
+"""
+            data = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        if self.path.startswith("/cors-json"):
+            self.send_cors_json()
             return
         if not self.path.startswith("/slow.bin"):
             self.send_response(404)
@@ -2825,7 +3208,7 @@ launch_smoke_app() {
 wait_for_extension_smoke() {
   local run_id="$1"
   local result_path="$2"
-  local attempt max_attempts logs api_popup_logs command_popup_logs all_popup_logs
+  local attempt max_attempts logs api_popup_logs command_popup_logs all_popup_logs smoke_status
   max_attempts="${MORI_EXTENSION_SMOKE_WAIT_ATTEMPTS:-720}"
   for ((attempt = 1; attempt <= max_attempts; attempt += 1)); do
     if [[ -f "$result_path" ]]; then
@@ -2835,7 +3218,31 @@ wait_for_extension_smoke() {
         --predicate "process == \"$APP_NAME\" AND eventMessage CONTAINS \"$run_id\" AND eventMessage CONTAINS \"__MORI_EXTENSION_SMOKE__\"" \
         2>/dev/null || true)"
     fi
-    if printf '%s\n' "$logs" | /usr/bin/grep -F '"ok":true' >/dev/null; then
+    smoke_status="$(printf '%s\n' "$logs" | python3 -c '
+import json
+import sys
+
+run_id = sys.argv[1]
+marker = "__MORI_EXTENSION_SMOKE__"
+for line in sys.stdin:
+    index = line.find(marker)
+    if index < 0:
+        continue
+    raw = line[index + len(marker):].strip()
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        continue
+    if str(payload.get("runId", "")) != run_id:
+        continue
+    if payload.get("ok") is True:
+        print("ok")
+        break
+    if payload.get("ok") is False:
+        print("fail")
+        break
+' "$run_id")"
+    if [[ "$smoke_status" == "ok" ]]; then
       all_popup_logs="$(/usr/bin/grep -F "__MORI_EXTENSION_POPUP_OPENED__ $SMOKE_EXTENSION_ID" "$ROOT_DIR/build/extension-smoke/mori-smoke-app.log" 2>/dev/null || true)"
       if [[ -z "$all_popup_logs" ]]; then
         all_popup_logs="$(/usr/bin/log show --last 3m --style compact \
@@ -2845,11 +3252,11 @@ wait_for_extension_smoke() {
       api_popup_logs="$(printf '%s\n' "$all_popup_logs" | /usr/bin/grep -F " api" || true)"
       command_popup_logs="$(printf '%s\n' "$all_popup_logs" | /usr/bin/grep -F " command" || true)"
       if [[ -n "$api_popup_logs" && -n "$command_popup_logs" ]]; then
-        printf 'Verified extension runtime smoke: popup rendered, popup/background/offscreen runtime.getContexts, browser.* namespace mirrors Mori extension APIs, extension window creation stayed inside Mori tabs, web_accessible_resources exposed only declared extension files, scripting.insertCSS/removeCSS and legacy tabs CSS APIs changed and restored Chromium-rendered page styles, MV3 offscreen document create/close worked in Mori, sidePanel.open rendered an extension page in Mori chrome, action.openPopup and _execute_action reached Mori chrome for an unpinned extension, identity.launchWebAuthFlow captured a Mori tab redirect, cookies/history/topSites, bookmarks create/update/move/remove with events, sessions restore, management enable/disable/uninstall, CRX3 header id parsing installed a generically named package into Mori without external Chrome handoff, legacy extension-scheme navigations rewrote into Mori tabs, runtime.setUninstallURL plus management.uninstallSelf opened a Mori tab, runtime.sendNativeMessage and runtime.connectNative round-tripped through a native host, notifications shared across extension contexts, alarms fired in the extension background context, tabs.captureVisibleTab captured real page pixels, browsingData history/cookie removal, and downloads.cancel round-tripped through Mori-owned stores, runtime.sendMessage, runtime.connect, content script injection, and tabs.sendMessage round-tripped through Mori.\n'
+        printf 'Verified extension runtime smoke: popup rendered, extension pages report navigator.onLine=true, extension-page fetch POST/GET returned Response JSON through Mori-owned networking with CEF cookie sharing, externally_connectable account-page fork messages reached onMessageExternal with a web sender tab, proxy.settings get/set/clear/onChange matched ChromeSetting semantics, popup/background/offscreen runtime.getContexts, browser.* namespace mirrors Mori extension APIs, extension window creation stayed inside Mori tabs, web_accessible_resources exposed only declared extension files, scripting.insertCSS/removeCSS and legacy tabs CSS APIs changed and restored Chromium-rendered page styles, MV3 offscreen document create/close plus offscreen clipboard read/write/copy/paste worked in Mori, sidePanel.open rendered an extension page in Mori chrome, action.openPopup and _execute_action reached Mori chrome for an unpinned extension, identity.launchWebAuthFlow captured a Mori tab redirect, cookies/history/topSites, bookmarks create/update/move/remove with events, sessions restore, management enable/disable/uninstall, CRX3 header id parsing installed a generically named package into Mori without external Chrome handoff, legacy extension-scheme navigations rewrote into Mori tabs, runtime.setUninstallURL plus management.uninstallSelf opened a Mori tab, runtime.sendNativeMessage and runtime.connectNative round-tripped through a native host, notifications shared across extension contexts, alarms fired in the extension background context, tabs.captureVisibleTab captured real page pixels, browsingData history/cookie removal, and downloads.cancel round-tripped through Mori-owned stores, runtime.sendMessage, runtime.connect, content script injection, and tabs.sendMessage round-tripped through Mori.\n'
         return 0
       fi
     fi
-    if printf '%s\n' "$logs" | /usr/bin/grep -F '"ok":false' >/dev/null; then
+    if [[ "$smoke_status" == "fail" ]]; then
       echo "verify failed: extension runtime smoke reported failure:" >&2
       printf '%s\n' "$logs" >&2
       return 1
@@ -3038,6 +3445,8 @@ case "$MODE" in
 	    SMOKE_CRX_EXTENSION_ID="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	    SMOKE_CRX_PATH="$ROOT_DIR/build/extension-smoke/header-id-extension.crx"
 	    SMOKE_CRX_URL="http://127.0.0.1:$SMOKE_DOWNLOAD_PORT/extension.crx?run=$SMOKE_RUN_ID"
+	    SMOKE_EXTERNAL_PAGE_URL="http://127.0.0.1:$SMOKE_DOWNLOAD_PORT/external-message.html?run=$SMOKE_RUN_ID"
+	    SMOKE_CORS_URL="http://127.0.0.1:$SMOKE_DOWNLOAD_PORT/cors-json?run=$SMOKE_RUN_ID"
 	    create_extension_smoke_fixture "$SMOKE_RUN_ID"
 	    if ! start_smoke_download_server "$SMOKE_DOWNLOAD_PORT" "$SMOKE_RUN_ID" "$SMOKE_CRX_PATH"; then
 	      exit 1

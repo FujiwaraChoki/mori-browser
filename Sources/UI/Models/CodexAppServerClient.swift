@@ -40,6 +40,8 @@ final class CodexBrowserAssistant: ObservableObject {
     @Published var isLoadingHistory: Bool = false
     @Published var historyError: String?
 
+    private static let codexHistorySourceKinds = ["cli", "vscode", "appServer"]
+
     private weak var store: BrowserStore?
     // Enabled by default; opt out by launching with MORI_ENABLE_CODEX_ASSISTANT=0.
     private let isEnabled = ProcessInfo.processInfo.environment["MORI_ENABLE_CODEX_ASSISTANT"] != "0"
@@ -47,6 +49,7 @@ final class CodexBrowserAssistant: ObservableObject {
     private var threadId: String?
     private var activeAssistantMessageId: AIMessage.ID?
     private var usesDynamicTools = true
+    private let maxFallbackToolIterations = 12
     private var fallbackToolIterations = 0
     private var pendingAssistantText = ""
     private var turnWatchdogTask: Task<Void, Never>?
@@ -89,26 +92,40 @@ final class CodexBrowserAssistant: ObservableObject {
         defer { isLoadingHistory = false }
         do {
             try await connection.connectIfNeeded()
-            var params: [String: Any] = [
-                "limit": 40,
-                "sortKey": "updated_at",
-                "sortDirection": "desc",
-                "sourceKinds": ["appServer"],
-                "archived": false,
-                "cwd": NSHomeDirectory()
-            ]
             let trimmedSearch = searchTerm.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedSearch.isEmpty {
-                params["searchTerm"] = trimmedSearch
-            }
+            var params = conversationHistoryRequestParams()
             let response = try await withTimeout(seconds: 8) {
                 try await self.connection.request(method: "thread/list", params: params)
             }
-            conversationHistory = parseConversationHistory(from: response)
+            var conversations = parseConversationHistory(from: response)
+
+            if !trimmedSearch.isEmpty {
+                params["searchTerm"] = trimmedSearch
+                let searchResponse = try await withTimeout(seconds: 8) {
+                    try await self.connection.request(method: "thread/list", params: params)
+                }
+                conversations = mergeConversationHistory(
+                    parseConversationHistory(from: searchResponse),
+                    conversations
+                )
+                conversations = filterConversationHistory(conversations, matching: trimmedSearch)
+            }
+
+            conversationHistory = conversations
         } catch {
             historyError = error.localizedDescription
             conversationHistory = []
         }
+    }
+
+    private func conversationHistoryRequestParams() -> [String: Any] {
+        [
+            "limit": 120,
+            "sortKey": "updated_at",
+            "sortDirection": "desc",
+            "sourceKinds": Self.codexHistorySourceKinds,
+            "archived": false
+        ]
     }
 
     func openConversation(_ conversation: CodexConversationSummary) async {
@@ -280,7 +297,9 @@ final class CodexBrowserAssistant: ObservableObject {
     }
 
     private func parseConversationHistory(from response: [String: Any]) -> [CodexConversationSummary] {
-        guard let data = response["data"] as? [[String: Any]] else { return [] }
+        guard let data = response["data"] as? [[String: Any]]
+                ?? response["threads"] as? [[String: Any]]
+        else { return [] }
         return data.compactMap { raw in
             guard let id = raw["id"] as? String, !id.isEmpty else { return nil }
             let preview = raw["preview"] as? String ?? ""
@@ -292,6 +311,27 @@ final class CodexBrowserAssistant: ObservableObject {
                 preview: cleanConversationPreview(preview),
                 updatedAt: Date(timeIntervalSince1970: updatedAt)
             )
+        }
+    }
+
+    private func mergeConversationHistory(_ primary: [CodexConversationSummary],
+                                          _ secondary: [CodexConversationSummary]) -> [CodexConversationSummary] {
+        var seen = Set<String>()
+        return (primary + secondary).filter { conversation in
+            seen.insert(conversation.id).inserted
+        }
+    }
+
+    private func filterConversationHistory(_ conversations: [CodexConversationSummary],
+                                           matching searchTerm: String) -> [CodexConversationSummary] {
+        let needles = searchTerm
+            .lowercased()
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init)
+        guard !needles.isEmpty else { return conversations }
+        return conversations.filter { conversation in
+            let haystack = "\(conversation.title) \(conversation.preview)".lowercased()
+            return needles.allSatisfy { haystack.contains($0) }
         }
     }
 
@@ -563,9 +603,19 @@ final class CodexBrowserAssistant: ObservableObject {
             return
         }
 
-        guard kind == "tool",
-              fallbackToolIterations < 8,
-              let threadId,
+        guard kind == "tool" else {
+            replaceActiveAssistantText("I could not complete the browser action.")
+            isWorking = false
+            statusText = "Local Codex"
+            return
+        }
+
+        guard fallbackToolIterations < maxFallbackToolIterations else {
+            finishFallbackAfterToolLimit()
+            return
+        }
+
+        guard let threadId,
               let store,
               let tool = payload["tool"] as? String
         else {
@@ -588,7 +638,7 @@ final class CodexBrowserAssistant: ObservableObject {
         Mori tool result for \(tool), success=\(result.success):
         \(result.text)
 
-        Continue the same JSON protocol. Return only one JSON object: either the next tool call or {"kind":"final","text":"..."}. Do not add a session summary.
+        Continue the same JSON protocol. Return only one JSON object: either the next tool call or {"kind":"final","text":"..."}. If success=true and the user's request is now satisfied, return {"kind":"final","text":"Done."}. Use another tool call only if another browser step is necessary. Do not add a session summary.
         """
         do {
             try await startTurn(threadId: threadId, prompt: prompt)
@@ -597,6 +647,16 @@ final class CodexBrowserAssistant: ObservableObject {
             isWorking = false
             statusText = "Local Codex"
         }
+    }
+
+    private func finishFallbackAfterToolLimit() {
+        if latestToolCallSuccess() == true {
+            replaceActiveAssistantText("Browser actions completed.")
+        } else {
+            replaceActiveAssistantText("I could not complete the browser action.")
+        }
+        isWorking = false
+        statusText = "Local Codex"
     }
 
     private func handleDynamicCompletion() async {
@@ -717,6 +777,10 @@ final class CodexBrowserAssistant: ObservableObject {
               let index = messages.firstIndex(where: { $0.id == activeAssistantMessageId })
         else { return }
         messages[index].text = text
+    }
+
+    private func latestToolCallSuccess() -> Bool? {
+        messages.reversed().compactMap { $0.toolCall?.success }.first
     }
 
     private func beginToolCall(tool: String,

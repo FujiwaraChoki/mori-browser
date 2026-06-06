@@ -18,19 +18,13 @@ struct WebTopStrip: View {
             WindowDragArea()
                 .ignoresSafeArea()
         }
-        .overlay(alignment: .bottom) {
-            // No hairline here — the floating card's border frames the content.
-            if let tab, tab.isLoading {
-                LoadingBar()
-                    .transition(.opacity)
-                    .animation(Motion.state, value: tab.isLoading)
-            }
-        }
+        // The page-load indicator now lives as a muted bar pinned to the bottom
+        // edge of the web card (see `RootView.webCard`).
     }
 }
 
-/// A slim indeterminate progress bar shown while a page loads. A primary-tinted
-/// segment sweeps left→right; respects reduced-motion by holding still.
+/// A slim indeterminate progress bar shown while a page loads. A muted segment
+/// sweeps left→right; respects reduced-motion by holding still.
 struct LoadingBar: View {
     @Environment(\.palette) private var p
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -40,14 +34,15 @@ struct LoadingBar: View {
         GeometryReader { geo in
             let w = geo.size.width
             let segment = max(120, w * 0.28)
+            let tint = p.mutedForeground.color
             Capsule()
                 .fill(
                     LinearGradient(
-                        colors: [p.primary.color.opacity(0), p.primary.color, p.primary.color.opacity(0)],
+                        colors: [tint.opacity(0), tint.opacity(0.7), tint.opacity(0)],
                         startPoint: .leading, endPoint: .trailing
                     )
                 )
-                .frame(width: segment, height: 2.5)
+                .frame(width: segment, height: 2)
                 .offset(x: reduceMotion ? (w - segment) / 2 : phase * (w + segment) - segment)
                 .onAppear {
                     guard !reduceMotion else { return }
@@ -56,7 +51,7 @@ struct LoadingBar: View {
                     }
                 }
         }
-        .frame(height: 2.5)
+        .frame(height: 2)
     }
 }
 

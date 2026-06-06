@@ -21,9 +21,9 @@ struct WebContainerView: NSViewRepresentable {
         let activeLoadFailed = activeTab.didFail
         nsView.applyCornerRadius(cornerRadius)
 
-        // Settings is a window-modal sheet, so hide Chromium while it is up.
-        // The launcher is hosted in an AppKit overlay above the web view and
-        // should leave the current page visible behind its scrim.
+        // Settings renders as a full page over the web card, so hide Chromium
+        // while it is up. The launcher is hosted in an AppKit overlay above the
+        // web view and should leave the current page visible behind its scrim.
         MoriBrowserView.setWebContentSuppressed(store.settingsVisible)
 
         // Make sure the selected tab is realized.

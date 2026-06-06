@@ -35,7 +35,6 @@ struct IconButton: View {
         .disabled(disabled)
         .opacity(disabled ? 0.4 : 1)
         .onHover { hovering = $0 }
-        .animation(Motion.state, value: hovering)
         .animation(Motion.state, value: pressed)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
@@ -76,6 +75,10 @@ struct IconButton: View {
 struct Favicon: View {
     let icon: String?
     var page: String? = nil
+    /// The real site favicon decoded by Chromium. When present it is preferred
+    /// over the remote-URL load and the monogram (the icon/page strings still
+    /// drive the brand glyph and the fallbacks).
+    var image: NSImage? = nil
     var isLoading: Bool = false
     var size: CGFloat = 15
     /// Inactive tabs render slightly desaturated so the active tab reads first.
@@ -116,26 +119,37 @@ struct Favicon: View {
     }
 
     @ViewBuilder private var resolvedContent: some View {
-        switch source {
-        case .brand(let asset):
+        if case .brand(let asset) = source {
             Image(asset)
                 .resizable()
                 .interpolation(.high)
                 .frame(width: size, height: size)
                 .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
-        case .remote(let url):
-            AsyncImage(url: url) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().interpolation(.high)
-                default:
-                    monogram   // broken/missing → monogram, not a blank box
+        } else if let image {
+            // The actual site favicon Chromium downloaded and decoded.
+            Image(nsImage: image)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+        } else {
+            switch source {
+            case .remote(let url):
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().interpolation(.high)
+                    default:
+                        monogram   // broken/missing → monogram, not a blank box
+                    }
                 }
+                .frame(width: size, height: size)
+                .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
+            case .monogram(let letter, let color):
+                FaviconMonogram(letter: letter, color: color, size: size)
+            case .brand:
+                EmptyView()  // handled above
             }
-            .frame(width: size, height: size)
-            .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
-        case .monogram(let letter, let color):
-            FaviconMonogram(letter: letter, color: color, size: size)
         }
     }
 

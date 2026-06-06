@@ -109,6 +109,7 @@ extern void MoriRegisterExtensionDownload(NSString* url,
             canGoBack:(BOOL)canGoBack
          canGoForward:(BOOL)canGoForward;
 - (void)_applyFaviconURLs:(NSArray<NSString*>*)urls;
+- (void)_applyFaviconImage:(nullable NSImage*)image;
 - (void)_applyNavigationStart:(NSString*)url
                    isRedirect:(BOOL)isRedirect
                   userGesture:(BOOL)userGesture;
@@ -164,6 +165,18 @@ class ViewClientDelegate : public BrowserClientDelegate {
       [urls addObject:SafeString(u)];
     }
     [v _applyFaviconURLs:urls];
+  }
+  void OnFaviconImage(const std::string& /*image_url*/,
+                      const unsigned char* png_bytes,
+                      size_t len) override {
+    MoriBrowserView* v = view_;
+    if (!v) return;
+    NSImage* image = nil;
+    if (png_bytes && len > 0) {
+      NSData* data = [NSData dataWithBytes:png_bytes length:len];
+      image = [[NSImage alloc] initWithData:data];
+    }
+    [v _applyFaviconImage:image];
   }
   void OnBeforeBrowse(const std::string& url,
                       bool is_redirect,
@@ -595,16 +608,55 @@ static NSHashTable<MoriBrowserView*>* g_all_views = nil;
                        requestID:(NSString*)requestID
                        sourceURL:(NSString*)sourceURL
                     sourceOrigin:(NSString*)sourceOrigin {
+  [self dispatchExtensionMessage:message
+                  forExtensionID:extensionID
+                       requestID:requestID
+                       sourceURL:sourceURL
+                    sourceOrigin:sourceOrigin
+                        external:NO];
+}
+
++ (void)dispatchExtensionMessage:(id)message
+                  forExtensionID:(NSString*)extensionID
+                       requestID:(NSString*)requestID
+                       sourceURL:(NSString*)sourceURL
+                    sourceOrigin:(NSString*)sourceOrigin
+                        external:(BOOL)external {
+  [self dispatchExtensionMessage:message
+                  forExtensionID:extensionID
+                       requestID:requestID
+                       sourceURL:sourceURL
+                    sourceOrigin:sourceOrigin
+                     sourceTabID:-1
+                        external:external];
+}
+
++ (void)dispatchExtensionMessage:(id)message
+                  forExtensionID:(NSString*)extensionID
+                       requestID:(NSString*)requestID
+                       sourceURL:(NSString*)sourceURL
+                    sourceOrigin:(NSString*)sourceOrigin
+                     sourceTabID:(NSInteger)sourceTabID
+                        external:(BOOL)external {
   if (extensionID.length == 0) return;
   // sourceURL lets the in-page handler skip the sending document, matching
   // Chrome's rule that runtime.sendMessage is never delivered to its sender.
+  // The 6th arg (toContentScript) is false: a runtime.sendMessage broadcast
+  // reaches extension contexts only, never content scripts (tabs.sendMessage
+  // routes through a separate path that opts into content-script delivery).
+  // The 7th arg (external) routes to onMessageExternal with an id-less sender.
+  // The 8th arg carries the originating tab id so external account handoffs can
+  // see a Chrome-like MessageSender.tab.
   NSString* source = [NSString stringWithFormat:
       @"if(window.__moriExtDispatchMessage){"
-       "window.__moriExtDispatchMessage(%@,%@,%@,%@,%@);}",
+       "window.__moriExtDispatchMessage(%@,%@,%@,%@,%@,false,%@,%@);}",
       JSONLiteral(extensionID), JSONLiteral(message ?: [NSNull null]),
       JSONLiteral(requestID ?: [NSNull null]),
       JSONLiteral(sourceURL ?: [NSNull null]),
-      JSONLiteral(sourceOrigin ?: [NSNull null])];
+      JSONLiteral(sourceOrigin ?: [NSNull null]),
+      external ? @"true" : @"false",
+      sourceTabID >= 0 ? [NSString stringWithFormat:@"%ld", (long)sourceTabID]
+                       : @"null"];
   for (MoriBrowserView* view in g_all_views) {
     [view executeExtensionJavaScript:source allFrames:YES];
   }
@@ -879,6 +931,10 @@ static NSHashTable<MoriBrowserView*>* g_all_views = nil;
   MoriSetAutoPiPEnabled(enabled);
 }
 
++ (void)setAdBlockerEnabled:(BOOL)enabled {
+  MoriSetAdBlockerEnabled(enabled);
+}
+
 + (BOOL)cancelDownloadWithID:(uint32_t)downloadID {
   return MoriCancelDownload(downloadID);
 }
@@ -934,6 +990,13 @@ static NSHashTable<MoriBrowserView*>* g_all_views = nil;
   id<MoriBrowserViewDelegate> d = self.navDelegate;
   if ([d respondsToSelector:@selector(browserView:didChangeFaviconURLs:)]) {
     [d browserView:self didChangeFaviconURLs:urls];
+  }
+}
+
+- (void)_applyFaviconImage:(NSImage*)image {
+  id<MoriBrowserViewDelegate> d = self.navDelegate;
+  if ([d respondsToSelector:@selector(browserView:didLoadFaviconImage:)]) {
+    [d browserView:self didLoadFaviconImage:image];
   }
 }
 

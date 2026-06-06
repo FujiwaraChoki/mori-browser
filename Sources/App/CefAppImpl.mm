@@ -362,6 +362,13 @@ NSString* ExtensionEarlyRuntimeBootstrap(NSString* extensionID) {
   return [NSString stringWithFormat:
       @"<script>"
        "document.documentElement.dataset.moriExtensionPage='true';"
+       "try{"
+       "Object.defineProperty(Navigator.prototype,'onLine',{configurable:true,get:function(){return true;}});"
+       "try{Object.defineProperty(navigator,'onLine',{configurable:true,get:function(){return true;}});}catch(_e){}"
+       "setTimeout(function(){try{window.dispatchEvent(new Event('online'));}catch(_e){}},0);"
+       "}catch(e){}"
+       "window.__moriNativeConsoleInfo=window.__moriNativeConsoleInfo||"
+       "(function(){try{return Function.prototype.bind.call(console.info,console);}catch(e){return function(message){try{console.info(message);}catch(_){}};}})();"
        "globalThis.chrome=globalThis.chrome||{};"
        "chrome.runtime=chrome.runtime||{};"
        "chrome.runtime.id=chrome.runtime.id||'%@';"

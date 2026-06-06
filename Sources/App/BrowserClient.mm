@@ -10,7 +10,10 @@
 #include "PasskeyAgentScript.h"
 #include "include/cef_cookie.h"
 #include "include/cef_download_item.h"
+#include "include/cef_request_context.h"
+#include "include/cef_values.h"
 #include "include/internal/cef_time.h"
+#include "include/wrapper/cef_stream_resource_handler.h"
 #include "include/wrapper/cef_helpers.h"
 
 #include "../Shared/MoriSchemes.h"
@@ -31,6 +34,14 @@ NSString* const kMoriMediaUpdated = @"MoriMediaUpdated";
 static std::atomic<bool> g_mori_auto_pip{false};
 void MoriSetAutoPiPEnabled(bool enabled) { g_mori_auto_pip.store(enabled); }
 bool MoriAutoPiPEnabled() { return g_mori_auto_pip.load(); }
+
+// Built-in ad blocker preference. Default on; Swift settings may override it
+// after UserDefaults loads.
+static std::atomic<bool> g_mori_ad_blocker{true};
+void MoriSetAdBlockerEnabled(bool enabled) {
+  g_mori_ad_blocker.store(enabled);
+}
+bool MoriAdBlockerEnabled() { return g_mori_ad_blocker.load(); }
 
 static const char* kMoriWebNavigationAgent = R"JS(
 (function(){
@@ -278,18 +289,75 @@ void BrowserClient::OnAddressChange(CefRefPtr<CefBrowser> browser,
   }
 }
 
+namespace {
+
+// Bridges CefBrowserHost::DownloadImage back into the owning BrowserClient.
+// Held alive by CEF for the duration of the download; keeps a ref to the client
+// so the result can be delivered even if the page has since changed.
+class FaviconDownloadCallback : public CefDownloadImageCallback {
+ public:
+  explicit FaviconDownloadCallback(CefRefPtr<BrowserClient> client)
+      : client_(client) {}
+
+  void OnDownloadImageFinished(const CefString& image_url,
+                               int /*http_status_code*/,
+                               CefRefPtr<CefImage> image) override {
+    client_->DeliverFaviconImage(image_url, image);
+  }
+
+ private:
+  CefRefPtr<BrowserClient> client_;
+  IMPLEMENT_REFCOUNTING(FaviconDownloadCallback);
+};
+
+}  // namespace
+
 void BrowserClient::OnFaviconURLChange(
     CefRefPtr<CefBrowser> browser,
     const std::vector<CefString>& icon_urls) {
   CEF_REQUIRE_UI_THREAD();
-  if (delegate_) {
-    std::vector<std::string> urls;
-    urls.reserve(icon_urls.size());
-    for (const auto& u : icon_urls) {
-      urls.push_back(u.ToString());
-    }
-    delegate_->OnFaviconURLChange(urls);
+  if (!delegate_) return;
+
+  std::vector<std::string> urls;
+  urls.reserve(icon_urls.size());
+  for (const auto& u : icon_urls) {
+    urls.push_back(u.ToString());
   }
+  delegate_->OnFaviconURLChange(urls);
+
+  // Let Chromium download and decode the icon itself: this covers ICO, SVG,
+  // data-URI and PNG favicons uniformly (a plain URLSession/AsyncImage load on
+  // the Swift side cannot decode SVG or data-URIs, which is why those sites fell
+  // back to the monogram). The first declared icon is the page's primary one;
+  // `max_image_size` 64 keeps it crisp on Retina at our 15–20pt render sizes.
+  if (!urls.empty() && browser && browser->GetHost()) {
+    browser->GetHost()->DownloadImage(
+        CefString(urls.front()), /*is_favicon=*/true, /*max_image_size=*/64,
+        /*bypass_cache=*/false, new FaviconDownloadCallback(this));
+  }
+}
+
+void BrowserClient::DeliverFaviconImage(const CefString& image_url,
+                                        CefRefPtr<CefImage> image) {
+  CEF_REQUIRE_UI_THREAD();
+  if (!delegate_) return;
+
+  if (!image || image->IsEmpty()) {
+    delegate_->OnFaviconImage(image_url.ToString(), nullptr, 0);
+    return;
+  }
+
+  int width = 0, height = 0;
+  CefRefPtr<CefBinaryValue> png =
+      image->GetAsPNG(1.0f, /*with_transparency=*/true, width, height);
+  if (!png || png->GetSize() == 0) {
+    delegate_->OnFaviconImage(image_url.ToString(), nullptr, 0);
+    return;
+  }
+
+  std::vector<unsigned char> buffer(png->GetSize());
+  png->GetData(buffer.data(), buffer.size(), 0);
+  delegate_->OnFaviconImage(image_url.ToString(), buffer.data(), buffer.size());
 }
 
 // --- CefDownloadHandler -----------------------------------------------------
@@ -670,29 +738,88 @@ void BrowserClient::OnFindResult(CefRefPtr<CefBrowser> browser,
 
 // --- CefKeyboardHandler -----------------------------------------------------
 
+namespace {
+
+NSEventModifierFlags MoriModifierMaskForCEF(uint32_t modifiers) {
+  NSEventModifierFlags mask = 0;
+  if (modifiers & EVENTFLAG_COMMAND_DOWN) mask |= NSEventModifierFlagCommand;
+  if (modifiers & EVENTFLAG_CONTROL_DOWN) mask |= NSEventModifierFlagControl;
+  if (modifiers & EVENTFLAG_SHIFT_DOWN) mask |= NSEventModifierFlagShift;
+  if (modifiers & EVENTFLAG_ALT_DOWN) mask |= NSEventModifierFlagOption;
+  return mask;
+}
+
+NSString* MoriStringFromCEFCharacter(char16_t character) {
+  if (character == 0) return @"";
+  unichar value = static_cast<unichar>(character);
+  return [[NSString alloc] initWithCharacters:&value length:1];
+}
+
+NSString* MoriCharactersIgnoringModifiers(const CefKeyEvent& event) {
+  if (event.unmodified_character != 0) {
+    return MoriStringFromCEFCharacter(event.unmodified_character);
+  }
+  if (event.character != 0) {
+    return MoriStringFromCEFCharacter(event.character);
+  }
+  return @"";
+}
+
+bool MoriIsShortcutKeyDown(const CefKeyEvent& event) {
+  return event.type == KEYEVENT_RAWKEYDOWN || event.type == KEYEVENT_KEYDOWN;
+}
+
+bool MoriHandleCEFShortcutEvent(const CefKeyEvent& event,
+                                CefEventHandle os_event) {
+  if (!MoriIsShortcutKeyDown(event)) {
+    return false;
+  }
+
+  if (os_event) {
+    NSEvent* ns_event = (__bridge NSEvent*)os_event;
+    if (ns_event.type == NSEventTypeKeyDown) {
+      if ([MoriRoot handleShortcutEvent:ns_event]) {
+        return true;
+      }
+    }
+  }
+
+  return [MoriRoot
+      handleShortcutWithKeyCode:static_cast<uint16_t>(event.windows_key_code)
+     charactersIgnoringModifiers:MoriCharactersIgnoringModifiers(event)
+                    modifierMask:static_cast<NSUInteger>(
+                                     MoriModifierMaskForCEF(event.modifiers))
+                        isRepeat:(event.modifiers & EVENTFLAG_IS_REPEAT) != 0]
+                ? true
+                : false;
+}
+
+}  // namespace
+
 bool BrowserClient::OnPreKeyEvent(CefRefPtr<CefBrowser> browser,
                                   const CefKeyEvent& event,
                                   CefEventHandle os_event,
                                   bool* is_keyboard_shortcut) {
   CEF_REQUIRE_UI_THREAD();
   // Only the initial key-down: key-up and the synthesized post-IME key event
-  // would double-fire a toggle. On macOS `os_event` is the originating NSEvent,
-  // so we hand it to the same dispatcher the native chrome uses. Returning true
-  // consumes the event before the renderer sees it, so a Mori shortcut fires
-  // on the first press even while the web page holds keyboard focus.
-  NSEvent* ns_event = (__bridge NSEvent*)os_event;
-  NSLog(@"KEYDBG OnPreKeyEvent cefType=%d os_event=%p nsType=%ld code=%d",
-        (int)event.type, os_event, ns_event ? (long)ns_event.type : -1,
-        (int)event.windows_key_code);
-  if (event.type != KEYEVENT_RAWKEYDOWN || !os_event) {
-    return false;
+  // would double-fire toggles. CEF can report either RAWKEYDOWN or KEYDOWN for
+  // shortcut-shaped input; route both through the same registry.
+  bool handled = MoriHandleCEFShortcutEvent(event, os_event);
+
+  if (handled && is_keyboard_shortcut) {
+    *is_keyboard_shortcut = true;
   }
-  if (ns_event.type != NSEventTypeKeyDown) {
-    return false;
-  }
-  bool handled = [MoriRoot handleShortcutEvent:ns_event] ? true : false;
-  NSLog(@"KEYDBG OnPreKeyEvent handled=%d", handled);
   return handled;
+}
+
+bool BrowserClient::OnKeyEvent(CefRefPtr<CefBrowser> browser,
+                               const CefKeyEvent& event,
+                               CefEventHandle os_event) {
+  CEF_REQUIRE_UI_THREAD();
+  // Fallback for any shortcut that was not delivered through OnPreKeyEvent.
+  // The registry dedupes the same physical press, so this is safe when CEF
+  // calls both keyboard hooks for the same input.
+  return MoriHandleCEFShortcutEvent(event, os_event);
 }
 
 // --- Script injection + console channel -------------------------------------
@@ -745,14 +872,15 @@ void BroadcastExtensionPortConnect(NSString* extensionID,
                                    NSString* portID,
                                    NSString* name,
                                    NSDictionary* sender,
-                                   NSString* sourceURL) {
+                                   NSString* sourceURL,
+                                   BOOL external) {
   if (extensionID.length == 0 || portID.length == 0) return;
   NSString* source = [NSString stringWithFormat:
       @"if(window.__moriExtDispatchConnect){"
-       "window.__moriExtDispatchConnect(%@,%@,%@,%@,%@);}",
+       "window.__moriExtDispatchConnect(%@,%@,%@,%@,%@,%@);}",
       JSStringLiteral(extensionID), JSStringLiteral(portID),
       JSStringLiteral(name ?: @""), JSONStringLiteral(sender ?: @{}),
-      JSStringLiteral(sourceURL ?: @"")];
+      JSStringLiteral(sourceURL ?: @""), external ? @"true" : @"false"];
   [MoriBrowserView broadcastExtensionJavaScript:source
                                   forExtensionID:extensionID];
 }
@@ -1436,6 +1564,108 @@ BOOL ScriptMatchesURL(NSDictionary* script, NSURL* url) {
   return YES;
 }
 
+BOOL ExtensionHostPermissionsAllow(NSDictionary* manifest, NSURL* url) {
+  if (!manifest || !url) return NO;
+  NSString* scheme = url.scheme.lowercaseString ?: @"";
+  if (![@[@"http", @"https", @"file"] containsObject:scheme]) return NO;
+
+  NSMutableArray* patterns = [NSMutableArray array];
+  NSArray* hostPermissions =
+      [manifest[@"host_permissions"] isKindOfClass:NSArray.class]
+          ? manifest[@"host_permissions"]
+          : @[];
+  NSArray* optionalHostPermissions =
+      [manifest[@"optional_host_permissions"] isKindOfClass:NSArray.class]
+          ? manifest[@"optional_host_permissions"]
+          : @[];
+  NSArray* permissions = [manifest[@"permissions"] isKindOfClass:NSArray.class]
+      ? manifest[@"permissions"]
+      : @[];
+  [patterns addObjectsFromArray:hostPermissions];
+  [patterns addObjectsFromArray:optionalHostPermissions];
+  [patterns addObjectsFromArray:permissions];
+
+  for (id item in patterns) {
+    if (![item isKindOfClass:NSString.class]) continue;
+    NSString* pattern = (NSString*)item;
+    if ([pattern isEqualToString:@"<all_urls>"] ||
+        [pattern rangeOfString:@"://"].location != NSNotFound) {
+      if (MatchExtensionPattern(pattern, url)) return YES;
+    }
+  }
+  return NO;
+}
+
+// True when `sourceURL` (the origin of a runtime.sendMessage / runtime.connect
+// sender) is a web page allowed to talk to extension `extensionID` through its
+// manifest `externally_connectable.matches`. Such messages are external (the
+// page is not the extension), so they must be delivered to onMessageExternal /
+// onConnectExternal with a sender that carries url/origin but NO id — Chrome
+// extensions (e.g. Proton Pass) tell internal from external by comparing
+// sender.id against runtime.id, and the account.proton.me sign-in "fork" is
+// only honored when it arrives externally.
+BOOL ExtensionAllowsExternalConnect(NSString* extensionID, NSString* sourceURL) {
+  if (extensionID.length == 0 || sourceURL.length == 0) return NO;
+  NSURL* url = [NSURL URLWithString:sourceURL];
+  if (!url) return NO;
+  // Only real web origins connect externally; extension pages are internal.
+  NSString* scheme = url.scheme.lowercaseString;
+  if (![scheme isEqualToString:@"https"] && ![scheme isEqualToString:@"http"]) {
+    return NO;
+  }
+  NSDictionary* ext = EnabledExtensionRecordForID(extensionID);
+  if (!ext) return NO;
+  NSDictionary* manifest = ManifestForExtension(ext);
+  NSDictionary* ec = [manifest[@"externally_connectable"] isKindOfClass:[NSDictionary class]]
+      ? manifest[@"externally_connectable"]
+      : nil;
+  NSArray* matches = [ec[@"matches"] isKindOfClass:[NSArray class]]
+      ? ec[@"matches"]
+      : nil;
+  for (id item in matches) {
+    if ([item isKindOfClass:[NSString class]] &&
+        MatchExtensionPattern((NSString*)item, url)) {
+      return YES;
+    }
+  }
+  return NO;
+}
+
+BOOL ExtensionMessageHasType(id message, NSString* type) {
+  if (![message isKindOfClass:[NSDictionary class]] || type.length == 0) {
+    return NO;
+  }
+  id rawType = ((NSDictionary*)message)[@"type"];
+  return [rawType isKindOfClass:[NSString class]] &&
+         [(NSString*)rawType isEqualToString:type];
+}
+
+BOOL ExtensionMessageIsExternallyConnectableAccountType(id message) {
+  return ExtensionMessageHasType(message, @"auth-ext") ||
+         ExtensionMessageHasType(message, @"fork") ||
+         ExtensionMessageHasType(message, @"pass-onboarding") ||
+         ExtensionMessageHasType(message, @"pass-installed");
+}
+
+NSDictionary* ExtensionSenderTab(int tabID, NSString* sourceURL) {
+  if (tabID < 0) return nil;
+  NSMutableDictionary* tab = [@{
+    @"id" : @(tabID),
+    @"windowId" : @1,
+    @"index" : @(-1),
+    @"active" : @YES,
+    @"highlighted" : @YES,
+    @"selected" : @YES,
+    @"pinned" : @NO,
+    @"incognito" : @NO,
+    @"status" : @"complete"
+  } mutableCopy];
+  if (sourceURL.length > 0) {
+    tab[@"url"] = sourceURL;
+  }
+  return tab;
+}
+
 NSString* DNRResourceType(CefRefPtr<CefRequest> request) {
   if (!request) return @"other";
   switch (request->GetResourceType()) {
@@ -1638,6 +1868,112 @@ BOOL DNRDomainListMatches(NSArray* domains, NSString* host) {
     }
   }
   return NO;
+}
+
+NSString* MoriAdBlockDomainFromLine(NSString* rawLine) {
+  NSString* line = [rawLine
+      stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  if (line.length == 0 || [line hasPrefix:@"#"] || [line hasPrefix:@"!"]) {
+    return nil;
+  }
+
+  NSRange inlineComment = [line rangeOfString:@" #"];
+  if (inlineComment.location != NSNotFound) {
+    line = [[line substringToIndex:inlineComment.location]
+        stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+  }
+
+  if ([line hasPrefix:@"||"]) {
+    line = [line substringFromIndex:2];
+    NSRange separator = [line rangeOfString:@"^"];
+    if (separator.location != NSNotFound) {
+      line = [line substringToIndex:separator.location];
+    }
+  } else {
+    NSArray<NSString*>* tokens =
+        [line componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    NSMutableArray<NSString*>* nonempty = [NSMutableArray array];
+    for (NSString* token in tokens) {
+      if (token.length > 0) [nonempty addObject:token];
+    }
+    if (nonempty.count >= 2) {
+      line = nonempty[1];
+    }
+  }
+
+  line = [line lowercaseString];
+  if ([line hasPrefix:@"http://"] || [line hasPrefix:@"https://"]) {
+    NSURLComponents* components = [NSURLComponents componentsWithString:line];
+    line = components.host ?: @"";
+  }
+  while ([line hasPrefix:@"."]) {
+    line = [line substringFromIndex:1];
+  }
+  while ([line hasSuffix:@"."]) {
+    line = [line substringToIndex:line.length - 1];
+  }
+
+  NSCharacterSet* allowed = [NSCharacterSet
+      characterSetWithCharactersInString:
+          @"abcdefghijklmnopqrstuvwxyz0123456789.-"];
+  if (line.length == 0 ||
+      [line rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound ||
+      [line rangeOfString:@"."].location == NSNotFound) {
+    return nil;
+  }
+  return line;
+}
+
+NSSet<NSString*>* MoriAdBlockDomains() {
+  static NSSet<NSString*>* domains = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    NSMutableSet<NSString*>* parsed = [NSMutableSet set];
+    NSURL* url = [NSBundle.mainBundle URLForResource:@"blocklistproject-ads"
+                                       withExtension:@"txt"];
+    NSString* body = url ? [NSString stringWithContentsOfURL:url
+                                                    encoding:NSUTF8StringEncoding
+                                                       error:nil]
+                         : nil;
+    [body enumerateLinesUsingBlock:^(NSString* line, BOOL* stop) {
+      (void)stop;
+      NSString* domain = MoriAdBlockDomainFromLine(line);
+      if (domain.length > 0) [parsed addObject:domain];
+    }];
+    domains = [parsed copy];
+  });
+  return domains ?: [NSSet set];
+}
+
+BOOL MoriAdBlockHostMatches(NSString* host) {
+  NSString* candidate = [host.lowercaseString
+      stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  while ([candidate hasSuffix:@"."]) {
+    candidate = [candidate substringToIndex:candidate.length - 1];
+  }
+  NSSet<NSString*>* domains = MoriAdBlockDomains();
+  while (candidate.length > 0) {
+    if ([domains containsObject:candidate]) return YES;
+    NSRange dot = [candidate rangeOfString:@"."];
+    if (dot.location == NSNotFound) break;
+    candidate = [candidate substringFromIndex:dot.location + 1];
+  }
+  return NO;
+}
+
+BOOL MoriAdBlockerShouldBlockRequest(CefRefPtr<CefRequest> request) {
+  if (!MoriAdBlockerEnabled() || !request) return NO;
+  NSString* urlString = @(request->GetURL().ToString().c_str());
+  NSURLComponents* components = [NSURLComponents componentsWithString:urlString];
+  NSString* scheme = components.scheme.lowercaseString ?: @"";
+  if (![scheme isEqualToString:@"http"] &&
+      ![scheme isEqualToString:@"https"] &&
+      ![scheme isEqualToString:@"ws"] &&
+      ![scheme isEqualToString:@"wss"]) {
+    return NO;
+  }
+  NSString* host = components.host ?: @"";
+  return MoriAdBlockHostMatches(host);
 }
 
 NSString* DNRRegexFromURLFilter(NSString* filter) {
@@ -2288,6 +2624,197 @@ NSDictionary* ExtensionRecordForFrame(CefRefPtr<CefFrame> frame) {
   return EnabledExtensionRecordForID(url.host ?: @"");
 }
 
+NSDictionary* ExtensionRecordForOrigin(NSString* origin) {
+  if (origin.length == 0) return nil;
+  NSURL* url = [NSURL URLWithString:origin];
+  if (![url.scheme isEqualToString:@(mori::kExtensionScheme)]) {
+    return nil;
+  }
+  return EnabledExtensionRecordForID(url.host ?: @"");
+}
+
+NSMutableDictionary<NSNumber*, NSString*>* ExtensionRequestInitiators() {
+  static NSMutableDictionary<NSNumber*, NSString*>* initiators =
+      [NSMutableDictionary dictionary];
+  return initiators;
+}
+
+NSNumber* ExtensionRequestIdentifier(CefRefPtr<CefRequest> request) {
+  if (!request) return nil;
+  uint64_t identifier = request->GetIdentifier();
+  if (identifier == 0) return nil;
+  return @(static_cast<unsigned long long>(identifier));
+}
+
+void RememberExtensionRequestInitiator(CefRefPtr<CefRequest> request,
+                                       const CefString& requestInitiator) {
+  NSNumber* key = ExtensionRequestIdentifier(request);
+  if (!key) return;
+  NSString* initiator = @(requestInitiator.ToString().c_str());
+  if (initiator.length == 0) return;
+  NSMutableDictionary* initiators = ExtensionRequestInitiators();
+  @synchronized(initiators) {
+    initiators[key] = initiator;
+  }
+}
+
+NSString* RememberedExtensionRequestInitiator(CefRefPtr<CefRequest> request) {
+  NSNumber* key = ExtensionRequestIdentifier(request);
+  if (!key) return nil;
+  NSMutableDictionary* initiators = ExtensionRequestInitiators();
+  @synchronized(initiators) {
+    return initiators[key];
+  }
+}
+
+void ForgetExtensionRequestInitiator(CefRefPtr<CefRequest> request) {
+  NSNumber* key = ExtensionRequestIdentifier(request);
+  if (!key) return;
+  NSMutableDictionary* initiators = ExtensionRequestInitiators();
+  @synchronized(initiators) {
+    [initiators removeObjectForKey:key];
+  }
+}
+
+NSString* HeaderValue(const std::multimap<CefString, CefString>& headerMap,
+                      NSString* headerName) {
+  if (headerName.length == 0) return nil;
+  for (const auto& entry : headerMap) {
+    NSString* name = @(entry.first.ToString().c_str());
+    if ([name caseInsensitiveCompare:headerName] == NSOrderedSame) {
+      return @(entry.second.ToString().c_str());
+    }
+  }
+  return nil;
+}
+
+NSString* RequestHeaderValue(CefRefPtr<CefRequest> request,
+                             NSString* headerName) {
+  if (!request) return nil;
+  CefRequest::HeaderMap headerMap;
+  request->GetHeaderMap(headerMap);
+  return HeaderValue(headerMap, headerName);
+}
+
+NSString* ExtensionCORSOrigin(CefRefPtr<CefFrame> frame,
+                              CefRefPtr<CefRequest> request) {
+  if (!request) return nil;
+  NSString* urlString = @(request->GetURL().ToString().c_str());
+  NSURL* url = [NSURL URLWithString:urlString];
+  NSString* scheme = url.scheme.lowercaseString ?: @"";
+  if (![@[@"http", @"https"] containsObject:scheme]) return nil;
+  NSString* origin = RequestHeaderValue(request, @"Origin");
+  BOOL extensionOrigin =
+      origin.length > 0 &&
+      [[origin lowercaseString] hasPrefix:
+          [NSString stringWithFormat:@"%s://", mori::kExtensionScheme]];
+  NSString* initiator = RememberedExtensionRequestInitiator(request);
+  BOOL extensionInitiator =
+      initiator.length > 0 &&
+      [[initiator lowercaseString] hasPrefix:
+          [NSString stringWithFormat:@"%s://", mori::kExtensionScheme]];
+  NSDictionary* ext = extensionOrigin ? ExtensionRecordForOrigin(origin) : nil;
+  if (!ext && extensionInitiator) {
+    ext = ExtensionRecordForOrigin(initiator);
+  }
+  if (!ext) ext = ExtensionRecordForFrame(frame);
+  if (!ext) return nil;
+  NSDictionary* manifest = ManifestForExtension(ext);
+  if (!ExtensionHostPermissionsAllow(manifest, url)) return nil;
+
+  if (extensionOrigin) {
+    return origin;
+  }
+  if (extensionInitiator) {
+    return initiator;
+  }
+  NSString* extensionID =
+      [ext[@"id"] isKindOfClass:NSString.class] ? ext[@"id"] : @"";
+  return extensionID.length > 0
+      ? [NSString stringWithFormat:@"%s://%@",
+                                   mori::kExtensionScheme,
+                                   extensionID.lowercaseString]
+      : nil;
+}
+
+void ResponseHeaderMapSet(CefResponse::HeaderMap& headerMap,
+                          const char* name,
+                          NSString* value) {
+  if (!name || value.length == 0) return;
+  for (auto it = headerMap.begin(); it != headerMap.end();) {
+    NSString* existing = @(it->first.ToString().c_str());
+    if ([existing caseInsensitiveCompare:@(name)] == NSOrderedSame) {
+      it = headerMap.erase(it);
+    } else {
+      ++it;
+    }
+  }
+  headerMap.insert(std::make_pair(CefString(name), CefString(value.UTF8String)));
+}
+
+CefRefPtr<CefResourceHandler> ExtensionPreflightResponse(
+    CefRefPtr<CefFrame> frame,
+    CefRefPtr<CefRequest> request) {
+  if (!request) return nullptr;
+  NSString* method = @(request->GetMethod().ToString().c_str());
+  if ([method caseInsensitiveCompare:@"OPTIONS"] != NSOrderedSame) {
+    return nullptr;
+  }
+  NSString* origin = ExtensionCORSOrigin(frame, request);
+  if (origin.length == 0) return nullptr;
+
+  NSString* allowedMethod =
+      RequestHeaderValue(request, @"Access-Control-Request-Method");
+  if (allowedMethod.length == 0) {
+    allowedMethod = @"GET, POST, PUT, PATCH, DELETE, OPTIONS";
+  }
+  NSString* allowedHeaders =
+      RequestHeaderValue(request, @"Access-Control-Request-Headers");
+  if (allowedHeaders.length == 0) allowedHeaders = @"*";
+
+  CefResponse::HeaderMap headers;
+  headers.insert(std::make_pair(CefString("Access-Control-Allow-Origin"),
+                                CefString(origin.UTF8String)));
+  headers.insert(std::make_pair(CefString("Access-Control-Allow-Credentials"),
+                                CefString("true")));
+  headers.insert(std::make_pair(CefString("Access-Control-Allow-Methods"),
+                                CefString(allowedMethod.UTF8String)));
+  headers.insert(std::make_pair(CefString("Access-Control-Allow-Headers"),
+                                CefString(allowedHeaders.UTF8String)));
+  headers.insert(std::make_pair(CefString("Access-Control-Max-Age"),
+                                CefString("600")));
+  headers.insert(std::make_pair(CefString("Cache-Control"),
+                                CefString("no-store")));
+  headers.insert(std::make_pair(CefString("Content-Length"),
+                                CefString("3")));
+  auto stream = CefStreamReader::CreateForData(const_cast<char*>("OK\n"), 3);
+  return new CefStreamResourceHandler(200, CefString("OK"),
+                                      CefString("text/plain"),
+                                      headers, stream);
+}
+
+void ApplyExtensionCORSHeaders(CefRefPtr<CefFrame> frame,
+                               CefRefPtr<CefRequest> request,
+                               CefRefPtr<CefResponse> response) {
+  if (!response) return;
+  NSString* origin = ExtensionCORSOrigin(frame, request);
+  if (origin.length == 0) return;
+
+  CefResponse::HeaderMap headers;
+  response->GetHeaderMap(headers);
+  ResponseHeaderMapSet(headers, "Access-Control-Allow-Origin", origin);
+  ResponseHeaderMapSet(headers, "Access-Control-Allow-Credentials", @"true");
+  ResponseHeaderMapSet(headers, "Access-Control-Allow-Methods",
+                       @"GET, POST, PUT, PATCH, DELETE, OPTIONS");
+  NSString* requestedHeaders =
+      RequestHeaderValue(request, @"Access-Control-Request-Headers");
+  if (requestedHeaders.length > 0) {
+    ResponseHeaderMapSet(headers, "Access-Control-Allow-Headers",
+                         requestedHeaders);
+  }
+  response->SetHeaderMap(headers);
+}
+
 NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
   // Canonicalize to lowercase: the page's runtime.id comes from the URL host
   // (mori-extension://<host>/…), which the URL parser lowercases, while the
@@ -2320,6 +2847,8 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
        "var i18nMessages=%@;"
        "var uiLanguage=%@;"
        "var hostBrowserInfo=%@;"
+       "var __moriNativeConsoleInfo=window.__moriNativeConsoleInfo||"
+       "(window.__moriNativeConsoleInfo=(function(){try{return Function.prototype.bind.call(console.info,console);}catch(e){return function(message){try{console.info(message);}catch(_){}};}})());"
 		       // Capture private aliases to our chrome/browser objects. Some
 		       // extensions (e.g. Proton Pass) replace globalThis.chrome/browser
 		       // with an anti-tampering Proxy shortly after load; their own code
@@ -2431,11 +2960,18 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
        "return Promise.resolve(result);"
        "};"
 	       "runtime.getBrowserInfo=runtime.getBrowserInfo||function(cb){"
-       "var result={name:hostBrowserInfo.name,vendor:hostBrowserInfo.vendor,version:hostBrowserInfo.version,buildID:hostBrowserInfo.buildID};"
-       "if(typeof cb==='function')cb(result);"
-       "return Promise.resolve(result);"
-       "};"
-	       "runtime.setUninstallURL=runtime.setUninstallURL||function(url,cb){"
+	       "var result={name:hostBrowserInfo.name,vendor:hostBrowserInfo.vendor,version:hostBrowserInfo.version,buildID:hostBrowserInfo.buildID};"
+	       "if(typeof cb==='function')cb(result);"
+	       "return Promise.resolve(result);"
+	       "};"
+		      "try{"
+		      "if(String(location.protocol)==='mori-extension:'){"
+		      "Object.defineProperty(Navigator.prototype,'onLine',{configurable:true,get:function(){return true;}});"
+		      "try{Object.defineProperty(navigator,'onLine',{configurable:true,get:function(){return true;}});}catch(_e){}"
+		      "setTimeout(function(){try{window.dispatchEvent(new Event('online'));}catch(_e){}},0);"
+		      "}"
+		      "}catch(e){}"
+		       "runtime.setUninstallURL=runtime.setUninstallURL||function(url,cb){"
 	       "var p=__moriExtCall('runtime.setUninstallURL',{url:String(url||'')});"
 	       "if(typeof cb==='function'){p.then(function(){cb();},function(error){runtime.lastError={message:error&&error.message?error.message:String(error)};try{cb();}finally{setTimeout(function(){delete runtime.lastError;},0);}});}"
 	       "return p;"
@@ -2738,6 +3274,13 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 	       "chrome.privacy.websites=chrome.privacy.websites||{};"
 	       "chrome.privacy.websites.thirdPartyCookiesAllowed=chrome.privacy.websites.thirdPartyCookiesAllowed||__moriPrivacySetting(true);"
 	       "chrome.privacy.websites.hyperlinkAuditingEnabled=chrome.privacy.websites.hyperlinkAuditingEnabled||__moriPrivacySetting(false);"
+	       "chrome.proxy=chrome.proxy||{};"
+	       "chrome.proxy.settings=chrome.proxy.settings||{"
+	       "onChange:__moriEvent(),"
+	       "get:function(details,cb){var p=__moriExtCall('proxy.settings.get',{details:details||{}});if(typeof cb==='function')p.then(cb);return p;},"
+	       "set:function(details,cb){var p=__moriExtCall('proxy.settings.set',{details:details||{}});if(typeof cb==='function')p.then(function(){cb();});return p;},"
+	       "clear:function(details,cb){var p=__moriExtCall('proxy.settings.clear',{details:details||{}});if(typeof cb==='function')p.then(function(){cb();});return p;}"
+	       "};"
 		       "runtime.ContextType=runtime.ContextType||{"
 		       "BACKGROUND:'BACKGROUND',POPUP:'POPUP',OFFSCREEN_DOCUMENT:'OFFSCREEN_DOCUMENT',TAB:'TAB'};"
 		       "function __moriLocalExtensionContexts(filter){"
@@ -3004,7 +3547,7 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
        "var promise=new Promise(function(resolve,reject){"
        "window.__moriExtCallbacks[rid]={resolve:resolve,reject:reject};"
        "});"
-       "console.info('__MORI_EXTENSION__'+JSON.stringify({"
+       "__moriNativeConsoleInfo('__MORI_EXTENSION__'+JSON.stringify({"
        "requestId:rid,extensionId:extId,method:method,args:args||{}"
        "}));"
        "return promise;"
@@ -3021,18 +3564,175 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
        "if(response.deferred)return;"
        "delete window.__moriExtCallbacks[response.requestId];"
        "if(response.error)cb.reject(new Error(response.error));"
+       // A soft decline (no context answered) resolves to undefined, matching
+       // Chrome's runtime.sendMessage contract, so callers that branch on an
+       // undefined reply behave correctly instead of seeing a literal null.
+       "else if(response.noResponse)cb.resolve(undefined);"
        "else cb.resolve(response.result);"
        "};"
-	       "window.__moriExtDispatchMessage=window.__moriExtDispatchMessage||function(extensionId,message,requestId,sourceUrl,sourceOrigin){"
+       "if(String(location.protocol)==='mori-extension:'&&!globalThis.__moriClipboardWrapped){"
+       "globalThis.__moriClipboardWrapped=true;"
+       "var __moriClipboardCache='';"
+       "var __moriClipboardCacheReady=false;"
+       "function __moriClipboardRefresh(){"
+       "return __moriExtCall('clipboard.readText',{}).then(function(text){"
+       "__moriClipboardCache=String(text||'');__moriClipboardCacheReady=true;return __moriClipboardCache;"
+       "},function(){return __moriClipboardCache;});"
+       "}"
+       "var __moriClipboardApi={"
+       "readText:function(){return __moriClipboardRefresh();},"
+       "writeText:function(text){__moriClipboardCache=String(text||'');__moriClipboardCacheReady=true;"
+       "return __moriExtCall('clipboard.writeText',{text:__moriClipboardCache}).then(function(){});}"
+       "};"
+       "try{Object.defineProperty(Navigator.prototype,'clipboard',{configurable:true,get:function(){return __moriClipboardApi;}});}catch(_e){}"
+       "try{Object.defineProperty(navigator,'clipboard',{configurable:true,value:__moriClipboardApi});}catch(_e){}"
+       "setTimeout(function(){__moriClipboardRefresh();},0);"
+       "addEventListener('focus',function(){__moriClipboardRefresh();},true);"
+       "var __moriOriginalExecCommand=document.execCommand&&document.execCommand.bind(document);"
+       "var __moriClipboardLastEditable=null;"
+       "function __moriClipboardRemember(el){"
+       "if(!el)return null;var tag=String(el.tagName||'').toUpperCase();"
+       "if(tag==='TEXTAREA'||tag==='INPUT'||el.isContentEditable){__moriClipboardLastEditable=el;return el;}"
+       "return null;"
+       "}"
+       "try{var __moriOriginalFocus=HTMLElement.prototype.focus;"
+       "HTMLElement.prototype.focus=function(){var result=__moriOriginalFocus.apply(this,arguments);__moriClipboardRemember(this);return result;};"
+       "}catch(_e){}"
+       "try{[HTMLInputElement&&HTMLInputElement.prototype,HTMLTextAreaElement&&HTMLTextAreaElement.prototype].forEach(function(proto){"
+       "if(!proto||!proto.select)return;var originalSelect=proto.select;"
+       "proto.select=function(){var result=originalSelect.apply(this,arguments);__moriClipboardRemember(this);return result;};"
+       "});}catch(_e){}"
+       "function __moriClipboardEditable(){"
+       "var el=document.activeElement;if(!el)return null;"
+       "var tag=String(el.tagName||'').toUpperCase();"
+       "if(tag==='TEXTAREA'||tag==='INPUT'||el.isContentEditable)return __moriClipboardRemember(el);"
+       "if(__moriClipboardLastEditable&&document.contains(__moriClipboardLastEditable))return __moriClipboardLastEditable;"
+       "return null;"
+       "}"
+       "function __moriClipboardEditableText(el){"
+       "el=el||__moriClipboardEditable();if(!el)return '';"
+       "var tag=String(el.tagName||'').toUpperCase();"
+       "if(tag==='TEXTAREA'||tag==='INPUT')return String(el.value||'');"
+       "return String(el.textContent||'');"
+       "}"
+       "function __moriClipboardSelectedText(){"
+       "var el=__moriClipboardEditable();"
+       "if(el){var tag=String(el.tagName||'').toUpperCase();"
+       "if(tag==='TEXTAREA'||tag==='INPUT'){var value=String(el.value||'');"
+       "var start=typeof el.selectionStart==='number'?el.selectionStart:0;"
+       "var end=typeof el.selectionEnd==='number'?el.selectionEnd:value.length;"
+       "return start!==end?value.slice(start,end):value;}"
+       "if(el.isContentEditable){"
+       "try{var selection=globalThis.getSelection&&globalThis.getSelection();var selected=selection?String(selection):'';return selected||String(el.textContent||'');}catch(_e){return String(el.textContent||'');}"
+       "}}"
+       "try{var selection=globalThis.getSelection&&globalThis.getSelection();return selection?String(selection):'';}catch(_e){return '';}"
+       "}"
+       "function __moriClipboardInsertText(text){"
+       "text=String(text||'');var el=__moriClipboardEditable();if(!el)return false;"
+       "var tag=String(el.tagName||'').toUpperCase();"
+       "if(tag==='TEXTAREA'||tag==='INPUT'){"
+       "var value=String(el.value||'');"
+       "var start=typeof el.selectionStart==='number'?el.selectionStart:value.length;"
+       "var end=typeof el.selectionEnd==='number'?el.selectionEnd:start;"
+       "el.value=value.slice(0,start)+text+value.slice(end);"
+       "try{el.selectionStart=el.selectionEnd=start+text.length;}catch(_e){}"
+       "try{el.dispatchEvent(new Event('input',{bubbles:true}));}catch(_e){}"
+       "return true;"
+       "}"
+       "if(el.isContentEditable&&__moriOriginalExecCommand){"
+       "try{return !!__moriOriginalExecCommand('insertText',false,text);}catch(_e){}"
+       "}"
+       "return false;"
+       "}"
+       "if(__moriOriginalExecCommand){var __moriExecCommandWrapper=function(command,showUI,value){"
+       "var name=String(command||'').toLowerCase();"
+       "if(name==='copy'||name==='cut'){"
+       "var selected=__moriClipboardSelectedText();var ok=false;"
+       "try{ok=!!__moriOriginalExecCommand(command,showUI,value);}catch(_e){}"
+       "if(selected.length>0||ok){__moriClipboardApi.writeText(selected).catch(function(){});}"
+       "return ok||selected.length>0;"
+       "}"
+       "if(name==='paste'){"
+       "var before=__moriClipboardEditableText();"
+       "var ok=false;try{ok=!!__moriOriginalExecCommand(command,showUI,value);}catch(_e){}"
+       "if(ok&&__moriClipboardEditableText()!==before)return true;"
+       "if(__moriClipboardCacheReady){__moriClipboardInsertText(__moriClipboardCache);}"
+       "__moriClipboardRefresh().then(function(text){"
+       "var empty=__moriClipboardEditableText().length===0;"
+       "if(empty)__moriClipboardInsertText(text);"
+       "});"
+       "return true;"
+       "}"
+       "return __moriOriginalExecCommand(command,showUI,value);"
+       "};"
+       "try{Object.defineProperty(document,'execCommand',{configurable:true,value:__moriExecCommandWrapper});}"
+       "catch(_e){try{document.execCommand=__moriExecCommandWrapper;}catch(_e2){}}"
+       "}"
+       "}"
+       "function __moriExtHeadersObject(raw){"
+       "var out={};if(!raw)return out;"
+       "try{new Headers(raw).forEach(function(value,key){out[key]=value;});return out;}catch(e){}"
+       "if(Array.isArray(raw)){raw.forEach(function(item){if(item&&item.length>=2)out[String(item[0])]=String(item[1]);});return out;}"
+       "try{Object.keys(raw).forEach(function(key){out[key]=String(raw[key]);});}catch(e){}"
+       "return out;"
+       "}"
+       "function __moriExtBase64Bytes(value){"
+       "var binary=atob(String(value||''));"
+       "var bytes=new Uint8Array(binary.length);"
+       "for(var i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);"
+       "return bytes;"
+       "}"
+       "if(String(location.protocol)==='mori-extension:'&&globalThis.fetch&&globalThis.Response&&!globalThis.__moriFetchWrapped){"
+       "globalThis.__moriFetchWrapped=true;"
+       "var __moriOriginalFetch=globalThis.fetch.bind(globalThis);"
+       "globalThis.fetch=function(input,init){"
+       "init=init||{};"
+       "var url=typeof input==='string'||input instanceof URL?String(input):(input&&input.url?String(input.url):'');"
+       "if(!/^https?:\\/\\//i.test(url))return __moriOriginalFetch(input,init);"
+       "var method=String(init.method||(input&&input.method)||'GET').toUpperCase();"
+       "var headers=__moriExtHeadersObject(input&&input.headers);"
+       "var initHeaders=__moriExtHeadersObject(init.headers);"
+       "Object.keys(initHeaders).forEach(function(key){headers[key]=initHeaders[key];});"
+       "var body=Object.prototype.hasOwnProperty.call(init,'body')?init.body:null;"
+       "if(body instanceof URLSearchParams)body=body.toString();"
+       "if(body!=null&&typeof body!=='string')return __moriOriginalFetch(input,init);"
+       "var credentials=String(init.credentials||(input&&input.credentials)||'same-origin');"
+       "return __moriExtCall('runtime.fetch',{url:url,method:method,headers:headers,body:body==null?null:String(body),credentials:credentials}).then(function(result){"
+       "return new Response(__moriExtBase64Bytes(result&&result.bodyBase64),{"
+       "status:(result&&result.status)||200,"
+       "statusText:(result&&result.statusText)||'',"
+       "headers:(result&&result.headers)||{}"
+       "});"
+       "});"
+       "};"
+       "}"
+	       "window.__moriExtDispatchMessage=window.__moriExtDispatchMessage||function(extensionId,message,requestId,sourceUrl,sourceOrigin,toContentScript,external,sourceTabId){"
 	       "if(extensionId!==extId)return;"
 	       // chrome.runtime.sendMessage never echoes back to the sending document;
 	       // the bridge broadcasts to every view, so skip the originator here. Else
 	       // the sender's own no-listener branch races a null response ahead of the
 	       // real reply from the background worker.
 	       "if(sourceUrl&&String(sourceUrl)===String(location.href))return;"
-	       "var listeners=(runtime.onMessage&&runtime.onMessage._listeners)||[];"
-	       "var sender={id:extId,url:sourceUrl?String(sourceUrl):String(location.href)};"
-	       "if(sourceOrigin)sender.origin=String(sourceOrigin);"
+	       // Internal runtime.sendMessage reaches extension contexts only (the
+	       // background worker, popup, options page, offscreen documents) — never
+	       // content scripts, matching Chrome. The bridge still broadcasts to every
+	       // view, so web-page frames bail out here. This is what keeps a content
+	       // script's declining onMessage handler from emitting a response that
+	       // races ahead of the background worker's real reply (the symptom: an
+	       // extension popup that goes blank because its sendMessage resolved to
+	       // null). tabs.sendMessage sets toContentScript to reach a tab on purpose.
+	       "if(!toContentScript&&String(location.protocol)!=='mori-extension:')return;"
+	       // An external message (from an externally_connectable web page, e.g. the
+	       // account.proton.me sign-in fork) fires onMessageExternal with a sender
+	       // that carries url/origin but NO id, so the extension classifies it as
+	       // external (sender.id !== runtime.id). Internal messages fire onMessage
+	       // with sender.id set to the extension id.
+	       "var listeners=(external?(runtime.onMessageExternal&&runtime.onMessageExternal._listeners):(runtime.onMessage&&runtime.onMessage._listeners))||[];"
+	       "var tabId=Number(sourceTabId);"
+	       "var sourceTab=isFinite(tabId)&&tabId>=0?{id:tabId,windowId:1,index:-1,active:true,highlighted:true,selected:true,pinned:false,incognito:false,status:'complete',url:sourceUrl?String(sourceUrl):''}:undefined;"
+	       "var sender=external?{url:sourceUrl?String(sourceUrl):'',origin:sourceOrigin?String(sourceOrigin):undefined}:{id:extId,url:sourceUrl?String(sourceUrl):String(location.href)};"
+	       "if(sourceTab)sender.tab=sourceTab;"
+	       "if(!external&&sourceOrigin)sender.origin=String(sourceOrigin);"
 	       "var responded=false,pending=false;"
 	       "listeners.slice().forEach(function(fn){"
 	       "function sendResponse(value){"
@@ -3049,8 +3749,14 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 	       "else if(result!==undefined&&result!==false){sendResponse(result);}"
 	       "}catch(e){console.error(e);sendResponse({error:e&&e.message?e.message:String(e)});}"
 	       "});"
+	       // No synchronous answer in this context. Report a *soft* decline instead
+	       // of an immediate null: another extension context (typically the
+	       // background worker) may still answer asynchronously, and the bridge
+	       // settles the request the instant a real reply arrives. The decline only
+	       // resolves the sender — to undefined, as Chrome does — if every context
+	       // stays silent past a short grace period.
 	       "if(!responded&&!pending&&requestId){"
-	       "__moriExtCall('runtime.messageResponse',{requestId:requestId,response:null});"
+	       "__moriExtCall('runtime.messageNoResponse',{requestId:requestId});"
 	       "}"
 	       "};"
        "window.__moriExtDispatchEvent=window.__moriExtDispatchEvent||function(eventName,args,extensionId){"
@@ -3089,11 +3795,11 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
        "connectInfo=connectInfo||{};"
        "return __moriOpenPort('tabs.connect',{tabId:tabId},connectInfo.name||'');"
        "};"
-       "window.__moriExtDispatchConnect=window.__moriExtDispatchConnect||function(extensionId,portId,name,sender,sourceUrl){"
-       "if(extensionId!==extId||String(sourceUrl||'')===String(location.href))return;"
-       "var port=__moriMakePort(portId,name,sender||{id:extId,url:String(location.href)});"
-	       "runtime.onConnect._fire(port);"
-       "};"
+	       "window.__moriExtDispatchConnect=window.__moriExtDispatchConnect||function(extensionId,portId,name,sender,sourceUrl,external){"
+	       "if(extensionId!==extId||String(sourceUrl||'')===String(location.href))return;"
+	       "var port=__moriMakePort(portId,name,sender||{id:extId,url:String(location.href)});"
+		      "(external&&runtime.onConnectExternal?runtime.onConnectExternal:runtime.onConnect)._fire(port);"
+	       "};"
        "window.__moriExtDispatchPortMessage=window.__moriExtDispatchPortMessage||function(extensionId,portId,message,sourceUrl){"
        "if(extensionId!==extId||String(sourceUrl||'')===String(location.href))return;"
        "var port=window.__moriExtPorts&&window.__moriExtPorts[portId];"
@@ -3443,7 +4149,7 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 	       "function __moriMirrorBrowserAPI(){"
 	       "try{"
 	       "var b=globalThis.browser=globalThis.browser||chrome;"
-	       "['runtime','i18n','storage','tabs','scripting','declarativeNetRequest','sidePanel','action','browserAction','pageAction','notifications','alarms','offscreen','commands','permissions','history','topSites','cookies','browsingData','downloads','sessions','management','bookmarks','contextMenus','menus','windows','identity','webNavigation','webRequest','idle','privacy','extension'].forEach(function(name){"
+	       "['runtime','i18n','storage','tabs','scripting','declarativeNetRequest','sidePanel','action','browserAction','pageAction','notifications','alarms','offscreen','commands','permissions','history','topSites','cookies','browsingData','downloads','sessions','management','bookmarks','contextMenus','menus','windows','identity','webNavigation','webRequest','idle','privacy','proxy','extension'].forEach(function(name){"
 	       "var src=chrome[name];if(!src)return;"
 	       "if(!b[name]){b[name]=src;return;}"
 	       "if((typeof src==='object'||typeof src==='function')&&(typeof b[name]==='object'||typeof b[name]==='function')){"
@@ -3773,6 +4479,10 @@ NSString* PermissionsDefaultsKey(NSString* extensionId) {
   return [@"mori.extensionPermissions." stringByAppendingString:extensionId ?: @""];
 }
 
+NSString* ProxySettingsDefaultsKey() {
+  return @"mori.proxySettings";
+}
+
 NSArray<NSString*>* PermissionStringArray(id raw) {
   NSMutableArray<NSString*>* out = [NSMutableArray array];
   if (![raw isKindOfClass:NSArray.class]) return out;
@@ -3840,6 +4550,71 @@ NSDictionary* EffectivePermissions(NSDictionary* manifest, NSString* extensionID
   }
 
   return @{@"permissions" : permissions, @"origins" : origins};
+}
+
+BOOL ExtensionHasEffectivePermission(NSString* extensionID, NSString* permission) {
+  if (extensionID.length == 0 || permission.length == 0) return NO;
+  NSDictionary* ext = EnabledExtensionRecordForID(extensionID);
+  NSDictionary* manifest = ManifestForExtension(ext ?: @{}) ?: @{};
+  NSDictionary* effective = EffectivePermissions(manifest, extensionID);
+  NSArray<NSString*>* permissions = PermissionStringArray(effective[@"permissions"]);
+  return [permissions containsObject:permission];
+}
+
+NSString* MoriClipboardReadText() {
+  __block NSString* text = @"";
+  void (^readBlock)(void) = ^{
+    NSString* value =
+        [[NSPasteboard generalPasteboard] stringForType:NSPasteboardTypeString];
+    text = value ?: @"";
+  };
+  if ([NSThread isMainThread]) {
+    readBlock();
+  } else {
+    dispatch_sync(dispatch_get_main_queue(), readBlock);
+  }
+  return text ?: @"";
+}
+
+BOOL MoriClipboardWriteText(NSString* text) {
+  __block BOOL ok = NO;
+  void (^writeBlock)(void) = ^{
+    NSPasteboard* pasteboard = [NSPasteboard generalPasteboard];
+    [pasteboard clearContents];
+    ok = [pasteboard setString:text ?: @"" forType:NSPasteboardTypeString];
+  };
+  if ([NSThread isMainThread]) {
+    writeBlock();
+  } else {
+    dispatch_sync(dispatch_get_main_queue(), writeBlock);
+  }
+  return ok;
+}
+
+NSDictionary* HandleClipboard(NSString* method,
+                              NSDictionary* args,
+                              NSString* extensionID) {
+  if ([method isEqualToString:@"clipboard.readText"]) {
+    if (!ExtensionHasEffectivePermission(extensionID, @"clipboardRead")) {
+      return @{@"error" : @"Extension does not have clipboardRead permission."};
+    }
+    return @{@"result" : MoriClipboardReadText()};
+  }
+
+  if ([method isEqualToString:@"clipboard.writeText"]) {
+    if (!ExtensionHasEffectivePermission(extensionID, @"clipboardWrite")) {
+      return @{@"error" : @"Extension does not have clipboardWrite permission."};
+    }
+    NSString* text = [args[@"text"] isKindOfClass:NSString.class]
+        ? args[@"text"]
+        : @"";
+    if (!MoriClipboardWriteText(text)) {
+      return @{@"error" : @"Could not write to the clipboard."};
+    }
+    return @{@"result" : @YES};
+  }
+
+  return @{@"error" : [NSString stringWithFormat:@"Unsupported clipboard method: %@", method]};
 }
 
 // Chrome match-pattern coverage: does a granted pattern (e.g. host_permission
@@ -4037,14 +4812,282 @@ NSDictionary* HandlePermissions(NSString* method,
   return @{@"error" : [NSString stringWithFormat:@"Unsupported permissions method: %@", method]};
 }
 
+NSDictionary* ProxyDefaultValue() {
+  return @{@"mode" : @"system"};
+}
+
+NSDictionary* StoredProxySettings() {
+  id raw = [[NSUserDefaults standardUserDefaults]
+      objectForKey:ProxySettingsDefaultsKey()];
+  if ([raw isKindOfClass:NSData.class]) {
+    id json = [NSJSONSerialization JSONObjectWithData:raw options:0 error:nil];
+    return [json isKindOfClass:NSDictionary.class] ? (NSDictionary*)json : @{};
+  }
+  return [raw isKindOfClass:NSDictionary.class] ? (NSDictionary*)raw : @{};
+}
+
+void StoreProxySettings(NSString* extensionID, NSDictionary* value) {
+  NSDictionary* record = @{
+    @"extensionId" : extensionID ?: @"",
+    @"value" : value ?: ProxyDefaultValue()
+  };
+  NSData* data = [NSJSONSerialization dataWithJSONObject:record
+                                                 options:0
+                                                   error:nil];
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  if (data) {
+    [defaults setObject:data forKey:ProxySettingsDefaultsKey()];
+  } else {
+    [defaults setObject:record forKey:ProxySettingsDefaultsKey()];
+  }
+  [defaults synchronize];
+}
+
+NSString* ProxyServerSpec(NSDictionary* proxy) {
+  if (![proxy isKindOfClass:NSDictionary.class]) return @"";
+  NSString* host = [proxy[@"host"] isKindOfClass:NSString.class]
+      ? proxy[@"host"]
+      : @"";
+  if (host.length == 0) return @"";
+  NSString* scheme = [proxy[@"scheme"] isKindOfClass:NSString.class]
+      ? [(NSString*)proxy[@"scheme"] lowercaseString]
+      : @"http";
+  NSInteger port = [proxy[@"port"] respondsToSelector:@selector(integerValue)]
+      ? [proxy[@"port"] integerValue]
+      : 0;
+  if (port <= 0 || port > 65535) {
+    return [NSString stringWithFormat:@"%@://%@", scheme, host];
+  }
+  return [NSString stringWithFormat:@"%@://%@:%ld",
+                                    scheme, host, (long)port];
+}
+
+NSString* ProxyRulesServerString(NSDictionary* rules) {
+  if (![rules isKindOfClass:NSDictionary.class]) return @"";
+  NSString* single = ProxyServerSpec(rules[@"singleProxy"]);
+  if (single.length > 0) return single;
+
+  NSMutableArray<NSString*>* parts = [NSMutableArray array];
+  NSDictionary<NSString*, NSString*>* names = @{
+    @"proxyForHttp" : @"http",
+    @"proxyForHttps" : @"https",
+    @"proxyForFtp" : @"ftp",
+    @"fallbackProxy" : @"fallback"
+  };
+  for (NSString* key in @[
+         @"proxyForHttp", @"proxyForHttps", @"proxyForFtp", @"fallbackProxy"
+       ]) {
+    NSString* spec = ProxyServerSpec(rules[key]);
+    if (spec.length > 0) {
+      [parts addObject:[NSString stringWithFormat:@"%@=%@",
+                                                  names[key], spec]];
+    }
+  }
+  return [parts componentsJoinedByString:@";"];
+}
+
+NSString* ProxyBypassListString(id bypassList) {
+  NSMutableArray<NSString*>* out = [NSMutableArray array];
+  if ([bypassList isKindOfClass:NSArray.class]) {
+    for (id item in (NSArray*)bypassList) {
+      if ([item isKindOfClass:NSString.class] && [item length] > 0) {
+        [out addObject:item];
+      }
+    }
+  }
+  return [out componentsJoinedByString:@";"];
+}
+
+CefRefPtr<CefValue> CefProxyPreferenceValue(NSDictionary* value) {
+  NSString* mode = [value[@"mode"] isKindOfClass:NSString.class]
+      ? [(NSString*)value[@"mode"] lowercaseString]
+      : @"system";
+  CefRefPtr<CefDictionaryValue> dict = CefDictionaryValue::Create();
+  dict->SetString(CefString("mode"), CefString(mode.UTF8String));
+
+  if ([mode isEqualToString:@"pac_script"]) {
+    NSDictionary* pac = [value[@"pacScript"] isKindOfClass:NSDictionary.class]
+        ? value[@"pacScript"]
+        : @{};
+    NSString* pacURL = [pac[@"url"] isKindOfClass:NSString.class] ? pac[@"url"] : @"";
+    if (pacURL.length > 0) {
+      dict->SetString(CefString("pac_url"), CefString(pacURL.UTF8String));
+    }
+  } else if ([mode isEqualToString:@"fixed_servers"]) {
+    NSDictionary* rules = [value[@"rules"] isKindOfClass:NSDictionary.class]
+        ? value[@"rules"]
+        : @{};
+    NSString* server = ProxyRulesServerString(rules);
+    if (server.length > 0) {
+      dict->SetString(CefString("server"), CefString(server.UTF8String));
+    }
+    NSString* bypass = ProxyBypassListString(rules[@"bypassList"]);
+    if (bypass.length > 0) {
+      dict->SetString(CefString("bypass_list"), CefString(bypass.UTF8String));
+    }
+  }
+
+  CefRefPtr<CefValue> pref = CefValue::Create();
+  pref->SetDictionary(dict);
+  return pref;
+}
+
+BOOL ApplyProxySettingsToCEF(NSDictionary* value, NSString** error) {
+  CefRefPtr<CefRequestContext> context = CefRequestContext::GetGlobalContext();
+  if (!context) {
+    if (error) *error = @"CEF request context is unavailable.";
+    return NO;
+  }
+
+  CefString cefError;
+  CefRefPtr<CefValue> pref = CefProxyPreferenceValue(value ?: ProxyDefaultValue());
+  bool ok = context->SetPreference(CefString("proxy"), pref, cefError);
+  if (!ok) {
+    NSString* mode = [value[@"mode"] isKindOfClass:NSString.class]
+        ? [(NSString*)value[@"mode"] lowercaseString]
+        : @"system";
+    if ([mode isEqualToString:@"system"]) {
+      cefError.clear();
+      ok = context->SetPreference(CefString("proxy"), nullptr, cefError);
+    }
+  }
+  if (!ok && error) {
+    std::string messageUTF8 = cefError.ToString();
+    NSString* message = [NSString stringWithUTF8String:messageUTF8.c_str()] ?: @"";
+    *error = message.length > 0 ? message : @"Could not apply proxy settings.";
+  }
+  return ok;
+}
+
+BOOL ProxyModeAllowed(NSString* mode) {
+  return [@[
+    @"direct", @"auto_detect", @"pac_script", @"fixed_servers", @"system"
+  ] containsObject:mode ?: @""];
+}
+
+NSDictionary* HandleProxySettings(NSString* method,
+                                  NSDictionary* args,
+                                  NSString* extensionID) {
+  NSDictionary* stored = StoredProxySettings();
+  NSString* owner = [stored[@"extensionId"] isKindOfClass:NSString.class]
+      ? stored[@"extensionId"]
+      : @"";
+  NSDictionary* currentValue = [stored[@"value"] isKindOfClass:NSDictionary.class]
+      ? stored[@"value"]
+      : ProxyDefaultValue();
+  BOOL controlledByThis =
+      owner.length > 0 &&
+      [owner caseInsensitiveCompare:extensionID ?: @""] == NSOrderedSame;
+  NSString* level = controlledByThis ? @"controlled_by_this_extension"
+      : (owner.length > 0 ? @"controlled_by_other_extensions"
+                          : @"controllable_by_this_extension");
+
+  if ([method isEqualToString:@"proxy.settings.get"]) {
+    return @{@"result" : @{@"levelOfControl" : level,
+                           @"value" : currentValue}};
+  }
+
+  if ([method isEqualToString:@"proxy.settings.set"]) {
+    if (owner.length > 0 && !controlledByThis) {
+      return @{@"error" : @"Proxy settings are controlled by another extension."};
+    }
+    NSDictionary* details = [args[@"details"] isKindOfClass:NSDictionary.class]
+        ? args[@"details"]
+        : @{};
+    NSDictionary* value = [details[@"value"] isKindOfClass:NSDictionary.class]
+        ? details[@"value"]
+        : nil;
+    NSString* mode = [value[@"mode"] isKindOfClass:NSString.class]
+        ? [(NSString*)value[@"mode"] lowercaseString]
+        : @"";
+    if (!value || !ProxyModeAllowed(mode)) {
+      return @{@"error" : @"proxy.settings.set requires a valid proxy mode."};
+    }
+    NSString* applyError = nil;
+    if (!ApplyProxySettingsToCEF(value, &applyError)) {
+      return @{@"error" : applyError ?: @"Could not apply proxy settings."};
+    }
+    StoreProxySettings(extensionID, value);
+    NSDictionary* change = @{@"levelOfControl" : @"controlled_by_this_extension",
+                             @"value" : value};
+    [MoriBrowserView dispatchExtensionEvent:@"proxy.settings.onChange"
+                                       args:@[ change ]
+                             forExtensionID:extensionID];
+    return @{@"result" : [NSNull null]};
+  }
+
+  if ([method isEqualToString:@"proxy.settings.clear"]) {
+    if (owner.length > 0 && !controlledByThis) {
+      return @{@"error" : @"Proxy settings are controlled by another extension."};
+    }
+    NSString* applyError = nil;
+    NSDictionary* value = ProxyDefaultValue();
+    if (!ApplyProxySettingsToCEF(value, &applyError)) {
+      return @{@"error" : applyError ?: @"Could not clear proxy settings."};
+    }
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    [defaults removeObjectForKey:ProxySettingsDefaultsKey()];
+    [defaults synchronize];
+    NSDictionary* change = @{@"levelOfControl" : @"controllable_by_this_extension",
+                             @"value" : value};
+    [MoriBrowserView dispatchExtensionEvent:@"proxy.settings.onChange"
+                                       args:@[ change ]
+                             forExtensionID:extensionID];
+    return @{@"result" : [NSNull null]};
+  }
+
+  return @{@"error" : [NSString stringWithFormat:@"Unsupported proxy method: %@", method]};
+}
+
+// Extension storage is persisted as JSON-encoded NSData rather than a raw
+// dictionary. chrome.storage values come straight from JSON, so they can hold
+// `null` (NSNull), which NSUserDefaults' property-list store cannot serialize —
+// a single null field anywhere in the object made the whole write throw
+// "Attempt to insert non-property list object", silently dropping the write.
+// That is exactly how a signed-in session (Proton Pass stores it under
+// chrome.storage.session with several optional null fields) failed to persist,
+// signing the user back out. JSON round-trips null and nested structures
+// faithfully, so the session survives.
 NSMutableDictionary* ExtensionStorage(NSString* extensionId, NSString* area) {
-  NSDictionary* stored = [[NSUserDefaults standardUserDefaults]
-      dictionaryForKey:ExtensionStorageDefaultsKey(extensionId, area)];
-  return stored ? [stored mutableCopy] : [NSMutableDictionary dictionary];
+  NSString* key = ExtensionStorageDefaultsKey(extensionId, area);
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  id raw = [defaults objectForKey:key];
+  if ([raw isKindOfClass:[NSData class]]) {
+    id parsed = [NSJSONSerialization JSONObjectWithData:raw
+                                                options:NSJSONReadingMutableContainers
+                                                  error:nil];
+    if ([parsed isKindOfClass:[NSDictionary class]]) {
+      return [parsed mutableCopy];
+    }
+  } else if ([raw isKindOfClass:[NSDictionary class]]) {
+    // Legacy plist-dictionary value written before the JSON migration; adopt it
+    // (the next write re-encodes it as JSON Data).
+    return [raw mutableCopy];
+  }
+  return [NSMutableDictionary dictionary];
 }
 
 NSMutableDictionary* ExtensionStorage(NSString* extensionId) {
   return ExtensionStorage(extensionId, @"local");
+}
+
+// Persist a storage area as JSON Data. Returns nil on success, or an error
+// string if the store cannot be encoded.
+NSString* WriteExtensionStorage(NSString* extensionId, NSString* area,
+                                NSDictionary* store) {
+  NSString* key = ExtensionStorageDefaultsKey(extensionId, area);
+  if (![NSJSONSerialization isValidJSONObject:store]) {
+    return @"Storage value is not JSON-serializable.";
+  }
+  NSError* error = nil;
+  NSData* data = [NSJSONSerialization dataWithJSONObject:store
+                                                 options:0
+                                                   error:&error];
+  if (!data) {
+    return error.localizedDescription ?: @"Failed to encode storage value.";
+  }
+  [[NSUserDefaults standardUserDefaults] setObject:data forKey:key];
+  return nil;
 }
 
 BOOL ParseStorageMethod(NSString* method, NSString** area, NSString** operation) {
@@ -4599,6 +5642,54 @@ BOOL CookieMatches(NSDictionary* cookie, NSDictionary* filter) {
   return YES;
 }
 
+NSString* CookieHeaderValue(NSArray<NSDictionary*>* cookies) {
+  NSMutableArray<NSString*>* parts = [NSMutableArray array];
+  for (NSDictionary* cookie in cookies) {
+    if (![cookie isKindOfClass:NSDictionary.class]) continue;
+    NSString* name = [cookie[@"name"] isKindOfClass:NSString.class]
+        ? cookie[@"name"]
+        : @"";
+    NSString* value = [cookie[@"value"] isKindOfClass:NSString.class]
+        ? cookie[@"value"]
+        : @"";
+    if (name.length == 0) continue;
+    [parts addObject:[NSString stringWithFormat:@"%@=%@", name, value]];
+  }
+  return [parts componentsJoinedByString:@"; "];
+}
+
+void StoreResponseCookiesInCEF(NSURL* url, NSHTTPURLResponse* response) {
+  if (!url || !response) return;
+  NSArray<NSHTTPCookie*>* cookies =
+      [NSHTTPCookie cookiesWithResponseHeaderFields:response.allHeaderFields
+                                            forURL:url];
+  if (cookies.count == 0) return;
+
+  CefRefPtr<CefCookieManager> manager =
+      CefCookieManager::GetGlobalManager(nullptr);
+  if (!manager) return;
+
+  for (NSHTTPCookie* nsCookie in cookies) {
+    if (nsCookie.name.length == 0) continue;
+    CefCookie cookie;
+    CefString(&cookie.name) = std::string(nsCookie.name.UTF8String);
+    CefString(&cookie.value) = std::string((nsCookie.value ?: @"").UTF8String);
+    if (nsCookie.domain.length > 0) {
+      CefString(&cookie.domain) = std::string(nsCookie.domain.UTF8String);
+    }
+    CefString(&cookie.path) =
+        std::string((nsCookie.path.length > 0 ? nsCookie.path : @"/").UTF8String);
+    cookie.secure = nsCookie.isSecure ? 1 : 0;
+    cookie.httponly = nsCookie.isHTTPOnly ? 1 : 0;
+    if (nsCookie.expiresDate) {
+      cookie.has_expires = 1;
+      cookie.expires =
+          CookieBaseTimeFromSeconds(nsCookie.expiresDate.timeIntervalSince1970);
+    }
+    manager->SetCookie(CefString(url.absoluteString.UTF8String), cookie, nullptr);
+  }
+}
+
 void ResolveExtensionBridge(NSString* requestId,
                             NSString* extensionId,
                             id result,
@@ -4838,7 +5929,188 @@ NSDictionary* HandleExtensionCookies(NSString* method,
   return @{@"error" : [NSString stringWithFormat:@"Unsupported cookies method: %@", method]};
 }
 
-NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON) {
+NSDictionary* HTTPHeadersDictionary(NSDictionary* rawHeaders) {
+  NSMutableDictionary* headers = [NSMutableDictionary dictionary];
+  if (![rawHeaders isKindOfClass:NSDictionary.class]) return headers;
+  for (id key in rawHeaders) {
+    id value = rawHeaders[key];
+    if (![key isKindOfClass:NSString.class]) continue;
+    if ([value isKindOfClass:NSString.class]) {
+      headers[key] = value;
+    } else if ([value respondsToSelector:@selector(stringValue)]) {
+      headers[key] = [value stringValue];
+    }
+  }
+  return headers;
+}
+
+class RuntimeFetchCookieVisitor : public CefCookieVisitor {
+ public:
+  explicit RuntimeFetchCookieVisitor(
+      void (^completion)(NSArray<NSDictionary*>* cookies))
+      : completion_([completion copy]) {}
+
+  bool Visit(const CefCookie& cookie,
+             int count,
+             int total,
+             bool& deleteCookie) override {
+    @autoreleasepool {
+      [cookies_ addObject:CookieDictionary(cookie)];
+      if (count + 1 >= total) {
+        SendIfNeeded();
+      }
+      return true;
+    }
+  }
+
+  void SendIfNeeded() {
+    if (sent_) return;
+    sent_ = YES;
+    void (^completion)(NSArray<NSDictionary*>*) = completion_;
+    if (completion) {
+      completion([cookies_ copy]);
+    }
+  }
+
+ private:
+  void (^completion_)(NSArray<NSDictionary*>*) = nil;
+  NSMutableArray<NSDictionary*>* cookies_ = [NSMutableArray array];
+  BOOL sent_ = NO;
+
+  IMPLEMENT_REFCOUNTING(RuntimeFetchCookieVisitor);
+};
+
+void ScheduleRuntimeFetchCookieFallback(
+    CefRefPtr<RuntimeFetchCookieVisitor> visitor) {
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.2 * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   visitor->SendIfNeeded();
+                 });
+}
+
+void StartRuntimeFetch(NSString* extensionId,
+                       NSString* requestId,
+                       NSString* rawURL,
+                       NSMutableURLRequest* request) {
+  NSURLSessionConfiguration* configuration =
+      NSURLSessionConfiguration.ephemeralSessionConfiguration;
+  configuration.HTTPShouldSetCookies = NO;
+  configuration.HTTPCookieAcceptPolicy = NSHTTPCookieAcceptPolicyNever;
+  __block NSURLSession* session =
+      [NSURLSession sessionWithConfiguration:configuration];
+  NSURLSessionDataTask* task =
+      [session dataTaskWithRequest:request
+                 completionHandler:^(NSData* data,
+                                     NSURLResponse* urlResponse,
+                                     NSError* error) {
+        NSMutableDictionary* bridgeResponse = [@{
+          @"requestId" : requestId ?: @"",
+          @"extensionId" : extensionId ?: @""
+        } mutableCopy];
+        if (error) {
+          bridgeResponse[@"error"] = error.localizedDescription ?: @"Fetch failed.";
+        } else {
+          NSHTTPURLResponse* http =
+              [urlResponse isKindOfClass:NSHTTPURLResponse.class]
+                  ? (NSHTTPURLResponse*)urlResponse
+                  : nil;
+          StoreResponseCookiesInCEF(urlResponse.URL ?: request.URL, http);
+          NSMutableDictionary* responseHeaders = [NSMutableDictionary dictionary];
+          for (id key in http.allHeaderFields) {
+            id value = http.allHeaderFields[key];
+            if ([key isKindOfClass:NSString.class]) {
+              responseHeaders[key] =
+                  [value isKindOfClass:NSString.class] ? value : [value description];
+            }
+          }
+          bridgeResponse[@"result"] = @{
+            @"url" : urlResponse.URL.absoluteString ?: rawURL,
+            @"status" : http ? @(http.statusCode) : @200,
+            @"statusText" : @"",
+            @"headers" : responseHeaders,
+            @"bodyBase64" : [(data ?: [NSData data])
+                base64EncodedStringWithOptions:0]
+          };
+        }
+        dispatch_async(dispatch_get_main_queue(), ^{
+          [MoriBrowserView dispatchExtensionBridgeResponse:bridgeResponse];
+        });
+        [session finishTasksAndInvalidate];
+      }];
+  [task resume];
+}
+
+NSDictionary* HandleRuntimeFetch(NSString* extensionId,
+                                 NSDictionary* args,
+                                 NSString* requestId) {
+  NSString* rawURL = [args[@"url"] isKindOfClass:NSString.class]
+      ? args[@"url"]
+      : @"";
+  NSURL* url = [NSURL URLWithString:rawURL];
+  NSString* scheme = url.scheme.lowercaseString ?: @"";
+  if (!url || ![@[@"http", @"https"] containsObject:scheme]) {
+    return @{@"error" : @"runtime.fetch only supports http(s) URLs."};
+  }
+
+  NSDictionary* ext = EnabledExtensionRecordForID(extensionId);
+  NSDictionary* manifest = ManifestForExtension(ext);
+  if (!ExtensionHostPermissionsAllow(manifest, url)) {
+    return @{@"error" : @"Extension host permissions do not allow this URL."};
+  }
+
+  NSString* method = [args[@"method"] isKindOfClass:NSString.class]
+      ? [(NSString*)args[@"method"] uppercaseString]
+      : @"GET";
+  if (method.length == 0) method = @"GET";
+
+  NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:url];
+  request.HTTPMethod = method;
+  request.timeoutInterval = 30.0;
+  request.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+  NSString* credentials = [args[@"credentials"] isKindOfClass:NSString.class]
+      ? args[@"credentials"]
+      : @"same-origin";
+  BOOL includeCookies =
+      [credentials isEqualToString:@"include"] ||
+      [credentials isEqualToString:@"same-origin"];
+  request.HTTPShouldHandleCookies = NO;
+
+  NSDictionary* headers = HTTPHeadersDictionary(args[@"headers"]);
+  for (NSString* name in headers) {
+    [request setValue:headers[name] forHTTPHeaderField:name];
+  }
+
+  NSString* body = [args[@"body"] isKindOfClass:NSString.class]
+      ? args[@"body"]
+      : nil;
+  if (body) {
+    request.HTTPBody = [body dataUsingEncoding:NSUTF8StringEncoding];
+  }
+
+  if (includeCookies) {
+    CefRefPtr<CefCookieManager> manager =
+        CefCookieManager::GetGlobalManager(nullptr);
+    CefRefPtr<RuntimeFetchCookieVisitor> visitor =
+        new RuntimeFetchCookieVisitor(^(NSArray<NSDictionary*>* cookies) {
+          NSString* cookieHeader = CookieHeaderValue(cookies);
+          if (cookieHeader.length > 0) {
+            [request setValue:cookieHeader forHTTPHeaderField:@"Cookie"];
+          }
+          StartRuntimeFetch(extensionId, requestId, rawURL, request);
+        });
+    if (manager &&
+        manager->VisitUrlCookies(CefString(rawURL.UTF8String), true, visitor)) {
+      ScheduleRuntimeFetchCookieFallback(visitor);
+      return @{@"deferred" : @YES, @"result" : [NSNull null]};
+    }
+  }
+
+  StartRuntimeFetch(extensionId, requestId, rawURL, request);
+  return @{@"deferred" : @YES, @"result" : [NSNull null]};
+}
+
+NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON,
+                                           int sourceTabID) {
   NSData* data = [requestJSON dataUsingEncoding:NSUTF8StringEncoding];
   if (!data) return nil;
   id parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
@@ -4898,8 +6170,12 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON) {
         changes[key] = change;
       }
       [store addEntriesFromDictionary:items];
-      [defaults setObject:store
-                   forKey:ExtensionStorageDefaultsKey(extensionId, storageArea)];
+      NSString* writeError =
+          WriteExtensionStorage(extensionId, storageArea, store);
+      if (writeError) {
+        response[@"error"] = writeError;
+        return response;
+      }
       response[@"result"] = @{};
       if (changes.count > 0) {
         response[@"storageChange"] = changes;
@@ -4926,8 +6202,12 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON) {
           }
         }
       }
-      [defaults setObject:store
-                   forKey:ExtensionStorageDefaultsKey(extensionId, storageArea)];
+      NSString* writeError =
+          WriteExtensionStorage(extensionId, storageArea, store);
+      if (writeError) {
+        response[@"error"] = writeError;
+        return response;
+      }
       response[@"result"] = @{};
       if (changes.count > 0) {
         response[@"storageChange"] = changes;
@@ -4967,6 +6247,31 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON) {
         @"extensionId" : extensionId,
         @"result" : args[@"response"] ?: [NSNull null]
       }];
+      response[@"result"] = @{};
+    }
+  } else if ([method isEqualToString:@"runtime.messageNoResponse"]) {
+    NSString* targetRequestId = [args[@"requestId"] isKindOfClass:[NSString class]]
+        ? args[@"requestId"]
+        : @"";
+    if (targetRequestId.length == 0) {
+      response[@"error"] = @"Missing message response request id.";
+    } else {
+      // A context had no synchronous answer for this message. Resolve the
+      // sender only after a grace period: an asynchronous responder (the
+      // background worker reading storage, say) should win the race, and
+      // dispatchExtensionBridgeResponse is a no-op once a real reply has already
+      // settled the request. The noResponse flag makes the sender see undefined.
+      NSString* targetExtensionId = extensionId;
+      dispatch_after(
+          dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
+          dispatch_get_main_queue(), ^{
+            [MoriBrowserView dispatchExtensionBridgeResponse:@{
+              @"requestId" : targetRequestId,
+              @"extensionId" : targetExtensionId,
+              @"result" : [NSNull null],
+              @"noResponse" : @YES
+            }];
+          });
       response[@"result"] = @{};
     }
   } else if ([method isEqualToString:@"runtime.sendNativeMessage"]) {
@@ -5009,6 +6314,19 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON) {
     } else {
       response[@"result"] = nativeResponse[@"result"] ?: @{};
     }
+  } else if ([method isEqualToString:@"runtime.fetch"]) {
+    NSDictionary* fetchResponse = HandleRuntimeFetch(extensionId, args, requestId);
+    NSString* error = [fetchResponse[@"error"] isKindOfClass:[NSString class]]
+        ? fetchResponse[@"error"]
+        : nil;
+    if (error.length > 0) {
+      response[@"error"] = error;
+    } else {
+      if ([fetchResponse[@"deferred"] boolValue]) {
+        response[@"deferred"] = @YES;
+      }
+      response[@"result"] = fetchResponse[@"result"] ?: [NSNull null];
+    }
   } else if ([method isEqualToString:@"runtime.sendMessage"]) {
     NSString* targetExtensionId =
         [args[@"targetExtensionId"] isKindOfClass:NSString.class]
@@ -5021,11 +6339,22 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON) {
         [args[@"sourceOrigin"] isKindOfClass:NSString.class]
             ? args[@"sourceOrigin"]
             : nil;
-    [MoriBrowserView dispatchExtensionMessage:args[@"message"] ?: [NSNull null]
+    id message = args[@"message"] ?: [NSNull null];
+    BOOL selfTarget =
+        [targetExtensionId caseInsensitiveCompare:extensionId] == NSOrderedSame;
+    BOOL allowsExternal =
+        ExtensionAllowsExternalConnect(targetExtensionId, sourceURL);
+    BOOL selfExternalAccountMessage =
+        selfTarget && allowsExternal &&
+        ExtensionMessageIsExternallyConnectableAccountType(message);
+    BOOL external = (!selfTarget && allowsExternal) || selfExternalAccountMessage;
+    [MoriBrowserView dispatchExtensionMessage:message
                                  forExtensionID:targetExtensionId
                                       requestID:requestId
                                       sourceURL:sourceURL
-                                   sourceOrigin:sourceOrigin];
+                                   sourceOrigin:sourceOrigin
+                                    sourceTabID:sourceTabID
+                                       external:external];
     response[@"deferred"] = @YES;
     response[@"result"] = [NSNull null];
   } else if ([method isEqualToString:@"runtime.connect"]) {
@@ -5042,20 +6371,29 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON) {
     NSString* sourceURL = [args[@"sourceUrl"] isKindOfClass:NSString.class]
         ? args[@"sourceUrl"]
         : @"";
-    NSMutableDictionary* sender = [@{@"id" : extensionId} mutableCopy];
-    if (sourceURL.length > 0) sender[@"url"] = sourceURL;
     NSString* sourceOrigin =
         [args[@"sourceOrigin"] isKindOfClass:NSString.class]
             ? args[@"sourceOrigin"]
             : @"";
+    BOOL selfTarget =
+        [targetExtensionId caseInsensitiveCompare:extensionId] == NSOrderedSame;
+    BOOL external =
+        !selfTarget && ExtensionAllowsExternalConnect(targetExtensionId, sourceURL);
+    NSMutableDictionary* sender =
+        external ? [NSMutableDictionary dictionary] : [@{@"id" : extensionId} mutableCopy];
+    if (sourceURL.length > 0) sender[@"url"] = sourceURL;
     if (sourceOrigin.length > 0) {
       sender[@"origin"] = sourceOrigin;
+    }
+    NSDictionary* sourceTab = ExtensionSenderTab(sourceTabID, sourceURL);
+    if (sourceTab) {
+      sender[@"tab"] = sourceTab;
     }
     if ([args[@"frameId"] respondsToSelector:@selector(integerValue)]) {
       sender[@"frameId"] = @([args[@"frameId"] integerValue]);
     }
     BroadcastExtensionPortConnect(targetExtensionId, portID, name, sender,
-                                  sourceURL);
+                                  sourceURL, external);
     response[@"result"] = @{};
   } else if ([method isEqualToString:@"runtime.portMessage"]) {
     NSString* portID = [args[@"portId"] isKindOfClass:NSString.class]
@@ -5178,6 +6516,16 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON) {
     } else {
       response[@"result"] = notificationsResponse[@"result"] ?: [NSNull null];
     }
+  } else if ([method hasPrefix:@"clipboard."]) {
+    NSDictionary* clipboardResponse = HandleClipboard(method, args, extensionId);
+    NSString* error = [clipboardResponse[@"error"] isKindOfClass:[NSString class]]
+        ? clipboardResponse[@"error"]
+        : nil;
+    if (error.length > 0) {
+      response[@"error"] = error;
+    } else {
+      response[@"result"] = clipboardResponse[@"result"] ?: [NSNull null];
+    }
   } else if ([method hasPrefix:@"permissions."]) {
     NSDictionary* permissionsResponse = HandlePermissions(method, args, extensionId);
     NSString* error = [permissionsResponse[@"error"] isKindOfClass:[NSString class]]
@@ -5187,6 +6535,16 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON) {
       response[@"error"] = error;
     } else {
       response[@"result"] = permissionsResponse[@"result"] ?: [NSNull null];
+    }
+  } else if ([method hasPrefix:@"proxy.settings."]) {
+    NSDictionary* proxyResponse = HandleProxySettings(method, args, extensionId);
+    NSString* error = [proxyResponse[@"error"] isKindOfClass:[NSString class]]
+        ? proxyResponse[@"error"]
+        : nil;
+    if (error.length > 0) {
+      response[@"error"] = error;
+    } else {
+      response[@"result"] = proxyResponse[@"result"] ?: [NSNull null];
     }
   } else if ([method hasPrefix:@"declarativeNetRequest."]) {
     NSDictionary* dnrResponse =
@@ -5237,7 +6595,7 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON) {
     if ([args[@"tabId"] respondsToSelector:@selector(integerValue)]) {
       sender[@"tab"] = @{@"id" : @([args[@"tabId"] integerValue])};
     }
-    BroadcastExtensionPortConnect(extensionId, portID, name, sender, sourceURL);
+    BroadcastExtensionPortConnect(extensionId, portID, name, sender, sourceURL, NO);
     response[@"result"] = @{};
   } else if ([method hasPrefix:@"tabs."]) {
     NSMutableDictionary* tabArgs = [args mutableCopy];
@@ -5477,7 +6835,23 @@ BrowserClient::GetResourceRequestHandler(CefRefPtr<CefBrowser> browser,
                                          bool is_download,
                                          const CefString& request_initiator,
                                          bool& disable_default_handling) {
+  @autoreleasepool {
+    RememberExtensionRequestInitiator(request, request_initiator);
+  }
   return this;
+}
+
+CefRefPtr<CefResourceHandler>
+BrowserClient::GetResourceHandler(CefRefPtr<CefBrowser> browser,
+                                  CefRefPtr<CefFrame> frame,
+                                  CefRefPtr<CefRequest> request) {
+  CEF_REQUIRE_IO_THREAD();
+  @autoreleasepool {
+    CefRefPtr<CefResourceHandler> handler =
+        ExtensionPreflightResponse(frame, request);
+    if (handler) ForgetExtensionRequestInitiator(request);
+    return handler;
+  }
 }
 
 bool BrowserClient::GetAuthCredentials(CefRefPtr<CefBrowser> browser,
@@ -5511,6 +6885,11 @@ BrowserClient::ReturnValue BrowserClient::OnBeforeResourceLoad(
     int tabID = extension_tab_id_.load();
     NSDictionary* details = WebRequestDetails(frame, request, tabID);
     DispatchWebRequestEvent(@"webRequest.onBeforeRequest", details);
+    if (MoriAdBlockerShouldBlockRequest(request)) {
+      DispatchWebRequestEvent(@"webRequest.onErrorOccurred", details,
+                              @"net::ERR_BLOCKED_BY_CLIENT");
+      return RV_CANCEL;
+    }
     NSDictionary* dnrDecision = DeclarativeNetRequestDecision(request);
     NSString* dnrType = [dnrDecision[@"type"] isKindOfClass:NSString.class]
         ? dnrDecision[@"type"]
@@ -5546,6 +6925,7 @@ bool BrowserClient::OnResourceResponse(CefRefPtr<CefBrowser> browser,
                                        CefRefPtr<CefResponse> response) {
   CEF_REQUIRE_IO_THREAD();
   @autoreleasepool {
+    ApplyExtensionCORSHeaders(frame, request, response);
     int tabID = extension_tab_id_.load();
     NSMutableDictionary* details =
         [WebRequestDetails(frame, request, tabID) mutableCopy];
@@ -5576,6 +6956,7 @@ void BrowserClient::OnResourceLoadComplete(
     int tabID = extension_tab_id_.load();
     NSDictionary* details = WebRequestDetails(frame, request, tabID);
     NSNumber* statusCode = response ? @(response->GetStatus()) : nil;
+    ForgetExtensionRequestInitiator(request);
     if (status == UR_SUCCESS) {
       DispatchWebRequestEvent(@"webRequest.onCompleted", details, nil,
                               statusCode);
@@ -5690,7 +7071,8 @@ bool BrowserClient::OnConsoleMessage(CefRefPtr<CefBrowser> browser,
   if (msg.rfind(kExtensionPrefix, 0) == 0) {
     const std::string request = msg.substr(kExtensionPrefix.size());
     NSString* requestJSON = [NSString stringWithUTF8String:request.c_str()];
-    NSDictionary* response = HandleExtensionBridgeRequest(requestJSON);
+    NSDictionary* response =
+        HandleExtensionBridgeRequest(requestJSON, extension_tab_id_.load());
     if (response && browser) {
       NSString* js = [NSString
           stringWithFormat:@"if(window.__moriExtResolve)"

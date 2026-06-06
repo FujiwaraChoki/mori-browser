@@ -23,6 +23,7 @@ struct TabRow: View {
     var body: some View {
         HStack(spacing: 9) {
             Favicon(icon: tab.faviconURL, page: tab.urlString,
+                    image: tab.faviconImage,
                     isLoading: tab.isLoading, size: 15,
                     active: isSelected || hovering)
 
@@ -35,20 +36,21 @@ struct TabRow: View {
 
             Spacer(minLength: 0)
 
-            if hovering || isSelected {
-                Button(action: onClose) {
-                    Icon(name: "xmark", size: 11, weight: .bold)
-                        .foregroundStyle(p.mutedForeground.color)
-                        .frame(width: 18, height: 18)
-                        .background(
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(hovering ? p.sidebarForeground.color.opacity(0.10) : .clear)
-                        )
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Close tab")
+            Button(action: onClose) {
+                Icon(name: "xmark", size: 11, weight: .bold)
+                    .foregroundStyle(p.mutedForeground.color)
+                    .frame(width: 18, height: 18)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(hovering ? p.sidebarForeground.color.opacity(0.10) : .clear)
+                    )
+                    .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .help("Close tab")
+            .opacity(showsCloseButton ? 1 : 0)
+            .allowsHitTesting(showsCloseButton)
+            .accessibilityHidden(!showsCloseButton)
         }
         .padding(.horizontal, 9)
         .frame(height: 34)
@@ -63,6 +65,10 @@ struct TabRow: View {
         .onTapGesture(perform: onSelect)
         .onHover { hovering = $0 }
         .animation(Motion.state, value: isSelected)
+    }
+
+    private var showsCloseButton: Bool {
+        isSelected || hovering
     }
 
     private var backgroundFill: Color {

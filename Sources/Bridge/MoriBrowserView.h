@@ -24,6 +24,10 @@ typedef void (^MoriJavaScriptResultHandler)(id _Nullable result,
         canGoForward:(BOOL)canGoForward;
 - (void)browserView:(MoriBrowserView *)view
     didChangeFaviconURLs:(NSArray<NSString *> *)urls;
+/// The page's favicon, downloaded and decoded by Chromium. `image` is nil when
+/// the download failed, so the delegate should fall back to its own rendering.
+- (void)browserView:(MoriBrowserView *)view
+    didLoadFaviconImage:(nullable NSImage *)image;
 - (void)browserView:(MoriBrowserView *)view
     didStartNavigationToURL:(NSString *)url
                  isRedirect:(BOOL)isRedirect
@@ -137,6 +141,9 @@ typedef void (^MoriJavaScriptResultHandler)(id _Nullable result,
 /// Set the process-wide auto-PiP default applied to newly loaded pages.
 + (void)setAutoPiPEnabled:(BOOL)enabled;
 
+/// Set the process-wide built-in ad blocker state. Applies to future requests.
++ (void)setAdBlockerEnabled:(BOOL)enabled;
+
 /// Cancel an active Chromium-owned download by id.
 + (BOOL)cancelDownloadWithID:(uint32_t)downloadID;
 
@@ -160,6 +167,21 @@ typedef void (^MoriJavaScriptResultHandler)(id _Nullable result,
                        requestID:(nullable NSString *)requestID
                        sourceURL:(nullable NSString *)sourceURL
                     sourceOrigin:(nullable NSString *)sourceOrigin;
+/// `external` routes the message to onMessageExternal with an id-less sender
+/// (used for externally_connectable web pages such as the Proton sign-in fork).
++ (void)dispatchExtensionMessage:(id)message
+                  forExtensionID:(NSString *)extensionID
+                       requestID:(nullable NSString *)requestID
+                       sourceURL:(nullable NSString *)sourceURL
+                    sourceOrigin:(nullable NSString *)sourceOrigin
+                        external:(BOOL)external;
++ (void)dispatchExtensionMessage:(id)message
+                  forExtensionID:(NSString *)extensionID
+                       requestID:(nullable NSString *)requestID
+                       sourceURL:(nullable NSString *)sourceURL
+                    sourceOrigin:(nullable NSString *)sourceOrigin
+                     sourceTabID:(NSInteger)sourceTabID
+                        external:(BOOL)external;
 
 /// Resolve an extension bridge request in every live Chromium context. The
 /// frame with the matching pending request id consumes it; every other frame

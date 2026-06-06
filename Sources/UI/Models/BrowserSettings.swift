@@ -29,6 +29,16 @@ final class BrowserSettings: ObservableObject {
         didSet { defaults.set(customSearchTemplate, forKey: Key.customEngine) }
     }
 
+    // MARK: Privacy
+
+    /// Blocks ad-serving requests using Mori's bundled Block List Project list.
+    @Published var blockAds: Bool {
+        didSet {
+            defaults.set(blockAds, forKey: Key.blockAds)
+            MoriBrowserView.setAdBlockerEnabled(blockAds)
+        }
+    }
+
     // MARK: Appearance
 
     @Published var theme: ThemePreference {
@@ -105,6 +115,7 @@ final class BrowserSettings: ObservableObject {
         static let newTab = "mori.newTabBehavior"
         static let engine = "mori.searchEngine"
         static let customEngine = "mori.customSearchTemplate"
+        static let blockAds = "mori.blockAds"
         static let theme = "mori.theme"
         static let sidebarOnLaunch = "mori.showSidebarOnLaunch"
         static let sidebarPosition = "mori.sidebarPosition"
@@ -130,6 +141,7 @@ final class BrowserSettings: ObservableObject {
             ?? .google
         customSearchTemplate = defaults.string(forKey: Key.customEngine)
             ?? "https://www.example.com/search?q={query}"
+        blockAds = defaults.object(forKey: Key.blockAds) as? Bool ?? true
         theme = ThemePreference(rawValue: defaults.string(forKey: Key.theme) ?? "")
             ?? .system
         // Default the sidebar on (matches the Mori default chrome).
@@ -144,6 +156,7 @@ final class BrowserSettings: ObservableObject {
 
         // Apply the persisted auto-PiP default to the engine on startup.
         MoriBrowserView.setAutoPiPEnabled(autoPiP)
+        MoriBrowserView.setAdBlockerEnabled(blockAds)
     }
 }
 

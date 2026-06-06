@@ -155,9 +155,10 @@
   // collides with AppKit's built-in NSSplitViewController.toggleSidebar:, which
   // a responder in the SwiftUI/CEF chain claims and validates as disabled,
   // greying out the item. A unique name routes it straight to us.
-  [viewMenu addItemWithTitle:@"Toggle Sidebar"
-                      action:@selector(moriToggleSidebar:)
-               keyEquivalent:@"s"];
+  NSMenuItem* sidebarItem =
+      [viewMenu addItemWithTitle:@"Toggle Sidebar"
+                          action:@selector(moriToggleSidebar:)
+                   keyEquivalent:@"s"];
   [viewMenu addItemWithTitle:@"Toggle AI Assistant"
                       action:@selector(toggleAI:)
                keyEquivalent:@"k"];
@@ -228,7 +229,20 @@
   windowItem.submenu = windowMenu;
   NSApp.windowsMenu = windowMenu;
 
+  [self targetMoriMenuItemsInMenu:mainMenu];
   NSApp.mainMenu = mainMenu;
+}
+
+- (void)targetMoriMenuItemsInMenu:(NSMenu*)menu {
+  for (NSMenuItem* item in menu.itemArray) {
+    if (item.submenu) {
+      [self targetMoriMenuItemsInMenu:item.submenu];
+    }
+    SEL action = item.action;
+    if (action && [self respondsToSelector:action]) {
+      item.target = self;
+    }
+  }
 }
 
 // Menu actions that drive the SwiftUI store.

@@ -66,6 +66,7 @@ struct RootView: View {
         // anchored to the selected sidebar edge, live only while hidden.
         .overlay {
             SidebarPeekOverlay(store: store, palette: palette, scheme: scheme,
+                               gradientTheme: gradientTheme,
                                enabled: !store.sidebarVisible,
                                sidebarPosition: settings.sidebarPosition)
                 .ignoresSafeArea()
@@ -74,6 +75,12 @@ struct RootView: View {
         // relative to the entire app window, not just the web card.
         .overlay {
             LauncherOverlay(store: store, palette: palette, scheme: scheme)
+                .ignoresSafeArea()
+        }
+        // Transient notifications (link copied, etc.) — bottom-centered above
+        // everything so they read clearly regardless of the active panel.
+        .overlay {
+            ToastOverlay(center: ToastCenter.shared)
                 .ignoresSafeArea()
         }
         .overlay(alignment: .topLeading) {
@@ -109,11 +116,7 @@ struct RootView: View {
         .animation(Motion.reveal, value: store.aiPanelVisible)
         .animation(Motion.snappy, value: store.sidebarVisible)
         .animation(Motion.snappy, value: settings.sidebarPosition)
-        .sheet(isPresented: $store.settingsVisible) {
-            SettingsView(store: store)
-                .environment(\.palette, palette)
-                .preferredColorScheme(scheme)
-        }
+        .animation(Motion.reveal, value: store.settingsVisible)
     }
 
     /// The browser, wrapped in a floating rounded card with a hairline border
@@ -134,11 +137,30 @@ struct RootView: View {
                                  tab: activeTab,
                                  cornerRadius: Radius.window)
             }
+
+            // Settings renders as a full page inside the card, on top of the
+            // (suppressed) web content — not as a modal sheet.
+            if store.settingsVisible {
+                SettingsView(store: store)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.window, style: .continuous))
+                    .transition(.opacity)
+            }
         }
         .overlay(alignment: .topTrailing) {
             if store.findBarVisible, let tab = activeTab {
                 FindBar(store: store, tab: tab)
                     .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .overlay(alignment: .bottom) {
+            // Page-load indicator: a slim muted bar pinned to the bottom edge of
+            // the page, clipped to the card's rounded corners.
+            if let activeTab, activeTab.isLoading {
+                LoadingBar()
+                    .padding(.horizontal, Radius.window)
+                    .padding(.bottom, 1)
+                    .transition(.opacity)
+                    .animation(Motion.state, value: activeTab.isLoading)
             }
         }
         .overlay(

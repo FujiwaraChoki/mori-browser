@@ -15,6 +15,10 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     @Published var canGoBack: Bool = false
     @Published var canGoForward: Bool = false
     @Published var faviconURL: String?
+    /// The real site favicon, downloaded and decoded by Chromium (any format).
+    /// Preferred over `faviconURL` for display; `faviconURL` remains the
+    /// fallback (and the value reported to extensions / persisted).
+    @Published var faviconImage: NSImage?
     @Published var didFail: Bool = false
 
     /// Find-in-page results for the active query (1-based active match, total).
@@ -198,10 +202,17 @@ extension BrowserTab: MoriBrowserViewDelegate {
         }
     }
 
+    func browserView(_ view: MoriBrowserView, didLoadFaviconImage image: NSImage?) {
+        self.faviconImage = image
+    }
+
     func browserView(_ view: MoriBrowserView,
                      didStartNavigationToURL url: String,
                      isRedirect: Bool,
                      userGesture: Bool) {
+        // Drop the previous page's decoded icon so we don't show a stale favicon
+        // for the new page; Chromium re-delivers one once it resolves.
+        self.faviconImage = nil
         onExtensionNavigationEvent?("webNavigation.onBeforeNavigate", self, [
             "url": url,
             "frameId": 0,

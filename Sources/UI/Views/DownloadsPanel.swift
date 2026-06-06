@@ -171,7 +171,6 @@ private struct DownloadRow: View {
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture(count: 2) { downloads.open(item) }
-        .animation(Motion.state, value: hovering)
     }
 
     private var icon: String {

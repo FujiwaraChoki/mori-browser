@@ -224,7 +224,7 @@ private struct AIHistoryPopover: View {
             HStack(spacing: 7) {
                 Icon(name: "magnifyingglass", size: 13)
                     .foregroundStyle(.secondary)
-                TextField("Search titles", text: $searchText)
+                TextField("Search conversations", text: $searchText)
                     .textFieldStyle(.plain)
                     .font(Typography.ui(Typography.base))
             }

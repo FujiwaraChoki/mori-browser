@@ -16,19 +16,20 @@ struct SidebarPeekOverlay: NSViewRepresentable {
     @ObservedObject var store: BrowserStore
     var palette: ThemePalette
     var scheme: ColorScheme
+    var gradientTheme: GradientTheme
     /// Active only while the sidebar is hidden; otherwise fully pass-through.
     var enabled: Bool
     var sidebarPosition: SidebarPosition
 
     func makeNSView(context: Context) -> PeekContainerView {
         let view = PeekContainerView()
-        view.update(store: store, palette: palette, scheme: scheme,
+        view.update(store: store, palette: palette, scheme: scheme, gradientTheme: gradientTheme,
                     enabled: enabled, sidebarPosition: sidebarPosition)
         return view
     }
 
     func updateNSView(_ nsView: PeekContainerView, context: Context) {
-        nsView.update(store: store, palette: palette, scheme: scheme,
+        nsView.update(store: store, palette: palette, scheme: scheme, gradientTheme: gradientTheme,
                       enabled: enabled, sidebarPosition: sidebarPosition)
     }
 }
@@ -53,6 +54,7 @@ final class PeekContainerView: NSView {
     private weak var store: BrowserStore?
     private var palette: ThemePalette = .light
     private var scheme: ColorScheme = .light
+    private var gradientTheme: GradientTheme = .none
     private var sidebarPosition: SidebarPosition = .right
 
     override init(frame frameRect: NSRect) {
@@ -70,11 +72,16 @@ final class PeekContainerView: NSView {
     override var isFlipped: Bool { true }
 
     func update(store: BrowserStore, palette: ThemePalette, scheme: ColorScheme,
+                gradientTheme: GradientTheme,
                 enabled: Bool, sidebarPosition: SidebarPosition) {
         self.store = store
         self.palette = palette
         self.scheme = scheme
+        self.gradientTheme = gradientTheme
         self.sidebarPosition = sidebarPosition
+        let appearance = NSAppearance(named: scheme == .dark ? .darkAqua : .aqua)
+        self.appearance = appearance
+        hosting?.appearance = appearance
         if model.enabled != enabled {
             model.enabled = enabled
             if !enabled { setOpen(false) }
@@ -86,8 +93,10 @@ final class PeekContainerView: NSView {
         guard let store else { return }
         hosting?.rootView = AnyView(
             PeekUI(store: store, model: model, palette: palette, scheme: scheme,
+                   gradientTheme: gradientTheme,
                    sidebarPosition: sidebarPosition)
                 .environment(\.palette, palette)
+                .preferredColorScheme(scheme)
         )
     }
 
@@ -173,6 +182,7 @@ private struct PeekUI: View {
     @ObservedObject var model: PeekModel
     var palette: ThemePalette
     var scheme: ColorScheme
+    var gradientTheme: GradientTheme
     var sidebarPosition: SidebarPosition
 
     private let cardWidth: CGFloat = 256
@@ -219,20 +229,55 @@ private struct PeekUI: View {
             .frame(width: cardWidth)
             .frame(maxHeight: .infinity)
             .background {
-                ZStack {
-                    VisualEffectBackground(material: .sidebar)
-                    palette.sidebar.color.opacity(0.85)
-                }
+                PeekPanelBackground(palette: palette, scheme: scheme, gradientTheme: gradientTheme)
             }
             .clipShape(RoundedRectangle(cornerRadius: Radius.window, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: Radius.window, style: .continuous)
-                    .strokeBorder(palette.border.color.opacity(0.7), lineWidth: 1)
+                    .strokeBorder(palette.sidebarBorder.color.opacity(scheme == .dark ? 0.70 : 0.62),
+                                  lineWidth: 1)
             )
-            .shadow(color: .black.opacity(scheme == .dark ? 0.50 : 0.18),
-                    radius: 18, x: isLeft ? 6 : -6, y: 4)
+            .shadow(color: .black.opacity(scheme == .dark ? 0.46 : 0.16),
+                    radius: 22, x: isLeft ? 7 : -7, y: 5)
             .padding(.vertical, inset)
             .padding(isLeft ? .leading : .trailing, inset)
+    }
+}
+
+private struct PeekPanelBackground: View {
+    var palette: ThemePalette
+    var scheme: ColorScheme
+    var gradientTheme: GradientTheme
+
+    var body: some View {
+        ZStack {
+            VisualEffectBackground(material: .sidebar)
+            if gradientTheme.isEmpty {
+                palette.sidebar.color.opacity(scheme == .dark ? 0.82 : 0.86)
+            } else {
+                GradientEngine.chromeView(for: gradientTheme, scheme: scheme)
+                    .opacity(gradientTheme.opacity)
+                palette.sidebar.color.opacity(scheme == .dark ? 0.22 : 0.18)
+                if gradientTheme.texture > 0 {
+                    PeekGrainOverlay(amount: gradientTheme.texture)
+                }
+            }
+        }
+    }
+}
+
+private struct PeekGrainOverlay: View {
+    let amount: Double
+
+    var body: some View {
+        ZStack {
+            Color.white.opacity(0.035 * amount)
+                .blendMode(.overlay)
+            Color.black.opacity(0.025 * amount)
+                .blendMode(.multiply)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -247,16 +292,22 @@ private struct EdgeHandle: View {
     var body: some View {
         ZStack {
             Capsule()
-                .fill(p.foreground.color.opacity(0.22))
+                .fill(p.sidebarForeground.color.opacity(0.24))
                 .frame(width: 4, height: 40)
                 .opacity(open ? 0 : 1)
                 .scaleEffect(y: open ? 0.4 : 1, anchor: .center)
 
-            Icon(name: sidebarPosition == .left ? "chevron.right" : "chevron.left",
-                 size: 14, weight: .semibold)
-                .foregroundStyle(p.foreground.color.opacity(0.65))
-                .opacity(open ? 1 : 0)
-                .scaleEffect(open ? 1 : 0.5)
+            ZStack {
+                Circle()
+                    .fill(p.sidebar.color.opacity(0.58))
+                    .overlay(Circle().strokeBorder(p.sidebarBorder.color.opacity(0.55), lineWidth: 1))
+                Icon(name: sidebarPosition == .left ? "chevron.right" : "chevron.left",
+                     size: 13, weight: .semibold)
+                    .foregroundStyle(p.sidebarForeground.color.opacity(0.76))
+            }
+            .frame(width: 24, height: 24)
+            .opacity(open ? 1 : 0)
+            .scaleEffect(open ? 1 : 0.58)
         }
         .frame(width: 18, height: 44)
         .allowsHitTesting(false)

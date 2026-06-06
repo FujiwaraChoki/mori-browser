@@ -111,18 +111,25 @@ private struct LauncherView: View {
     private var items: [LauncherItem] { LauncherItem.build(query: query, store: store) }
 
     var body: some View {
-        ZStack {
-            // Invisible click-outside target; the page behind the launcher
-            // should stay visually unchanged.
-            Color.clear
-                .contentShape(Rectangle())
-                .onTapGesture { store.dismissLauncher() }
+        GeometryReader { geo in
+            ZStack(alignment: .top) {
+                // Invisible click-outside target; the page behind the launcher
+                // should stay visually unchanged.
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { store.dismissLauncher() }
 
-            card
-                .frame(maxWidth: LauncherMetrics.cardWidth)
-                .padding(.horizontal, LauncherMetrics.horizontalPadding)
+                // Pin the card's *top* edge to a fixed fraction down from the
+                // top of the window (Spotlight-style) so it only ever grows
+                // downward — its position stays fixed regardless of how many
+                // results are rendered.
+                card
+                    .frame(maxWidth: LauncherMetrics.cardWidth)
+                    .padding(.horizontal, LauncherMetrics.horizontalPadding)
+                    .padding(.top, geo.size.height * LauncherMetrics.topFraction)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             highlighted = 0
             DispatchQueue.main.async { fieldFocused = true }
@@ -160,8 +167,6 @@ private struct LauncherView: View {
 
     private var header: some View {
         HStack(spacing: 10) {
-            Icon(name: "mori", size: 17, weight: .regular)
-                .foregroundStyle(p.primary.color)
             Icon(name: "magnifyingglass", size: 15, weight: .regular)
                 .foregroundStyle(p.mutedForeground.color)
 
@@ -246,6 +251,8 @@ private enum LauncherMetrics {
         return rows * rowHeight + gaps * rowSpacing + resultsPadding * 2
     }()
     static let cornerRadius: CGFloat = Radius.popover
+    /// Fraction of the window height at which the card's top edge is pinned.
+    static let topFraction: CGFloat = 0.28
 }
 
 /// One launcher result: either an open tab (offers "Switch to Tab") or a history
@@ -260,12 +267,24 @@ private struct LauncherItem: Identifiable {
 
     static func build(query: String, store: BrowserStore) -> [LauncherItem] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let rawQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         var seen = Set<String>()
         var out: [LauncherItem] = []
 
         func favicon(for u: String) -> String? {
             guard let host = URL(string: u)?.host else { return nil }
             return "https://www.google.com/s2/favicons?domain=\(host)&sz=64"
+        }
+
+        if !rawQuery.isEmpty {
+            let resolved = URLInterpreter.resolve(rawQuery, settings: store.settings)
+            let isAddress = URLInterpreter.resolvesAsAddress(rawQuery)
+            seen.insert(resolved)
+            out.append(LauncherItem(id: "direct-\(resolved)",
+                                    title: isAddress ? "Open \(rawQuery)" : "Search \(rawQuery)",
+                                    url: resolved,
+                                    faviconURL: isAddress ? favicon(for: resolved) : nil,
+                                    tabID: nil))
         }
 
         // Open tabs first — all of them when idle, filtered while typing.

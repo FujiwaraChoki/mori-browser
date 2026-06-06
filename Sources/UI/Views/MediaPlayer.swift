@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The dynamic sidebar media player. Minimal but fully functional: artwork,
-/// scrubbable progress, skip ±10s, play/pause, mute, and Picture-in-Picture.
+/// The dynamic sidebar media player. A single compact row: artwork (with
+/// Picture-in-Picture on hover), title + channel, and skip ±10s / play-pause
+/// transport — over a thin scrubbable progress line.
 /// Appears only while a tab is playing/holding media; animates in and out.
 struct MediaPlayerStrip: View {
     @ObservedObject var store: BrowserStore
@@ -10,15 +11,14 @@ struct MediaPlayerStrip: View {
 
     @State private var scrubbing = false
     @State private var scrubValue: Double = 0
+    @State private var hoveringArt = false
 
     private var s: MediaState { media.state }
 
     var body: some View {
-        VStack(spacing: 7) {
-            // Top row: artwork + title/artist + PiP.
+        VStack(spacing: 8) {
             HStack(spacing: 9) {
                 artwork
-                    .onTapGesture { media.revealOwningTab(in: store) }
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(s.title.isEmpty ? "Playing" : s.title)
@@ -30,33 +30,18 @@ struct MediaPlayerStrip: View {
                         .foregroundStyle(p.mutedForeground.color)
                         .lineLimit(1)
                 }
-                Spacer(minLength: 2)
 
-                if s.canPiP || s.inPiP {
-                    PlayerButton(systemName: s.inPiP ? "pip.exit" : "pip.enter",
-                                 size: 13, active: s.inPiP) { media.togglePiP() }
-                        .help("Picture in Picture")
+                Spacer(minLength: 4)
+
+                HStack(spacing: 3) {
+                    PlayerButton(systemName: "gobackward.10") { media.skipBack() }
+                    PlayerButton(systemName: s.playing ? "pause.fill" : "play.fill",
+                                 prominent: true) { media.togglePlay() }
+                    PlayerButton(systemName: "goforward.10") { media.skipForward() }
                 }
             }
 
-            // Scrubber.
             scrubber
-
-            // Transport row.
-            HStack(spacing: 2) {
-                PlayerButton(systemName: "gobackward.10", size: 13) { media.skipBack() }
-                PlayerButton(systemName: s.playing ? "pause.fill" : "play.fill",
-                             size: 15, prominent: true) { media.togglePlay() }
-                PlayerButton(systemName: "goforward.10", size: 13) { media.skipForward() }
-                Spacer()
-                Text(timeLabel)
-                    .font(Typography.mono(Typography.small))
-                    .foregroundStyle(p.mutedForeground.color)
-                    .monospacedDigit()
-                Spacer()
-                PlayerButton(systemName: s.muted ? "speaker.slash.fill" : "speaker.wave.2.fill",
-                             size: 12, active: s.muted) { media.toggleMute() }
-            }
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 9)
@@ -88,18 +73,39 @@ struct MediaPlayerStrip: View {
                 artFallback
             }
         }
-        .frame(width: 34, height: 34)
+        .frame(width: 38, height: 38)
         .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(pipOverlay)
         .overlay(
             RoundedRectangle(cornerRadius: 7, style: .continuous)
                 .strokeBorder(p.sidebarBorder.color.opacity(0.4), lineWidth: 0.5)
         )
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .onTapGesture { media.revealOwningTab(in: store) }
+        .onHover { hoveringArt = $0 }
+    }
+
+    /// PiP affordance revealed when hovering the thumbnail.
+    @ViewBuilder private var pipOverlay: some View {
+        if (s.canPiP || s.inPiP), hoveringArt || s.inPiP {
+            Button { media.togglePiP() } label: {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(.black.opacity(s.inPiP ? 0.45 : 0.55))
+                    Icon(name: s.inPiP ? "pip.exit" : "pip.enter", size: 16, weight: .medium)
+                        .foregroundStyle(.white)
+                }
+            }
+            .buttonStyle(.plain)
+            .help("Picture in Picture")
+            .transition(.opacity)
+        }
     }
 
     private var artFallback: some View {
         ZStack {
             p.muted.color
-            Icon(name: s.isVideo ? "play.rectangle.fill" : "music.note", size: 17, weight: .regular)
+            Icon(name: s.isVideo ? "play.rectangle.fill" : "music.note", size: 18, weight: .regular)
                 .foregroundStyle(p.mutedForeground.color)
         }
     }
@@ -149,30 +155,14 @@ struct MediaPlayerStrip: View {
         let pos = scrubbing ? scrubValue : s.position
         return max(0, min(1, pos / s.duration))
     }
-
-    private var timeLabel: String {
-        let pos = scrubbing ? scrubValue : s.position
-        if s.duration <= 0 { return Self.fmt(pos) }
-        return "\(Self.fmt(pos)) / \(Self.fmt(s.duration))"
-    }
-
-    private static func fmt(_ t: Double) -> String {
-        guard t.isFinite, t >= 0 else { return "0:00" }
-        let total = Int(t)
-        let m = total / 60, sec = total % 60
-        if m >= 60 {
-            return String(format: "%d:%02d:%02d", m / 60, m % 60, sec)
-        }
-        return String(format: "%d:%02d", m, sec)
-    }
 }
 
-/// A compact, token-styled transport button (no transform-on-press).
+/// A transport button. The whole transport renders from one SF Symbol family
+/// at a single weight so the controls read as a uniform set; the prominent
+/// play/pause gets a solid primary disc with a contrasting glyph.
 private struct PlayerButton: View {
     let systemName: String
-    var size: CGFloat = 13
     var prominent: Bool = false
-    var active: Bool = false
     let action: () -> Void
 
     @Environment(\.palette) private var p
@@ -180,24 +170,26 @@ private struct PlayerButton: View {
 
     var body: some View {
         Button(action: action) {
-            Icon(name: systemName, size: size * 1.25, weight: prominent ? .semibold : .medium)
+            Image(systemName: systemName)
+                .font(.system(size: prominent ? 12 : 13, weight: .semibold))
                 .foregroundStyle(foreground)
-                .frame(width: prominent ? 32 : 26, height: prominent ? 32 : 26)
-                .background(
-                    Circle().fill(prominent
-                                  ? p.primary.color.opacity(hovering ? 0.16 : 0.12)
-                                  : (hovering ? p.foreground.color.opacity(0.07) : .clear))
-                )
-                .contentShape(Rectangle())
+                .frame(width: prominent ? 28 : 26, height: prominent ? 28 : 26)
+                .background(background)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .animation(Motion.state, value: hovering)
     }
 
     private var foreground: Color {
-        if prominent { return p.primary.color }
-        if active { return p.primary.color }
-        return p.sidebarForeground.color.opacity(0.85)
+        prominent ? p.primaryForeground.color : p.sidebarForeground.color.opacity(hovering ? 1 : 0.8)
+    }
+
+    @ViewBuilder private var background: some View {
+        if prominent {
+            Circle().fill(p.primary.color.opacity(hovering ? 0.9 : 1))
+        } else {
+            Circle().fill(hovering ? p.foreground.color.opacity(0.08) : .clear)
+        }
     }
 }

@@ -72,6 +72,9 @@ final class BrowserStore: ObservableObject {
         var id: UUID
         var url: String
         var title: String
+        /// Last known favicon URL, so a restored-but-unopened tab can show its
+        /// real icon (via the remote-load path) without realizing a CEF browser.
+        var faviconURL: String?
     }
 
     private struct PersistedSession: Codable {
@@ -176,7 +179,14 @@ final class BrowserStore: ObservableObject {
 
         let restoredTabs = decoded.tabs
             .filter { !$0.url.isEmpty }
-            .map { makeTab(id: $0.id, url: $0.url, title: $0.title.isEmpty ? "New Tab" : $0.title) }
+            .map { persisted -> BrowserTab in
+                let tab = makeTab(id: persisted.id, url: persisted.url,
+                                  title: persisted.title.isEmpty ? "New Tab" : persisted.title)
+                // Seed the last-known icon so the tab shows it immediately,
+                // before (or without) the browser ever being realized.
+                tab.faviconURL = persisted.faviconURL
+                return tab
+            }
         guard !restoredTabs.isEmpty else { return false }
 
         let liveIDs = Set(restoredTabs.map(\.id))
@@ -209,7 +219,7 @@ final class BrowserStore: ObservableObject {
         guard !tabs.isEmpty else { return }
         let liveIDs = Set(tabs.map(\.id))
         let state = PersistedSession(
-            tabs: tabs.map { PersistedTab(id: $0.id, url: $0.urlString, title: $0.title) },
+            tabs: tabs.map { PersistedTab(id: $0.id, url: $0.urlString, title: $0.title, faviconURL: $0.faviconURL) },
             selectedTabID: selectedTabID,
             pinnedTabIDs: pinnedTabIDs.filter { liveIDs.contains($0) },
             folders: folders.map { folder in
@@ -231,7 +241,7 @@ final class BrowserStore: ObservableObject {
         }
         tab.onExtensionTabUpdated = { [weak self] tab, changeInfo in
             self?.emitExtensionTabUpdated(tab, changeInfo: changeInfo)
-            if changeInfo["url"] != nil || changeInfo["title"] != nil {
+            if changeInfo["url"] != nil || changeInfo["title"] != nil || changeInfo["favIconUrl"] != nil {
                 self?.scheduleSessionSave()
             }
             if let url = changeInfo["url"] as? String {
@@ -261,6 +271,9 @@ final class BrowserStore: ObservableObject {
     }
 
     func selectTab(_ id: BrowserTab.ID) {
+        // Switching to a tab leaves the settings page — it covers the web card,
+        // so it would otherwise stay parked over the newly selected tab.
+        if settingsVisible { settingsVisible = false }
         let previous = selectedTabID
         selectedTabID = id
         selectedTab?.realize()
@@ -389,6 +402,19 @@ final class BrowserStore: ObservableObject {
         pasteboard.setString(url, forType: .string)
     }
 
+    /// Copy the active tab's link to the clipboard, confirming with a toast.
+    /// Backs the ⌘⇧C shortcut.
+    func copyCurrentTabURL() {
+        guard let url = selectedTab?.urlString, !url.isEmpty else {
+            ToastCenter.shared.show("No link to copy", icon: "xmark", style: .warning)
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(url, forType: .string)
+        ToastCenter.shared.show("Link copied to clipboard", icon: "link", style: .success)
+    }
+
     func closeOtherTabs(than id: BrowserTab.ID) {
         let ids = tabs
             .map(\.id)
@@ -499,6 +525,9 @@ final class BrowserStore: ObservableObject {
 
     /// Interpret omnibox text as either a URL or a search query.
     func navigate(_ input: String) {
+        // Loading a URL into the current tab means the user wants the page, not
+        // the settings page that's covering it.
+        if settingsVisible { settingsVisible = false }
         let resolved = MoriURLRewriter.rewrite(
             URLInterpreter.resolve(input, settings: settings))
         selectedTab?.load(resolved)
@@ -791,7 +820,10 @@ final class BrowserStore: ObservableObject {
             let requestID = args["messageRequestId"] ?? NSNull()
             let sourceURL = args["sourceUrl"] ?? NSNull()
             let sourceOrigin = args["sourceOrigin"] ?? NSNull()
-            let source = "if(window.__moriExtDispatchMessage){window.__moriExtDispatchMessage(\(jsonLiteral(extensionID)),\(jsonLiteral(message)),\(jsonLiteral(requestID)),\(jsonLiteral(sourceURL)),\(jsonLiteral(sourceOrigin)));}"
+            // The trailing true opts into content-script delivery: tabs.sendMessage
+            // is explicitly aimed at the content scripts running in this tab, unlike
+            // a runtime.sendMessage broadcast which reaches extension contexts only.
+            let source = "if(window.__moriExtDispatchMessage){window.__moriExtDispatchMessage(\(jsonLiteral(extensionID)),\(jsonLiteral(message)),\(jsonLiteral(requestID)),\(jsonLiteral(sourceURL)),\(jsonLiteral(sourceOrigin)),true);}"
             tab.realize().executeExtensionJavaScript(source, allFrames: true)
             return ["result": NSNull()]
 
@@ -1453,25 +1485,157 @@ enum MoriURLRewriter {
 /// Turns omnibox input into a navigable URL or a search, honoring the user's
 /// configured homepage and default search engine.
 enum URLInterpreter {
+    private static let allowedSchemes: Set<String> = [
+        "http", "https", "file", "about", "mori", "mori-extension",
+        ["chrome", "extension"].joined(separator: "-")
+    ]
+
     static func resolve(_ raw: String, settings: BrowserSettings) -> String {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.isEmpty { return settings.homepageURL }
 
         // Already has a scheme.
-        if let url = URL(string: text), let scheme = url.scheme,
-           scheme == "http" || scheme == "https" || scheme == "file" ||
-            scheme == "about" || scheme == "mori" || scheme == "mori-extension" ||
-            scheme == ["chrome", "extension"].joined(separator: "-") {
+        if hasAllowedScheme(text) {
             return text
         }
 
-        // Looks like a domain (has a dot, no spaces) → treat as URL.
-        let looksLikeDomain = text.contains(".") && !text.contains(" ")
-        if looksLikeDomain {
-            return "https://\(text)"
+        // Looks like an address without a scheme, including paths, ports,
+        // localhost, IPv4, and bracketed IPv6 hosts. Local addresses default
+        // to http since they rarely serve TLS.
+        if looksLikeWebAddress(text) {
+            return "\(defaultScheme(forAddress: text))://\(text)"
         }
 
         // Otherwise search with the configured engine.
         return settings.searchURL(for: text)
+    }
+
+    static func resolvesAsAddress(_ raw: String) -> Bool {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return false }
+        return hasAllowedScheme(text) || looksLikeWebAddress(text)
+    }
+
+    private static func hasAllowedScheme(_ text: String) -> Bool {
+        guard let scheme = URLComponents(string: text)?.scheme?.lowercased() else {
+            return false
+        }
+        return allowedSchemes.contains(scheme)
+    }
+
+    private static func looksLikeWebAddress(_ text: String) -> Bool {
+        guard text.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+              text.rangeOfCharacter(from: .controlCharacters) == nil,
+              !text.contains("://")
+        else {
+            return false
+        }
+
+        let authority = text.split(whereSeparator: { "/?#".contains($0) }).first.map(String.init) ?? ""
+        guard !authority.isEmpty else { return false }
+
+        if authority.lowercased() == "localhost" {
+            return true
+        }
+        if authority.lowercased().hasPrefix("localhost:") {
+            let port = String(authority.dropFirst("localhost:".count))
+            return isValidPort(port)
+        }
+
+        if authority.hasPrefix("[") {
+            guard let end = authority.firstIndex(of: "]") else { return false }
+            let host = String(authority[authority.index(after: authority.startIndex)..<end])
+            let suffix = authority[authority.index(after: end)...]
+            guard suffix.isEmpty || suffix.first == ":" else { return false }
+            if suffix.first == ":" {
+                let port = String(suffix.dropFirst())
+                guard isValidPort(port) else { return false }
+            }
+            return isIPv6Literal(host)
+        }
+
+        let parts = authority.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        if parts.count == 2, !isValidPort(String(parts[1])) {
+            return false
+        }
+
+        let host = parts.first.map(String.init) ?? ""
+        guard !host.isEmpty else { return false }
+
+        if isIPv4Literal(host) { return true }
+        return isDomainName(host)
+    }
+
+    /// Picks the implicit scheme for a scheme-less address. Local addresses
+    /// (localhost, *.localhost, loopback IPs) use http; everything else https.
+    private static func defaultScheme(forAddress text: String) -> String {
+        let authority = text.split(whereSeparator: { "/?#".contains($0) }).first.map(String.init) ?? ""
+        let host: String
+        if authority.hasPrefix("["), let end = authority.firstIndex(of: "]") {
+            host = String(authority[authority.index(after: authority.startIndex)..<end])
+        } else {
+            host = authority.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                .first.map(String.init) ?? ""
+        }
+        return isLocalHost(host) ? "http" : "https"
+    }
+
+    private static func isLocalHost(_ host: String) -> Bool {
+        let lower = host.lowercased()
+        if lower == "localhost" || lower.hasSuffix(".localhost") { return true }
+        if lower == "::1" { return true }
+        if isIPv4Literal(lower) { return lower.hasPrefix("127.") }
+        return false
+    }
+
+    private static func isDomainName(_ host: String) -> Bool {
+        let labels = host.split(separator: ".", omittingEmptySubsequences: false).map(String.init)
+        guard labels.count >= 2,
+              labels.allSatisfy({ !$0.isEmpty && $0.count <= 63 }),
+              let tld = labels.last,
+              tld.count >= 2,
+              tld.rangeOfCharacter(from: .letters) != nil
+        else {
+            return false
+        }
+
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
+        return labels.allSatisfy { label in
+            guard label.rangeOfCharacter(from: allowed.inverted) == nil else { return false }
+            return !(label.hasPrefix("-") || label.hasSuffix("-"))
+        }
+    }
+
+    private static func isIPv4Literal(_ host: String) -> Bool {
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        return parts.allSatisfy { part in
+            guard let value = Int(part), (0...255).contains(value) else { return false }
+            return String(value) == part || part == "0"
+        }
+    }
+
+    private static func isValidPort(_ raw: String) -> Bool {
+        guard let port = Int(raw), (0...65535).contains(port) else {
+            return false
+        }
+        return String(port) == raw || raw == "0"
+    }
+
+    private static func isIPv6Literal(_ host: String) -> Bool {
+        var hints = addrinfo(
+            ai_flags: AI_NUMERICHOST,
+            ai_family: AF_INET6,
+            ai_socktype: SOCK_STREAM,
+            ai_protocol: 0,
+            ai_addrlen: 0,
+            ai_canonname: nil,
+            ai_addr: nil,
+            ai_next: nil)
+        var result: UnsafeMutablePointer<addrinfo>?
+        defer {
+            if let result { freeaddrinfo(result) }
+        }
+        return getaddrinfo(host, nil, &hints, &result) == 0
     }
 }

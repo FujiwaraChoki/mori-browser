@@ -87,6 +87,67 @@ enum BrowserAutomation {
                 ],
                 "required": ["action"]
             ]
+        ],
+        [
+            "name": "mori_get_settings",
+            "description": "Read Mori's current browser settings: homepage, new-tab behavior, search engine (and custom template), appearance theme, sidebar visibility and position, auto Picture-in-Picture, and the active gradient theme preset.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [:]
+            ]
+        ],
+        [
+            "name": "mori_update_settings",
+            "description": "Change one or more of Mori's browser settings. Only the fields you provide are changed; omit a field to leave it untouched. Changes persist and apply live.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "homepageURL": [
+                        "type": "string",
+                        "description": "The page opened at launch and by 'new tab → homepage'. Accepts a full URL or 'mori://newtab/' for the built-in start page."
+                    ],
+                    "newTabBehavior": [
+                        "type": "string",
+                        "enum": ["homepage", "blank"],
+                        "description": "What a freshly opened tab loads."
+                    ],
+                    "searchEngine": [
+                        "type": "string",
+                        "enum": ["google", "duckduckgo", "bing", "brave", "custom"],
+                        "description": "Default search engine for address-bar queries. Use 'custom' together with customSearchTemplate."
+                    ],
+                    "customSearchTemplate": [
+                        "type": "string",
+                        "description": "Search URL used when searchEngine is 'custom'. Include '{query}' where the search terms go, e.g. 'https://example.com/search?q={query}'."
+                    ],
+                    "theme": [
+                        "type": "string",
+                        "enum": ["system", "light", "dark"],
+                        "description": "Appearance theme. 'system' follows macOS."
+                    ],
+                    "showSidebarOnLaunch": [
+                        "type": "boolean",
+                        "description": "Whether the tab sidebar is shown when the window opens."
+                    ],
+                    "sidebarPosition": [
+                        "type": "string",
+                        "enum": ["left", "right"],
+                        "description": "Which side of the window hosts the tab sidebar."
+                    ],
+                    "autoPiP": [
+                        "type": "boolean",
+                        "description": "Automatically enter Picture-in-Picture when switching away from a tab playing video."
+                    ],
+                    "gradientTheme": [
+                        "type": "string",
+                        "enum": [
+                            "none", "evangelion", "tokyo-ghoul", "demon-slayer",
+                            "jujutsu-kaisen", "chainsaw-man", "your-name", "sailor-moon"
+                        ],
+                        "description": "Apply a curated gradient chrome theme by preset id, or 'none' to clear the custom theme."
+                    ]
+                ]
+            ]
         ]
     ]
 
@@ -101,6 +162,11 @@ enum BrowserAutomation {
                 return BrowserToolResult(text: text, success: true)
             case "mori_browser_action":
                 return try await action(arguments: arguments, store: store)
+            case "mori_get_settings":
+                let text = try getSettings(store: store)
+                return BrowserToolResult(text: text, success: true)
+            case "mori_update_settings":
+                return try updateSettings(arguments: arguments, store: store)
             default:
                 throw BrowserAutomationError.unsupportedAction(tool)
             }
@@ -186,6 +252,96 @@ enum BrowserAutomation {
         default:
             throw BrowserAutomationError.unsupportedAction(action)
         }
+    }
+
+    @MainActor
+    private static func getSettings(store: BrowserStore) throws -> String {
+        let settings = store.settings
+        let payload: [String: Any] = [
+            "homepageURL": settings.homepageURL,
+            "newTabBehavior": settings.newTabBehavior.rawValue,
+            "searchEngine": settings.searchEngine.rawValue,
+            "customSearchTemplate": settings.customSearchTemplate,
+            "theme": settings.theme.rawValue,
+            "showSidebarOnLaunch": settings.showSidebarOnLaunch,
+            "sidebarPosition": settings.sidebarPosition.rawValue,
+            "autoPiP": settings.autoPiP,
+            "gradientTheme": settings.gradientTheme.isEmpty
+                ? "none"
+                : (settings.gradientTheme.presetID ?? "custom")
+        ]
+        return prettyJSON(payload)
+    }
+
+    @MainActor
+    private static func updateSettings(arguments: [String: Any],
+                                       store: BrowserStore) throws -> BrowserToolResult {
+        let settings = store.settings
+        var changes: [String] = []
+
+        if let value = string(arguments["homepageURL"]) {
+            settings.homepageURL = value
+            changes.append("homepage → \(value)")
+        }
+        if let raw = string(arguments["newTabBehavior"]) {
+            guard let value = NewTabBehavior(rawValue: raw) else {
+                throw BrowserAutomationError.unsupportedAction("Unknown newTabBehavior: \(raw)")
+            }
+            settings.newTabBehavior = value
+            changes.append("new-tab behavior → \(value.rawValue)")
+        }
+        if let raw = string(arguments["searchEngine"]) {
+            guard let value = SearchEngine(rawValue: raw) else {
+                throw BrowserAutomationError.unsupportedAction("Unknown searchEngine: \(raw)")
+            }
+            settings.searchEngine = value
+            changes.append("search engine → \(value.rawValue)")
+        }
+        if let value = string(arguments["customSearchTemplate"]) {
+            settings.customSearchTemplate = value
+            changes.append("custom search template → \(value)")
+        }
+        if let raw = string(arguments["theme"]) {
+            guard let value = ThemePreference(rawValue: raw) else {
+                throw BrowserAutomationError.unsupportedAction("Unknown theme: \(raw)")
+            }
+            settings.theme = value
+            changes.append("theme → \(value.rawValue)")
+        }
+        if let value = bool(arguments["showSidebarOnLaunch"]) {
+            settings.showSidebarOnLaunch = value
+            changes.append("show sidebar on launch → \(value)")
+        }
+        if let raw = string(arguments["sidebarPosition"]) {
+            guard let value = SidebarPosition(rawValue: raw) else {
+                throw BrowserAutomationError.unsupportedAction("Unknown sidebarPosition: \(raw)")
+            }
+            settings.sidebarPosition = value
+            changes.append("sidebar position → \(value.rawValue)")
+        }
+        if let value = bool(arguments["autoPiP"]) {
+            settings.autoPiP = value
+            changes.append("auto Picture-in-Picture → \(value)")
+        }
+        if let raw = string(arguments["gradientTheme"]) {
+            if raw == "none" {
+                settings.gradientTheme = .none
+                changes.append("gradient theme → none")
+            } else if let preset = ThemePreset.all.first(where: { $0.id == raw }) {
+                settings.gradientTheme = preset.theme
+                changes.append("gradient theme → \(preset.name)")
+            } else {
+                throw BrowserAutomationError.unsupportedAction("Unknown gradientTheme: \(raw)")
+            }
+        }
+
+        guard !changes.isEmpty else {
+            return BrowserToolResult(
+                text: "No settings were changed (no recognized fields provided).",
+                success: false
+            )
+        }
+        return BrowserToolResult(text: "Updated settings: " + changes.joined(separator: ", ") + ".", success: true)
     }
 
     @MainActor

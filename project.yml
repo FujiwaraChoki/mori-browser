@@ -103,6 +103,8 @@ targets:
         buildPhase: none
       - path: Sources/Resources/home.html
         buildPhase: resources
+      - path: Sources/Resources/blocklistproject-ads.txt
+        buildPhase: resources
     settings:
       base:
         PRODUCT_NAME: "Mori"

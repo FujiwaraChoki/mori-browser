@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "include/cef_client.h"
+#include "include/cef_image.h"
 
 // Pure-virtual sink the hosting view implements.
 class BrowserClientDelegate {
@@ -24,6 +25,12 @@ class BrowserClientDelegate {
                                     bool canGoBack,
                                     bool canGoForward) = 0;
   virtual void OnFaviconURLChange(const std::vector<std::string>& icon_urls) = 0;
+  // The site's favicon, downloaded and decoded by Chromium (handles ICO/SVG/
+  // data-URI/PNG alike) and re-encoded as PNG bytes. `png_bytes` is null / `len`
+  // 0 when the download failed, signalling the view to fall back.
+  virtual void OnFaviconImage(const std::string& image_url,
+                              const unsigned char* png_bytes,
+                              size_t len) = 0;
   virtual void OnBeforeBrowse(const std::string& url,
                               bool is_redirect,
                               bool user_gesture) = 0;
@@ -78,6 +85,9 @@ class BrowserClient : public CefClient,
                      const CefKeyEvent& event,
                      CefEventHandle os_event,
                      bool* is_keyboard_shortcut) override;
+  bool OnKeyEvent(CefRefPtr<CefBrowser> browser,
+                  const CefKeyEvent& event,
+                  CefEventHandle os_event) override;
 
   // CefRequestHandler
   bool OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
@@ -136,6 +146,9 @@ class BrowserClient : public CefClient,
                        const CefString& url) override;
   void OnFaviconURLChange(CefRefPtr<CefBrowser> browser,
                           const std::vector<CefString>& icon_urls) override;
+  // Invoked by the favicon download callback (CEF UI thread) with the decoded
+  // image; forwards PNG bytes to the delegate, or an empty result on failure.
+  void DeliverFaviconImage(const CefString& image_url, CefRefPtr<CefImage> image);
   // Captures the media agent's `__MORI_MEDIA__` console channel.
   bool OnConsoleMessage(CefRefPtr<CefBrowser> browser,
                         cef_log_severity_t level,
@@ -194,6 +207,10 @@ class BrowserClient : public CefClient,
       bool is_download,
       const CefString& request_initiator,
       bool& disable_default_handling) override;
+  CefRefPtr<CefResourceHandler> GetResourceHandler(
+      CefRefPtr<CefBrowser> browser,
+      CefRefPtr<CefFrame> frame,
+      CefRefPtr<CefRequest> request) override;
   bool GetAuthCredentials(CefRefPtr<CefBrowser> browser,
                           const CefString& origin_url,
                           bool isProxy,
@@ -228,6 +245,10 @@ class BrowserClient : public CefClient,
 // agent into newly loaded frames. Set from the Swift settings layer.
 void MoriSetAutoPiPEnabled(bool enabled);
 bool MoriAutoPiPEnabled();
+
+// Global built-in ad blocker preference, read by the resource request handler.
+void MoriSetAdBlockerEnabled(bool enabled);
+bool MoriAdBlockerEnabled();
 
 // Cancel an active Chromium-owned download by id. Returns false when the
 // callback is no longer live (already finished, canceled, or unknown).

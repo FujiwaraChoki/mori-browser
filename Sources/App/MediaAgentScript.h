@@ -1,7 +1,8 @@
 // JavaScript agent injected into every frame to power the sidebar media player
 // and automatic Picture-in-Picture.
 //
-//  • Detects the "primary" media element (the playing one, else the largest).
+//  • Detects the "primary" media element once it looks like a real playback
+//    session (playing with audio, or directly selected by the user).
 //  • Reports state changes to native via a console channel
 //    (`console.debug('__MORI_MEDIA__' + json)`), captured in
 //    BrowserClient::OnConsoleMessage.
@@ -16,10 +17,68 @@ static const char kMoriMediaAgent[] = R"JS(
   if (typeof window.__moriAutoPiP === 'undefined') { window.__moriAutoPiP = false; }
 
   var last = "";
+  var recentMediaGestureUntil = 0;
+
+  function closestElement(target, selector){
+    for (var n = target; n; n = n.parentNode || (n.host || null)) {
+      if (n.nodeType === 1 && n.matches && n.matches(selector)) { return n; }
+    }
+    return null;
+  }
+
+  function mediaFromTarget(target){
+    for (var n = target; n; n = n.parentNode || (n.host || null)) {
+      if (n.nodeType === 1 && (n.tagName === 'VIDEO' || n.tagName === 'AUDIO')) { return n; }
+    }
+    return null;
+  }
+
+  function hasAudibleTrack(el){
+    return !el.muted && (typeof el.volume !== 'number' || el.volume > 0);
+  }
+
+  function isYouTubePreview(el){
+    var host = location.hostname.replace(/^www\./,'');
+    if (host !== 'youtube.com' && host !== 'm.youtube.com') { return false; }
+    if (!el.muted) { return false; }
+    if (closestElement(el, '#movie_player, ytd-player, #shorts-player')) { return false; }
+    return true;
+  }
+
+  function mediaFromPlayerTarget(target){
+    var player = closestElement(target, '#movie_player, ytd-player, #shorts-player');
+    return player ? player.querySelector('video,audio') : null;
+  }
+
+  function eligible(el){
+    if (!el) { return false; }
+    if (isYouTubePreview(el)) { return false; }
+    if (el.__moriMediaEligible || el.__moriMediaUserSelected) { return true; }
+    if (!el.paused && hasAudibleTrack(el)) { return true; }
+    return !el.paused && Date.now() < recentMediaGestureUntil;
+  }
+
+  function markIfEligible(el){
+    if (eligible(el)) { el.__moriMediaEligible = true; }
+  }
+
+  ['pointerdown','click','keydown','touchstart'].forEach(function(ev){
+    document.addEventListener(ev, function(e){
+      var el = mediaFromTarget(e.target) || mediaFromPlayerTarget(e.target);
+      if (el) {
+        recentMediaGestureUntil = Date.now() + 4000;
+        el.__moriMediaUserSelected = true;
+        markIfEligible(el);
+      }
+    }, true);
+  });
 
   function pick(){
     var els = Array.prototype.slice.call(document.querySelectorAll('video,audio'));
-    els = els.filter(function(m){ return (m.currentSrc || m.src) && (m.duration > 0 || !m.paused); });
+    els.forEach(markIfEligible);
+    els = els.filter(function(m){
+      return (m.currentSrc || m.src) && (m.__moriMediaEligible || eligible(m));
+    });
     if (!els.length) { return null; }
     els.sort(function(a,b){
       var ap = a.paused ? 0 : 1, bp = b.paused ? 0 : 1;

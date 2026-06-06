@@ -86,6 +86,7 @@ final class ExtensionStore: ObservableObject {
     @Published private(set) var installingIDs: Set<String> = []
 
     private let defaults: UserDefaults
+    private let catalogIsEphemeral: Bool
     private var uninstallURLs: [String: String] = [:]
 
     private enum Key {
@@ -97,9 +98,11 @@ final class ExtensionStore: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        let environmentCatalog = ProcessInfo.processInfo.environment["MORI_EXTENSION_CATALOG_JSON"]
+        catalogIsEphemeral = environmentCatalog != nil
         uninstallURLs = defaults.dictionary(forKey: Key.uninstallURLs) as? [String: String] ?? [:]
 
-        if let environmentCatalog = ProcessInfo.processInfo.environment["MORI_EXTENSION_CATALOG_JSON"],
+        if let environmentCatalog,
            let data = environmentCatalog.data(using: .utf8),
            let decoded = try? JSONDecoder().decode([BrowserExtension].self, from: data) {
             extensions = decoded.filter {
@@ -504,7 +507,11 @@ final class ExtensionStore: ObservableObject {
     }
 
     func command(matching event: NSEvent) -> CommandDescriptor? {
-        commands().first { Self.shortcut($0.shortcut, matches: event) }
+        command(matching: MoriShortcutTrigger(event: event))
+    }
+
+    func command(matching trigger: MoriShortcutTrigger) -> CommandDescriptor? {
+        commands().first { Self.shortcut($0.shortcut, matches: trigger) }
     }
 
     private static func commandShortcut(in details: [String: Any]) -> String? {
@@ -518,6 +525,10 @@ final class ExtensionStore: ObservableObject {
     }
 
     private static func shortcut(_ shortcut: String, matches event: NSEvent) -> Bool {
+        Self.shortcut(shortcut, matches: MoriShortcutTrigger(event: event))
+    }
+
+    private static func shortcut(_ shortcut: String, matches trigger: MoriShortcutTrigger) -> Bool {
         var required = NSEvent.ModifierFlags()
         var key: String?
 
@@ -541,36 +552,11 @@ final class ExtensionStore: ObservableObject {
         }
 
         guard let key else { return false }
-        let flags = event.modifierFlags.intersection([.command, .shift, .option, .control])
-        guard flags == required else { return false }
-
-        let eventKey = normalizedCommandKey(for: event)
-        return eventKey == key
-    }
-
-    private static func normalizedCommandKey(for event: NSEvent) -> String {
-        switch event.keyCode {
-        case 123: return "left"
-        case 124: return "right"
-        case 125: return "down"
-        case 126: return "up"
-        case 49: return " "
-        default:
-            return normalizedCommandKey(event.charactersIgnoringModifiers ?? "")
-        }
+        return trigger.modifiers == required && trigger.key == key
     }
 
     private static func normalizedCommandKey(_ raw: String) -> String {
-        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "space": return " "
-        case "comma": return ","
-        case "period": return "."
-        case "left", "arrowleft": return "left"
-        case "right", "arrowright": return "right"
-        case "up", "arrowup": return "up"
-        case "down", "arrowdown": return "down"
-        default: return raw.uppercased()
-        }
+        MoriShortcutTrigger.normalizedPrintableKey(raw)
     }
 
     struct BackgroundRunner: Identifiable, Equatable {
@@ -1092,6 +1078,7 @@ final class ExtensionStore: ObservableObject {
     // MARK: - Persistence
 
     private func persist() {
+        guard !catalogIsEphemeral else { return }
         if let data = try? JSONEncoder().encode(extensions) {
             defaults.set(data, forKey: Key.catalog)
         }
@@ -1100,6 +1087,7 @@ final class ExtensionStore: ObservableObject {
     }
 
     private func persistUninstallURLs() {
+        guard !catalogIsEphemeral else { return }
         defaults.set(uninstallURLs, forKey: Key.uninstallURLs)
     }
 

@@ -17,18 +17,7 @@
 
 - (void)sendEvent:(NSEvent*)event {
   if (event.type == NSEventTypeKeyDown) {
-    NSEventModifierFlags m =
-        event.modifierFlags & NSEventModifierFlagDeviceIndependentFlagsMask;
-    BOOL candidate =
-        (m & (NSEventModifierFlagCommand | NSEventModifierFlagControl)) != 0;
     BOOL handled = [MoriRoot handleShortcutEvent:event];
-    if (candidate) {
-      NSLog(@"KEYDBG sendEvent code=%d chars=%@ mods=0x%lx handled=%d "
-            @"keyWin=%@ firstResp=%@",
-            (int)event.keyCode, event.charactersIgnoringModifiers,
-            (unsigned long)m, handled, NSApp.keyWindow.className,
-            NSApp.keyWindow.firstResponder.className);
-    }
     if (handled) return;
   }
 

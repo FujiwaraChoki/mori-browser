@@ -30,6 +30,121 @@ struct ThemePicker: View {
     }
 }
 
+// MARK: - Settings list
+
+/// The Settings counterpart to `ThemePicker`. Where the sidebar popover shows a
+/// compact two-column tile gallery, Settings has room to breathe — so themes are
+/// laid out as full-width rows inside a single grouped card: a wide swatch, the
+/// name and tagline, and a trailing check on the active row. This reads as a
+/// settings list (like the rest of the panel) rather than a gallery.
+struct ThemeList: View {
+    @ObservedObject private var settings = BrowserSettings.shared
+    @Environment(\.palette) private var p
+
+    private var activePresetID: String? { settings.gradientTheme.presetID }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ThemeRow(swatch: .neutral,
+                     name: "Default",
+                     subtitle: "System chrome",
+                     isSelected: settings.gradientTheme.isEmpty) {
+                settings.gradientTheme = .none
+            }
+            ForEach(ThemePreset.all) { preset in
+                Hairline().opacity(0.5)
+                ThemeRow(swatch: .gradient(preset.theme.dots.map(\.rgb.color)),
+                         name: preset.name,
+                         subtitle: preset.subtitle,
+                         isSelected: activePresetID == preset.id) {
+                    settings.gradientTheme = preset.theme
+                }
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+                .fill(p.card.color.opacity(0.4))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.xl, style: .continuous)
+                .strokeBorder(p.border.color.opacity(0.6), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+    }
+}
+
+/// A single themed row: wide swatch + name/tagline + a trailing check.
+private struct ThemeRow: View {
+    enum Swatch {
+        case neutral
+        case gradient([Color])
+    }
+
+    let swatch: Swatch
+    let name: String
+    let subtitle: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    @Environment(\.palette) private var p
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                swatchView
+                    .frame(width: 60, height: 36)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.md + 2, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Radius.md + 2, style: .continuous)
+                            .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+                    )
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(name)
+                        .font(Typography.ui(Typography.base, weight: .medium))
+                        .foregroundStyle(p.foreground.color)
+                    Text(subtitle)
+                        .font(Typography.ui(Typography.label))
+                        .foregroundStyle(p.mutedForeground.color)
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(p.primary.color)
+                    .opacity(isSelected ? 1 : 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .background(rowBackground)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(Motion.state, value: isSelected)
+    }
+
+    @ViewBuilder private var swatchView: some View {
+        switch swatch {
+        case .neutral:
+            LinearGradient(colors: [p.card.color, p.sidebar.color],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+        case .gradient(let colors):
+            GradientMesh(colors: colors, relativeBlur: 0.35, maxBlur: 18)
+        }
+    }
+
+    @ViewBuilder private var rowBackground: some View {
+        if isSelected {
+            p.primary.color.opacity(0.10)
+        } else if hovering {
+            p.foreground.color.opacity(0.05)
+        }
+    }
+}
+
 // MARK: - Tiles
 
 /// Shared tile geometry/chrome so the preset and default tiles read as one set.
@@ -79,7 +194,6 @@ private struct PresetTile: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .animation(Motion.state, value: hovering)
         .animation(Motion.state, value: isSelected)
     }
 
@@ -133,7 +247,6 @@ private struct DefaultTile: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
-        .animation(Motion.state, value: hovering)
         .animation(Motion.state, value: isSelected)
     }
 }

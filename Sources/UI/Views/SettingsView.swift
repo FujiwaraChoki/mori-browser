@@ -1,12 +1,17 @@
 import SwiftUI
 
-/// The preferences sheet. Styled to the Mori design system: quiet labels,
-/// token colors, rounded-xl surfaces, segmented appearance control.
+/// The preferences page. Rendered full-bleed inside the browser card (not a
+/// modal sheet). Styled to the Mori design system: quiet labels, token colors,
+/// rounded-xl surfaces, segmented appearance control. The scrolling content is
+/// centered and width-constrained so it stays readable on a wide window.
 struct SettingsView: View {
     @ObservedObject var store: BrowserStore
     @ObservedObject private var settings = BrowserSettings.shared
     @ObservedObject private var extensions = ExtensionStore.shared
     @Environment(\.palette) private var p
+
+    /// Comfortable reading column for the settings content.
+    private let contentWidth: CGFloat = 560
 
     var body: some View {
         VStack(spacing: 0) {
@@ -16,20 +21,42 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     generalSection
                     searchSection
+                    privacySection
                     appearanceSection
                     mediaSection
                     extensionsSection
                     aboutSection
                 }
-                .padding(20)
+                .frame(maxWidth: contentWidth)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 28)
+                .frame(maxWidth: .infinity)
             }
         }
-        .frame(width: 540, height: 560)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(p.background.color)
     }
 
     private var header: some View {
-        HStack {
+        HStack(spacing: 12) {
+            Button {
+                store.settingsVisible = false
+            } label: {
+                Icon(name: "chevron.left", size: 14, weight: .semibold)
+                    .foregroundStyle(p.foreground.color)
+                    .frame(width: 30, height: 30)
+                    .background(
+                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                            .fill(p.input.color.opacity(0.5))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                            .strokeBorder(p.border.color.opacity(0.6), lineWidth: 1)
+                    )
+            }
+            .buttonStyle(.plain)
+            .help("Back to browsing")
+
             Text("Settings")
                 .font(Typography.ui(16, weight: .semibold))
                 .foregroundStyle(p.foreground.color)
@@ -107,6 +134,21 @@ struct SettingsView: View {
         }
     }
 
+    private var privacySection: some View {
+        Section(title: "Privacy") {
+            ToggleRow(isOn: $settings.blockAds) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Block ads")
+                        .font(Typography.ui(Typography.base))
+                        .foregroundStyle(p.foreground.color)
+                    Text("Use Mori's bundled Block List Project ads list.")
+                        .font(Typography.ui(Typography.label))
+                        .foregroundStyle(p.mutedForeground.color)
+                }
+            }
+        }
+    }
+
     private var appearanceSection: some View {
         Section(title: "Appearance") {
             Field(label: "Theme") {
@@ -132,8 +174,7 @@ struct SettingsView: View {
                     .font(Typography.ui(Typography.label))
                     .foregroundStyle(p.mutedForeground.color)
             }
-            ThemePicker()
-                .frame(maxWidth: .infinity, alignment: .center)
+            ThemeList()
         }
     }
 

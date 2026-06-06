@@ -20,6 +20,12 @@ enum FaviconSource {
         if let icon, let url = URL(string: icon) {
             return .remote(url)
         }
+        // No declared icon yet (e.g. a restored or background tab whose browser
+        // hasn't been realized): try the site's conventional /favicon.ico so the
+        // real icon still shows. AsyncImage falls back to the monogram if it 404s.
+        if let host, let url = URL(string: "https://\(host)/favicon.ico") {
+            return .remote(url)
+        }
         return monogram(for: host)
     }
 

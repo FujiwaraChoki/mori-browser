@@ -99,18 +99,26 @@ private struct SidebarContextMenu: View {
     }
 }
 
-/// Observes the media controller so the player strip appears/disappears as
-/// playback starts and stops.
+/// Observes the media controller so the player strip appears only for playback
+/// happening outside the current tab.
 private struct SidebarMediaSection: View {
     @ObservedObject var store: BrowserStore
     @ObservedObject var media: MediaController
 
     var body: some View {
-        if media.hasMedia {
+        if shouldShowMedia {
             MediaPlayerStrip(store: store, media: media)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
-                .animation(Motion.reveal, value: media.hasMedia)
+                .animation(Motion.reveal, value: shouldShowMedia)
         }
+    }
+
+    private var shouldShowMedia: Bool {
+        guard media.hasMedia else { return false }
+        guard let owningTab = media.resolveTab?(media.state.browserId) else {
+            return true
+        }
+        return owningTab.id != store.selectedTabID
     }
 }
 
@@ -210,7 +218,8 @@ private struct PinnedTile: View {
     @State private var hovering = false
 
     var body: some View {
-        Favicon(icon: tab.faviconURL, page: tab.urlString, isLoading: tab.isLoading, size: 20)
+        Favicon(icon: tab.faviconURL, page: tab.urlString, image: tab.faviconImage,
+                isLoading: tab.isLoading, size: 20)
             .frame(height: 40)
             .frame(maxWidth: .infinity)
             .background(

@@ -103,6 +103,8 @@ budget defaults to three minutes and can be adjusted for slow machines with
 |---|---|---|---|
 | ⌘T / ⌘W | New / close tab | ⌘L | Focus omnibox |
 | ⇧⌘T | Reopen closed tab | ⌘[ / ⌘] | Back / forward |
+| ⌃Tab / ⇧⌃Tab | Next / previous tab | ⌥⌘← / ⌥⌘→ | Previous / next tab |
+| ⇧⌘[ / ⇧⌘] | Previous / next tab | ⌃Page Up / ⌃Page Down | Previous / next tab |
 | ⌘R / ⇧⌘R | Reload / force reload | ⌘+ / ⌘- / ⌘0 | Zoom in / out / reset |
 | ⌘S / ⌃S | Toggle tab sidebar | ⌘K | Toggle AI panel |
 | ⌘, | Settings | ⇧⌘H | Home |
