@@ -57,6 +57,9 @@ final class DownloadStore: ObservableObject {
     /// Bumped whenever a new download starts, so the chrome can flash the
     /// Downloads button.
     @Published private(set) var activityToken = 0
+    /// Bumped whenever a download transitions to finished, so the chrome can
+    /// surface the Downloads popover without the user hunting for it.
+    @Published private(set) var completionToken = 0
 
     static let didUpdate = Notification.Name("MoriDownloadUpdated")
 
@@ -74,8 +77,25 @@ final class DownloadStore: ObservableObject {
         if let observer { NotificationCenter.default.removeObserver(observer) }
     }
 
-    var hasActiveDownloads: Bool {
-        items.contains { $0.isInProgress && !$0.isComplete && !$0.isCanceled }
+    var activeItems: [DownloadItem] {
+        items.filter { $0.isInProgress && !$0.isComplete && !$0.isCanceled }
+    }
+
+    var hasActiveDownloads: Bool { !activeItems.isEmpty }
+
+    /// Combined progress of all in-flight downloads, 0...1. Drives the ring on
+    /// the Downloads button.
+    var aggregateFraction: Double {
+        let active = activeItems
+        guard !active.isEmpty else { return 0 }
+        let total = active.reduce(0.0) { $0 + min(max($1.fractionComplete, 0), 1) }
+        return total / Double(active.count)
+    }
+
+    /// True when at least one active download has no known size, so the ring
+    /// should spin rather than fill to a fraction.
+    var hasIndeterminateActive: Bool {
+        activeItems.contains { $0.percent < 0 && $0.total <= 0 }
     }
 
     private func ingest(_ info: [AnyHashable: Any]) {
@@ -97,6 +117,10 @@ final class DownloadStore: ObservableObject {
         if let idx = items.firstIndex(where: { $0.id == id }) {
             let previous = items[idx]
             items[idx] = item
+            // Surface the popover the moment a transfer finishes.
+            if !previous.isComplete && item.isComplete {
+                completionToken &+= 1
+            }
             let delta = extensionDownloadDelta(from: previous, to: item)
             if delta.count > 1 {
                 MoriBrowserView.dispatchExtensionEvent("downloads.onChanged",

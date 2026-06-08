@@ -75,3 +75,21 @@ struct ThemePreset: Identifiable {
              opacity: 0.46, texture: 0.15, scheme: .light),
     ]
 }
+
+/// Curated flat colors for the solid-theme picker. Each becomes a single-color
+/// chrome wash via `GradientTheme.solid(_:)`; the set spans warm/cool/neutral so
+/// there's a sensible default for most tastes without opening the color well.
+enum SolidPalette {
+    static let swatches: [String] = [
+        "#6E56CF", // violet
+        "#3B82F6", // blue
+        "#0EA5A4", // teal
+        "#22C55E", // green
+        "#EAB308", // amber
+        "#F97316", // orange
+        "#EF4444", // red
+        "#EC4899", // pink
+        "#64748B", // slate
+        "#1F2937", // graphite
+    ]
+}

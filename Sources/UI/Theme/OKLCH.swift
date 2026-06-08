@@ -84,6 +84,13 @@ struct TokenColor {
         Color(.sRGB, red: r, green: g, blue: b, opacity: a)
     }
 
+    /// `#rrggbb` (alpha dropped). Round-trips with `init(hex:)` for the 0…255
+    /// values a swatch or color well produces, so it's safe to key selection on.
+    var hexString: String {
+        func byte(_ c: Double) -> Int { Int((min(max(c, 0), 1) * 255).rounded()) }
+        return String(format: "#%02X%02X%02X", byte(r), byte(g), byte(b))
+    }
+
     var nsColor: NSColor {
         NSColor(srgbRed: r, green: g, blue: b, alpha: a)
     }

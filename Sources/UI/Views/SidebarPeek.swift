@@ -185,7 +185,7 @@ private struct PeekUI: View {
     var gradientTheme: GradientTheme
     var sidebarPosition: SidebarPosition
 
-    private let cardWidth: CGFloat = 256
+    private var cardWidth: CGFloat { BrowserSettings.shared.sidebarWidth }
     private let inset: CGFloat = 8
 
     private var isLeft: Bool { sidebarPosition == .left }

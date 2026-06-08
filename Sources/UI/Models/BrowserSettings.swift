@@ -55,6 +55,20 @@ final class BrowserSettings: ObservableObject {
         didSet { defaults.set(sidebarPosition.rawValue, forKey: Key.sidebarPosition) }
     }
 
+    /// The tab sidebar's width, set by dragging its inner-edge resize handle.
+    /// Clamped to `[Self.minSidebarWidth, Self.maxSidebarWidth]` on every write.
+    @Published var sidebarWidth: CGFloat {
+        didSet {
+            let clamped = sidebarWidth.clamped(to: Self.minSidebarWidth...Self.maxSidebarWidth)
+            if clamped != sidebarWidth { sidebarWidth = clamped; return }
+            defaults.set(Double(sidebarWidth), forKey: Key.sidebarWidth)
+        }
+    }
+
+    static let minSidebarWidth: CGFloat = 200
+    static let maxSidebarWidth: CGFloat = 420
+    static let defaultSidebarWidth: CGFloat = 256
+
     /// The user's custom gradient theme (chrome wash + derived accent). Empty
     /// means "no custom theme" — the chrome uses the plain light/dark tint.
     /// Persisted as JSON. Single global theme for now; when multi-space lands,
@@ -119,6 +133,7 @@ final class BrowserSettings: ObservableObject {
         static let theme = "mori.theme"
         static let sidebarOnLaunch = "mori.showSidebarOnLaunch"
         static let sidebarPosition = "mori.sidebarPosition"
+        static let sidebarWidth = "mori.sidebarWidth"
         static let autoPiP = "mori.autoPiP"
         static let gradientTheme = "mori.gradientTheme"
     }
@@ -149,6 +164,9 @@ final class BrowserSettings: ObservableObject {
         // Default the sidebar to the right to preserve the existing layout.
         sidebarPosition = SidebarPosition(rawValue: defaults.string(forKey: Key.sidebarPosition) ?? "")
             ?? .right
+        let storedWidth = defaults.object(forKey: Key.sidebarWidth) as? Double
+        sidebarWidth = (storedWidth.map { CGFloat($0) } ?? BrowserSettings.defaultSidebarWidth)
+            .clamped(to: BrowserSettings.minSidebarWidth...BrowserSettings.maxSidebarWidth)
         gradientTheme = defaults.data(forKey: Key.gradientTheme)
             .flatMap { try? JSONDecoder().decode(GradientTheme.self, from: $0) }
             ?? .none
@@ -157,6 +175,13 @@ final class BrowserSettings: ObservableObject {
         // Apply the persisted auto-PiP default to the engine on startup.
         MoriBrowserView.setAutoPiPEnabled(autoPiP)
         MoriBrowserView.setAdBlockerEnabled(blockAds)
+    }
+}
+
+extension Comparable {
+    /// Constrains the value to the given closed range.
+    func clamped(to limits: ClosedRange<Self>) -> Self {
+        min(max(self, limits.lowerBound), limits.upperBound)
     }
 }
 

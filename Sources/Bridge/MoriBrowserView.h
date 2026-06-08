@@ -103,6 +103,10 @@ typedef void (^MoriJavaScriptResultHandler)(id _Nullable result,
 /// `chrome.scripting` bridge; it does not expose CEF types to Swift.
 - (void)executeExtensionJavaScript:(NSString *)source allFrames:(BOOL)allFrames;
 
+/// Chrome-extension shaped frame records for this browser/tab. Used by
+/// `chrome.webNavigation.getFrame/getAllFrames`.
+- (NSArray<NSDictionary *> *)extensionFrameRecordsWithTabID:(NSInteger)tabID;
+
 /// Evaluate JavaScript in the main frame and return a JSON-serializable result
 /// via Chromium's DevTools protocol. Used by Mori's local AI tools.
 - (BOOL)evaluateJavaScript:(NSString *)source
@@ -181,6 +185,15 @@ typedef void (^MoriJavaScriptResultHandler)(id _Nullable result,
                        sourceURL:(nullable NSString *)sourceURL
                     sourceOrigin:(nullable NSString *)sourceOrigin
                      sourceTabID:(NSInteger)sourceTabID
+                        external:(BOOL)external;
++ (void)dispatchExtensionMessage:(id)message
+                  forExtensionID:(NSString *)extensionID
+                       requestID:(nullable NSString *)requestID
+                       sourceURL:(nullable NSString *)sourceURL
+                    sourceOrigin:(nullable NSString *)sourceOrigin
+                     sourceTabID:(NSInteger)sourceTabID
+                    sourceFrameID:(NSInteger)sourceFrameID
+                 sourceDocumentID:(nullable NSString *)sourceDocumentID
                         external:(BOOL)external;
 
 /// Resolve an extension bridge request in every live Chromium context. The

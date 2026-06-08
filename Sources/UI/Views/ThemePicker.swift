@@ -15,18 +15,117 @@ struct ThemePicker: View {
     private var activePresetID: String? { settings.gradientTheme.presetID }
 
     var body: some View {
-        LazyVGrid(columns: columns, spacing: 12) {
-            DefaultTile(isSelected: settings.gradientTheme.isEmpty) {
-                settings.gradientTheme = .none
-            }
-            ForEach(ThemePreset.all) { preset in
-                PresetTile(preset: preset,
-                           isSelected: activePresetID == preset.id) {
-                    settings.gradientTheme = preset.theme
+        VStack(alignment: .leading, spacing: 14) {
+            LazyVGrid(columns: columns, spacing: 12) {
+                DefaultTile(isSelected: settings.gradientTheme.isEmpty) {
+                    settings.gradientTheme = .none
                 }
+                ForEach(ThemePreset.all) { preset in
+                    PresetTile(preset: preset,
+                               isSelected: activePresetID == preset.id) {
+                        settings.gradientTheme = preset.theme
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Solid colors")
+                    .font(Typography.ui(Typography.label, weight: .medium))
+                    .foregroundStyle(p.mutedForeground.color)
+                SolidThemeSwatches()
             }
         }
         .frame(width: 320)
+    }
+}
+
+// MARK: - Solid colors
+
+/// A flow of solid-color chips plus a native color well for any custom color.
+/// Selecting a chip washes the chrome in a flat single-color theme; the active
+/// chip (or the well, for a hand-picked color) shows a selection ring. Shared by
+/// the sidebar popover and the Settings panel so both stay in sync.
+struct SolidThemeSwatches: View {
+    @ObservedObject private var settings = BrowserSettings.shared
+
+    private var activeHex: String? { settings.gradientTheme.solidHex }
+
+    private let columns = [GridItem(.adaptive(minimum: 30), spacing: 10, alignment: .leading)]
+
+    private func isActive(_ hex: String) -> Bool {
+        activeHex?.caseInsensitiveCompare(hex) == .orderedSame
+    }
+
+    var body: some View {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
+            ForEach(SolidPalette.swatches, id: \.self) { hex in
+                SolidSwatch(hex: hex, isSelected: isActive(hex)) {
+                    settings.gradientTheme = .solid(RGB(TokenColor(hex: hex)))
+                }
+            }
+            CustomSolidSwatch()
+        }
+    }
+}
+
+/// One round solid-color chip with a check + ring when it's the active theme.
+private struct SolidSwatch: View {
+    let hex: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Circle()
+                .fill(TokenColor(hex: hex).color)
+                .frame(width: 28, height: 28)
+                .overlay(Circle().strokeBorder(.white.opacity(0.18), lineWidth: 1))
+                .overlay {
+                    if isSelected {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(GradientEngine.contrastingText(on: RGB(TokenColor(hex: hex))).color)
+                    }
+                }
+                .overlay {
+                    Circle()
+                        .strokeBorder(TokenColor(hex: hex).color, lineWidth: 2)
+                        .padding(-3)
+                        .opacity(isSelected ? 1 : 0)
+                }
+                .scaleEffect(hovering ? 1.08 : 1)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(hex)
+        .onHover { hovering = $0 }
+        .animation(Motion.state, value: isSelected)
+        .animation(Motion.snappy, value: hovering)
+    }
+}
+
+/// A native color well for an arbitrary solid color. Reflects the current solid
+/// theme so reopening shows the picked color, and writes a fresh solid theme on
+/// change.
+private struct CustomSolidSwatch: View {
+    @ObservedObject private var settings = BrowserSettings.shared
+
+    private var binding: Binding<Color> {
+        Binding(
+            get: {
+                settings.gradientTheme.solidHex.map { TokenColor(hex: $0).color } ?? .gray
+            },
+            set: { settings.gradientTheme = .solid(RGB($0)) }
+        )
+    }
+
+    var body: some View {
+        ColorPicker("", selection: binding, supportsOpacity: false)
+            .labelsHidden()
+            .frame(width: 28, height: 28)
+            .help("Custom color")
     }
 }
 

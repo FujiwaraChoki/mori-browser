@@ -28,6 +28,10 @@ final class MoriRoot: NSObject {
         return MoriCommands.handle(event, store: store)
     }
 
+    @objc static func releaseShortcutEvent(_ event: NSEvent) {
+        MoriCommands.release(event)
+    }
+
     @objc(handleShortcutWithKeyCode:charactersIgnoringModifiers:modifierMask:)
     static func handleShortcut(keyCode: UInt16,
                                charactersIgnoringModifiers: String?,
@@ -51,6 +55,15 @@ final class MoriRoot: NSObject {
                                    store: store)
     }
 
+    @objc(releaseShortcutWithKeyCode:charactersIgnoringModifiers:modifierMask:)
+    static func releaseShortcut(keyCode: UInt16,
+                                charactersIgnoringModifiers: String?,
+                                modifierMask: UInt) {
+        MoriCommands.release(keyCode: keyCode,
+                             charactersIgnoringModifiers: charactersIgnoringModifiers,
+                             modifierMask: modifierMask)
+    }
+
     // Menu-driven actions (called from the AppKit menu bar).
     // ⌘T / File ▸ New Tab opens the launcher (command palette) rather than
     // silently spawning a blank tab.
@@ -68,9 +81,7 @@ final class MoriRoot: NSObject {
     @objc static func toggleSidebar() { shared?.store.toggleSidebar() }
     @objc static func toggleAIPanel() { shared?.store.toggleAIPanel() }
     @objc static func openSettings() { shared?.store.settingsVisible = true }
-    @objc static func focusOmnibox() {
-        NotificationCenter.default.post(name: .moriFocusOmnibox, object: nil)
-    }
+    @objc static func focusOmnibox() { shared?.store.presentLauncherForCurrentTab() }
     @objc static func zoomIn() { shared?.store.zoomIn() }
     @objc static func zoomOut() { shared?.store.zoomOut() }
     @objc static func resetZoom() { shared?.store.resetZoom() }
@@ -88,6 +99,14 @@ final class MoriRoot: NSObject {
             return ["error": "Browser store is not ready."]
         }
         return store.handleExtensionTabs(method: method, args: args)
+    }
+
+    @objc static func handleExtensionTabGroups(_ method: String,
+                                               args: NSDictionary) -> NSDictionary {
+        guard let store = shared?.store else {
+            return ["error": "Browser store is not ready."]
+        }
+        return store.handleExtensionTabGroups(method: method, args: args)
     }
 
     @objc static func handleExtensionWindows(_ method: String,
@@ -122,6 +141,14 @@ final class MoriRoot: NSObject {
         return store.handleExtensionScripting(method: method, args: args)
     }
 
+    @objc static func handleExtensionWebNavigation(_ method: String,
+                                                   args: NSDictionary) -> NSDictionary {
+        guard let store = shared?.store else {
+            return ["error": "Browser store is not ready."]
+        }
+        return store.handleExtensionWebNavigation(method: method, args: args)
+    }
+
     @objc static func handleExtensionAction(_ method: String,
                                             args: NSDictionary) -> NSDictionary {
         guard let extensionID = args["extensionId"] as? String, !extensionID.isEmpty else {
@@ -130,6 +157,14 @@ final class MoriRoot: NSObject {
         return ExtensionStore.shared.handleAction(method: method,
                                                  args: args,
                                                  extensionID: extensionID)
+    }
+
+    @objc static func handleExtensionSearch(_ method: String,
+                                            args: NSDictionary) -> NSDictionary {
+        guard let store = shared?.store else {
+            return ["error": "Browser store is not ready."]
+        }
+        return store.handleExtensionSearch(method: method, args: args)
     }
 
     @objc static func handleExtensionManagement(_ method: String,
@@ -170,7 +205,7 @@ final class MoriRoot: NSObject {
 }
 
 extension Notification.Name {
-    static let moriFocusOmnibox = Notification.Name("MoriFocusOmnibox")
     static let moriOpenExtensionPopup = Notification.Name("MoriOpenExtensionPopup")
     static let moriOpenExtensionUninstallURL = Notification.Name("MoriOpenExtensionUninstallURL")
+    static let moriReloadExtensionRuntime = Notification.Name("MoriReloadExtensionRuntime")
 }

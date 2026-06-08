@@ -175,6 +175,17 @@ struct SettingsView: View {
                     .foregroundStyle(p.mutedForeground.color)
             }
             ThemeList()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Solid color")
+                    .font(Typography.ui(Typography.base))
+                    .foregroundStyle(p.foreground.color)
+                Text("Or wash the chrome in a single flat color.")
+                    .font(Typography.ui(Typography.label))
+                    .foregroundStyle(p.mutedForeground.color)
+                SolidThemeSwatches()
+                    .padding(.top, 2)
+            }
         }
     }
 

@@ -21,6 +21,14 @@ struct WebContainerView: NSViewRepresentable {
         let activeLoadFailed = activeTab.didFail
         nsView.applyCornerRadius(cornerRadius)
 
+        // While the sidebar is being resized, freeze the CEF subviews so the
+        // expensive async engine resize doesn't run every drag frame (the
+        // source of the lag/flicker). On release this flips false and the
+        // frame sync below resizes the engine once.
+        let wasFrozen = nsView.freezeSubviewLayout
+        nsView.freezeSubviewLayout = store.isResizingSidebar
+        let justUnfroze = wasFrozen && !store.isResizingSidebar
+
         // Settings renders as a full page over the web card, so hide Chromium
         // while it is up. The launcher is hosted in an AppKit overlay above the
         // web view and should leave the current page visible behind its scrim.
@@ -44,7 +52,11 @@ struct WebContainerView: NSViewRepresentable {
                 view.removeFromSuperview()
                 nsView.addSubview(view)
             }
-            view.frame = nsView.bounds
+            // Hold the engine's frame steady while resizing; sync it otherwise
+            // (and force a one-shot sync on the frame we just unfroze).
+            if !nsView.freezeSubviewLayout || justUnfroze {
+                view.frame = nsView.bounds
+            }
             view.autoresizingMask = [.width, .height]
             let hidden = (tab.id != store.selectedTabID) || tab.didFail
             view.isHidden = hidden
@@ -65,6 +77,14 @@ struct WebContainerView: NSViewRepresentable {
     final class ContainerView: NSView {
         override var isFlipped: Bool { true }
 
+        /// When true, the hosted CEF subviews keep their current frame instead
+        /// of tracking `bounds` — set during a sidebar resize drag so the engine
+        /// isn't re-laid-out every frame. Also gates AppKit's mask-based
+        /// autoresizing so a parent frame change can't resize them behind us.
+        var freezeSubviewLayout = false {
+            didSet { autoresizesSubviews = !freezeSubviewLayout }
+        }
+
         /// Round (and clip to) the layer so the hosted CEF subviews are masked
         /// to the card shape. `.continuous` matches SwiftUI's squircle corners.
         func applyCornerRadius(_ radius: CGFloat) {
@@ -77,10 +97,12 @@ struct WebContainerView: NSViewRepresentable {
 
         override func layout() {
             super.layout()
+            guard !freezeSubviewLayout else { return }
             for sub in subviews { sub.frame = bounds }
         }
         override func setFrameSize(_ newSize: NSSize) {
             super.setFrameSize(newSize)
+            guard !freezeSubviewLayout else { return }
             for sub in subviews { sub.frame = bounds }
         }
     }

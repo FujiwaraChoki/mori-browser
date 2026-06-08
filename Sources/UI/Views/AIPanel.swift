@@ -1,4 +1,6 @@
 import SwiftUI
+import AppKit
+import AVFoundation
 
 /// The AI assistant side panel. Talks to the local Codex app server and exposes
 /// Mori browser tools for page reading and user-like actions.
@@ -346,13 +348,56 @@ struct AIToolCallInfo: Equatable {
 
 struct AIBubble: View {
     let message: AIMessage
+    @ObservedObject private var speech = SpeechCenter.shared
+    @State private var hovering = false
 
     var body: some View {
         HStack {
             if message.role == .user { Spacer(minLength: 32) }
-            bubbleContent
+            VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 3) {
+                bubbleContent
+                if showsActions {
+                    actionRow
+                        .opacity(hovering || isSpeaking ? 1 : 0)
+                        .animation(Motion.state, value: hovering)
+                        .animation(Motion.state, value: isSpeaking)
+                }
+            }
             if message.role != .user { Spacer(minLength: 32) }
         }
+        .onHover { hovering = $0 }
+    }
+
+    /// Copy (and, for assistant replies, speak-aloud) controls beneath a message.
+    @ViewBuilder
+    private var actionRow: some View {
+        HStack(spacing: 2) {
+            MessageActionButton(icon: "doc.on.doc", help: "Copy") {
+                copyText()
+            }
+            if message.role == .assistant {
+                MessageActionButton(icon: isSpeaking ? "stop.fill" : "speaker.wave.2.fill",
+                                    help: isSpeaking ? "Stop" : "Speak aloud") {
+                    speech.toggle(message.text, id: message.id)
+                }
+            }
+        }
+        .padding(.horizontal, message.role == .user ? 4 : 0)
+    }
+
+    private var showsActions: Bool {
+        message.toolCall == nil && !isLoading && !message.text.isEmpty
+    }
+
+    private var isSpeaking: Bool {
+        message.role == .assistant && speech.isSpeaking(message.id)
+    }
+
+    private func copyText() {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(message.text, forType: .string)
+        ToastCenter.shared.show("Copied to clipboard", icon: "doc.on.doc", style: .success)
     }
 
     @ViewBuilder
@@ -464,6 +509,90 @@ private struct AIToolCallPopover: View {
                 .foregroundStyle(.primary)
                 .lineLimit(8)
                 .textSelection(.enabled)
+        }
+    }
+}
+
+/// Compact ghost button used for the per-message copy / speak-aloud affordances.
+/// Smaller than `IconButton` so it tucks neatly under a chat bubble.
+private struct MessageActionButton: View {
+    let icon: String
+    let help: String
+    let action: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Icon(name: icon, size: 12)
+                .frame(width: 22, height: 22)
+                .foregroundStyle(Color.primary.opacity(hovering ? 0.9 : 0.55))
+                .background(
+                    RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
+                        .fill(Color.primary.opacity(hovering ? 0.08 : 0))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(Motion.state, value: hovering)
+        .help(help)
+    }
+}
+
+/// App-wide text-to-speech for AI replies. One synthesizer, one active
+/// utterance at a time; views observe `speakingMessageID` to flip their
+/// speak/stop control.
+@MainActor
+final class SpeechCenter: ObservableObject {
+    static let shared = SpeechCenter()
+
+    @Published private(set) var speakingMessageID: UUID?
+
+    private let synthesizer = AVSpeechSynthesizer()
+    private var delegateProxy: Delegate?
+
+    private init() {
+        let proxy = Delegate(owner: self)
+        delegateProxy = proxy
+        synthesizer.delegate = proxy
+    }
+
+    func isSpeaking(_ id: UUID) -> Bool { speakingMessageID == id }
+
+    /// Speak `text` for `id`, or stop if that message is already being read.
+    func toggle(_ text: String, id: UUID) {
+        if speakingMessageID == id {
+            stop()
+            return
+        }
+        stop()
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        let utterance = AVSpeechUtterance(string: trimmed)
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        speakingMessageID = id
+        synthesizer.speak(utterance)
+    }
+
+    func stop() {
+        if synthesizer.isSpeaking {
+            synthesizer.stopSpeaking(at: .immediate)
+        }
+        speakingMessageID = nil
+    }
+
+    fileprivate func finished() { speakingMessageID = nil }
+
+    private final class Delegate: NSObject, AVSpeechSynthesizerDelegate {
+        weak var owner: SpeechCenter?
+        init(owner: SpeechCenter) { self.owner = owner }
+
+        func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+            Task { @MainActor in owner?.finished() }
+        }
+        func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+            Task { @MainActor in owner?.finished() }
         }
     }
 }

@@ -139,8 +139,15 @@ struct Favicon: View {
                     switch phase {
                     case .success(let image):
                         image.resizable().interpolation(.high)
-                    default:
-                        monogram   // broken/missing → monogram, not a blank box
+                    case .failure:
+                        monogram   // genuinely broken → monogram, not a blank box
+                    case .empty:
+                        // Still loading: stay blank rather than flashing the
+                        // domain monogram (e.g. "D" for the search engine) for the
+                        // instant before the real favicon arrives.
+                        Color.clear
+                    @unknown default:
+                        monogram
                     }
                 }
                 .frame(width: size, height: size)

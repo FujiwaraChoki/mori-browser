@@ -153,12 +153,39 @@ private struct MoriShortcut {
 /// key events and CEF key events normalize into `MoriShortcutTrigger`, so a
 /// shortcut registered here works from chrome focus and web-content focus.
 enum MoriCommands {
+    private struct ShortcutPress: Hashable {
+        let key: String
+        let modifiersRawValue: UInt
+
+        init(_ trigger: MoriShortcutTrigger) {
+            key = trigger.key
+            modifiersRawValue = trigger.modifiers.rawValue
+        }
+    }
+
+    private static var activeShortcutPresses: [ShortcutPress: TimeInterval] = [:]
     private static var lastHandledShortcut: (id: String, key: String, modifiers: NSEvent.ModifierFlags, time: TimeInterval)?
     private static let duplicateShortcutInterval: TimeInterval = 0.08
+    private static let staleShortcutPressInterval: TimeInterval = 1.2
 
     static func handle(_ event: NSEvent, store: BrowserStore) -> Bool {
         guard event.type == .keyDown else { return false }
         return handle(MoriShortcutTrigger(event: event), store: store)
+    }
+
+    static func release(_ event: NSEvent) {
+        guard event.type == .keyUp else { return }
+        release(MoriShortcutTrigger(event: event))
+    }
+
+    static func release(keyCode: UInt16,
+                        charactersIgnoringModifiers: String?,
+                        modifierMask: UInt) {
+        release(MoriShortcutTrigger(
+            keyCode: keyCode,
+            charactersIgnoringModifiers: charactersIgnoringModifiers,
+            modifierMask: modifierMask,
+            isRepeat: false))
     }
 
     static func handle(keyCode: UInt16,
@@ -176,15 +203,22 @@ enum MoriCommands {
 
     private static func handle(_ trigger: MoriShortcutTrigger,
                                store: BrowserStore) -> Bool {
+        pruneStaleShortcutPresses()
+
         if let shortcut = shortcuts.first(where: { $0.matches(trigger, store: store) }) {
+            if shouldSuppressActivePress(shortcut, trigger: trigger) {
+                return true
+            }
             if isDuplicate(shortcut, trigger: trigger) {
                 return true
             }
             if trigger.isRepeat && !shortcut.acceptsRepeats {
+                rememberActivePress(trigger)
                 return true
             }
             shortcut.perform(store)
             remember(shortcut, trigger: trigger)
+            rememberActivePress(trigger)
             return true
         }
 
@@ -198,6 +232,39 @@ enum MoriCommands {
         }
 
         return false
+    }
+
+    private static func shouldSuppressActivePress(_ shortcut: MoriShortcut,
+                                                  trigger: MoriShortcutTrigger) -> Bool {
+        guard activeShortcutPresses[ShortcutPress(trigger)] != nil else { return false }
+        return !shortcut.acceptsRepeats || !trigger.isRepeat
+    }
+
+    private static func rememberActivePress(_ trigger: MoriShortcutTrigger) {
+        activeShortcutPresses[ShortcutPress(trigger)] = ProcessInfo.processInfo.systemUptime
+    }
+
+    private static func release(_ trigger: MoriShortcutTrigger) {
+        pruneStaleShortcutPresses()
+        let press = ShortcutPress(trigger)
+        if activeShortcutPresses.removeValue(forKey: press) != nil {
+            return
+        }
+
+        // Key-up events can arrive after the modifier key has already been
+        // released, so fall back to clearing active entries for the same key.
+        let matchingPresses = activeShortcutPresses.keys.filter { $0.key == trigger.key }
+        for activePress in matchingPresses {
+            activeShortcutPresses.removeValue(forKey: activePress)
+        }
+    }
+
+    private static func pruneStaleShortcutPresses() {
+        guard !activeShortcutPresses.isEmpty else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        activeShortcutPresses = activeShortcutPresses.filter {
+            now - $0.value < staleShortcutPressInterval
+        }
     }
 
     private static func isDuplicate(_ shortcut: MoriShortcut,
@@ -323,8 +390,8 @@ enum MoriCommands {
             MoriShortcut("closeTab", modifiers: .command, key: "w") {
                 if let id = $0.selectedTabID { $0.closeTab(id) }
             },
-            MoriShortcut("focusOmnibox", modifiers: .command, key: "l") { _ in
-                NotificationCenter.default.post(name: .moriFocusOmnibox, object: nil)
+            MoriShortcut("focusOmnibox", modifiers: .command, key: "l") {
+                $0.presentLauncherForCurrentTab()
             },
             MoriShortcut("reload", modifiers: .command, key: "r") {
                 $0.reload()

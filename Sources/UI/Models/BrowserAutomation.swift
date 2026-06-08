@@ -189,7 +189,16 @@ enum BrowserAutomation {
         ]
 
         if includePage, let tab = store.selectedTab {
-            payload["activePage"] = try await readPage(tab: tab, maxTextChars: maxTextChars)
+            // Don't fail the whole snapshot if the active page isn't ready yet:
+            // the tab list is useful on its own, and snapshot is often the very
+            // first call (right after launch or openTab) before the browser has
+            // finished creating. Surface the reason instead so the agent can wait
+            // or act, rather than getting an opaque "not ready" failure.
+            do {
+                payload["activePage"] = try await readPage(tab: tab, maxTextChars: maxTextChars, store: store)
+            } catch {
+                payload["activePageError"] = error.localizedDescription
+            }
         }
 
         return prettyJSON(payload)
@@ -233,11 +242,11 @@ enum BrowserAutomation {
         case "readPage":
             let tab = try targetTab(arguments: arguments, store: store)
             let maxTextChars = int(arguments["maxTextChars"]) ?? 12_000
-            let page = try await readPage(tab: tab, maxTextChars: maxTextChars)
+            let page = try await readPage(tab: tab, maxTextChars: maxTextChars, store: store)
             return BrowserToolResult(text: prettyJSON(page), success: true)
         case "click", "doubleClick", "hover", "hold", "type", "keyPress", "scroll":
             let tab = try targetTab(arguments: arguments, store: store)
-            let result = try await runPageAction(action, arguments: arguments, tab: tab)
+            let result = try await runPageAction(action, arguments: arguments, tab: tab, store: store)
             return BrowserToolResult(text: prettyJSON(result), success: true)
         case "findText":
             guard let text = string(arguments["text"]) else {
@@ -377,8 +386,8 @@ enum BrowserAutomation {
     }
 
     @MainActor
-    private static func readPage(tab: BrowserTab, maxTextChars: Int) async throws -> Any {
-        try await waitForBrowser(tab)
+    private static func readPage(tab: BrowserTab, maxTextChars: Int, store: BrowserStore) async throws -> Any {
+        try await waitForBrowser(tab, store: store)
         let source = """
         (() => {
           const max = \(max(500, maxTextChars));
@@ -443,8 +452,9 @@ enum BrowserAutomation {
     @MainActor
     private static func runPageAction(_ action: String,
                                       arguments: [String: Any],
-                                      tab: BrowserTab) async throws -> Any {
-        try await waitForBrowser(tab)
+                                      tab: BrowserTab,
+                                      store: BrowserStore) async throws -> Any {
+        try await waitForBrowser(tab, store: store)
         let selector = jsLiteral(string(arguments["selector"]) ?? "")
         let text = jsLiteral(string(arguments["text"]) ?? "")
         let key = jsLiteral(string(arguments["key"]) ?? "")
@@ -558,10 +568,27 @@ enum BrowserAutomation {
     }
 
     @MainActor
-    private static func waitForBrowser(_ tab: BrowserTab) async throws {
+    private static func waitForBrowser(_ tab: BrowserTab, store: BrowserStore) async throws {
+        if tab.browserView.browserIdentifier != 0 { return }
+
+        // `realize()` only flips a (non-@Published) flag. The CEF browser is
+        // created lazily by `WebContainerView.updateNSView` once the view is
+        // mounted in the window with a real size — and that mount happens only on
+        // a SwiftUI render. So realizing a fresh/background tab is not enough on
+        // its own: without a published change, the view never mounts, the browser
+        // is never created, and we'd time out no matter how long we wait. Nudge
+        // the store so the container re-renders and mounts the tab, then let the
+        // run loop service the render plus CEF's async OnAfterCreated callback.
         _ = tab.realize()
-        for _ in 0..<30 {
+        store.objectWillChange.send()
+
+        // ~6s budget; cold start (first browser, web area still sizing up) and
+        // slow tab mounts can take noticeably longer than the steady-state case.
+        for attempt in 0..<60 {
             if tab.browserView.browserIdentifier != 0 { return }
+            // Re-nudge periodically in case the first render landed before the
+            // web container had non-zero bounds (creation bails until it does).
+            if attempt % 5 == 4 { store.objectWillChange.send() }
             try await Task.sleep(nanoseconds: 100_000_000)
         }
         throw BrowserAutomationError.browserUnavailable

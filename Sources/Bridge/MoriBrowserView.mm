@@ -5,6 +5,8 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <functional>
+#include <limits>
 
 #include "BrowserClient.h"
 #include "include/cef_app.h"
@@ -42,6 +44,64 @@ NSString* JSONLiteral(id object) {
       data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding]
            : @"[null]";
   return [array substringWithRange:NSMakeRange(1, array.length - 2)];
+}
+
+uint64_t MoriStableHash64(const std::string& value) {
+  uint64_t hash = 1469598103934665603ULL;
+  for (unsigned char c : value) {
+    hash ^= c;
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
+int MoriExtensionFrameID(CefRefPtr<CefFrame> frame) {
+  if (!frame || frame->IsMain()) return 0;
+  std::string identifier = frame->GetIdentifier().ToString();
+  std::size_t raw = std::hash<std::string>{}(identifier);
+  int value = static_cast<int>(raw % std::numeric_limits<int>::max());
+  return value > 0 ? value : 1;
+}
+
+int MoriExtensionParentFrameID(CefRefPtr<CefFrame> frame) {
+  if (!frame || frame->IsMain()) return -1;
+  CefRefPtr<CefFrame> parent = frame->GetParent();
+  return parent ? MoriExtensionFrameID(parent) : 0;
+}
+
+NSString* MoriExtensionDocumentID(CefRefPtr<CefFrame> frame) {
+  if (!frame) return @"";
+  std::string seed = frame->GetIdentifier().ToString() + "\n" +
+                     frame->GetURL().ToString();
+  uint64_t hi = MoriStableHash64(seed);
+  uint64_t lo = MoriStableHash64("document:" + seed);
+  return [NSString stringWithFormat:@"%08llx-%04llx-%04llx-%04llx-%012llx",
+                                    (unsigned long long)((hi >> 32) & 0xffffffffULL),
+                                    (unsigned long long)((hi >> 16) & 0xffffULL),
+                                    (unsigned long long)(hi & 0xffffULL),
+                                    (unsigned long long)((lo >> 48) & 0xffffULL),
+                                    (unsigned long long)(lo & 0xffffffffffffULL)];
+}
+
+NSDictionary* MoriExtensionFrameRecord(CefRefPtr<CefFrame> frame,
+                                       NSInteger tabID) {
+  NSMutableDictionary* record = [@{
+    @"errorOccurred" : @NO,
+    @"tabId" : @(tabID),
+    @"frameId" : @(MoriExtensionFrameID(frame)),
+    @"parentFrameId" : @(MoriExtensionParentFrameID(frame)),
+    @"documentId" : MoriExtensionDocumentID(frame),
+    @"documentLifecycle" : @"active",
+    @"frameType" : (frame && frame->IsMain()) ? @"outermost_frame" : @"sub_frame",
+    @"url" : SafeString(frame ? frame->GetURL().ToString() : "")
+  } mutableCopy];
+  if (frame && !frame->IsMain()) {
+    CefRefPtr<CefFrame> parent = frame->GetParent();
+    if (parent) {
+      record[@"parentDocumentId"] = MoriExtensionDocumentID(parent);
+    }
+  }
+  return record;
 }
 
 // One press changes the CEF zoom level by this much. CEF zoom is logarithmic
@@ -421,6 +481,7 @@ static NSHashTable<MoriBrowserView*>* g_all_views = nil;
 }
 
 - (void)dealloc {
+  [[NSNotificationCenter defaultCenter] removeObserver:self];
   [self closeBrowser];
   if (_delegate) {
     delete _delegate;
@@ -446,10 +507,31 @@ static NSHashTable<MoriBrowserView*>* g_all_views = nil;
 // Create the browser only once installed in a window with a real size.
 - (void)viewDidMoveToWindow {
   [super viewDidMoveToWindow];
+  NSNotificationCenter* center = [NSNotificationCenter defaultCenter];
+  [center removeObserver:self name:NSWindowDidBecomeKeyNotification object:nil];
+  [center removeObserver:self name:NSWindowDidResignKeyNotification object:nil];
   if (self.window) {
     [self _createBrowserIfReady];
+    // Forward the window's key (focus) state to CEF so document.hasFocus()
+    // tracks reality. Without this, a freshly loaded page or one whose window
+    // just regained focus reports hasFocus()===false, which breaks extensions
+    // that gate UI on focus (e.g. Proton Pass autofill suppresses its in-field
+    // icon until the document is focused).
+    [center addObserver:self
+               selector:@selector(_windowFocusChanged:)
+                   name:NSWindowDidBecomeKeyNotification
+                 object:self.window];
+    [center addObserver:self
+               selector:@selector(_windowFocusChanged:)
+                   name:NSWindowDidResignKeyNotification
+                 object:self.window];
   }
   [self _syncBrowserVisibility];
+  [self _syncBrowserFocus];
+}
+
+- (void)_windowFocusChanged:(NSNotification*)notification {
+  [self _syncBrowserFocus];
 }
 
 - (void)setFrameSize:(NSSize)newSize {
@@ -521,6 +603,32 @@ static NSHashTable<MoriBrowserView*>* g_all_views = nil;
   if (_browser) {
     _browser->GetHost()->WasHidden(hidden);
   }
+  [self _syncBrowserFocus];
+}
+
+// The active tab's content view should hold CEF focus whenever its window is
+// key, so document.hasFocus() is true for the page the user is looking at.
+// Tie focus to (visible && window-is-key); hidden tabs and background windows
+// release it.
+- (void)_syncBrowserFocus {
+  if (!_browser) return;
+  const BOOL hidden = !_webWindowVisible ||
+      (g_web_content_suppressed && !_ignoresGlobalWebContentSuppression);
+  const BOOL windowKey = self.window != nil && self.window.isKeyWindow;
+  const BOOL shouldFocus = !hidden && windowKey;
+  // Promote the page to first responder, not just SetFocus: a freshly-created
+  // tab (opened via the launcher, which grabs first-responder for its search
+  // field and never hands it back) would otherwise have a focused-at-the-CEF-
+  // -level-but-not-key-in-AppKit view, so document.hasFocus() stays false and
+  // focus-gated extension UI (Proton Pass autofill) never loads until the user
+  // clicks the page. We only steal first responder for the visible tab of a key
+  // window, and the launcher is always dismissed before a new tab's browser
+  // attaches, so this never yanks focus out from under the open launcher.
+  if (shouldFocus && _browserContentView && self.window &&
+      self.window.firstResponder != _browserContentView) {
+    [self.window makeFirstResponder:_browserContentView];
+  }
+  _browser->GetHost()->SetFocus(shouldFocus);
 }
 
 - (void)setHidden:(BOOL)hidden {
@@ -559,6 +667,7 @@ static NSHashTable<MoriBrowserView*>* g_all_views = nil;
   [self _styleBrowserContentView];
   [self _syncBrowserFrame];
   [self _syncBrowserVisibility];
+  [self _syncBrowserFocus];
 }
 
 - (void)_detachBrowser {
@@ -638,6 +747,26 @@ static NSHashTable<MoriBrowserView*>* g_all_views = nil;
                     sourceOrigin:(NSString*)sourceOrigin
                      sourceTabID:(NSInteger)sourceTabID
                         external:(BOOL)external {
+  [self dispatchExtensionMessage:message
+                  forExtensionID:extensionID
+                       requestID:requestID
+                       sourceURL:sourceURL
+                    sourceOrigin:sourceOrigin
+                     sourceTabID:sourceTabID
+                    sourceFrameID:-1
+                 sourceDocumentID:nil
+                        external:external];
+}
+
++ (void)dispatchExtensionMessage:(id)message
+                  forExtensionID:(NSString*)extensionID
+                       requestID:(NSString*)requestID
+                       sourceURL:(NSString*)sourceURL
+                    sourceOrigin:(NSString*)sourceOrigin
+                     sourceTabID:(NSInteger)sourceTabID
+                    sourceFrameID:(NSInteger)sourceFrameID
+                 sourceDocumentID:(NSString*)sourceDocumentID
+                        external:(BOOL)external {
   if (extensionID.length == 0) return;
   // sourceURL lets the in-page handler skip the sending document, matching
   // Chrome's rule that runtime.sendMessage is never delivered to its sender.
@@ -646,17 +775,23 @@ static NSHashTable<MoriBrowserView*>* g_all_views = nil;
   // routes through a separate path that opts into content-script delivery).
   // The 7th arg (external) routes to onMessageExternal with an id-less sender.
   // The 8th arg carries the originating tab id so external account handoffs can
-  // see a Chrome-like MessageSender.tab.
+  // see a Chrome-like MessageSender.tab. The 9th arg carries the originating
+  // frame id; content-script control planes such as Proton Pass reject messages
+  // when sender.frameId is missing. The 10th arg carries modern Chrome's
+  // MessageSender.documentId.
   NSString* source = [NSString stringWithFormat:
       @"if(window.__moriExtDispatchMessage){"
-       "window.__moriExtDispatchMessage(%@,%@,%@,%@,%@,false,%@,%@);}",
+       "window.__moriExtDispatchMessage(%@,%@,%@,%@,%@,false,%@,%@,%@,%@);}",
       JSONLiteral(extensionID), JSONLiteral(message ?: [NSNull null]),
       JSONLiteral(requestID ?: [NSNull null]),
       JSONLiteral(sourceURL ?: [NSNull null]),
       JSONLiteral(sourceOrigin ?: [NSNull null]),
       external ? @"true" : @"false",
       sourceTabID >= 0 ? [NSString stringWithFormat:@"%ld", (long)sourceTabID]
-                       : @"null"];
+                       : @"null",
+      sourceFrameID >= 0 ? [NSString stringWithFormat:@"%ld", (long)sourceFrameID]
+                         : @"null",
+      JSONLiteral(sourceDocumentID ?: [NSNull null])];
   for (MoriBrowserView* view in g_all_views) {
     [view executeExtensionJavaScript:source allFrames:YES];
   }
@@ -807,12 +942,22 @@ static NSHashTable<MoriBrowserView*>* g_all_views = nil;
 
 - (void)executeExtensionJavaScript:(NSString*)source allFrames:(BOOL)allFrames {
   if (!_browser || source.length == 0) return;
-  CefString code(source.UTF8String);
+  auto runInFrame = ^(CefRefPtr<CefFrame> frame) {
+    if (!frame) return;
+    NSString* documentID = MoriExtensionDocumentID(frame);
+    NSString* frameSource = [NSString stringWithFormat:
+        @"try{Object.defineProperty(globalThis,'__moriNativeFrameId',{"
+         "configurable:true,value:%d});}catch(e){try{globalThis.__moriNativeFrameId=%d;}catch(_e){}}\n"
+         "try{Object.defineProperty(globalThis,'__moriNativeDocumentId',{"
+         "configurable:true,value:%@});}catch(e){try{globalThis.__moriNativeDocumentId=%@;}catch(_e){}}\n%@",
+        MoriExtensionFrameID(frame), MoriExtensionFrameID(frame),
+        JSONLiteral(documentID), JSONLiteral(documentID), source];
+    CefString code(frameSource.UTF8String);
+    frame->ExecuteJavaScript(code, frame->GetURL(), 0);
+  };
   if (!allFrames) {
     CefRefPtr<CefFrame> frame = _browser->GetMainFrame();
-    if (frame) {
-      frame->ExecuteJavaScript(code, frame->GetURL(), 0);
-    }
+    runInFrame(frame);
     return;
   }
 
@@ -820,10 +965,29 @@ static NSHashTable<MoriBrowserView*>* g_all_views = nil;
   _browser->GetFrameIdentifiers(ids);
   for (const auto& id : ids) {
     CefRefPtr<CefFrame> frame = _browser->GetFrameByIdentifier(id);
-    if (frame) {
-      frame->ExecuteJavaScript(code, frame->GetURL(), 0);
+    runInFrame(frame);
+  }
+}
+
+- (NSArray<NSDictionary*>*)extensionFrameRecordsWithTabID:(NSInteger)tabID {
+  if (!_browser) return @[];
+
+  NSMutableArray<NSDictionary*>* records = [NSMutableArray array];
+  std::vector<CefString> ids;
+  _browser->GetFrameIdentifiers(ids);
+  for (const auto& id : ids) {
+    CefRefPtr<CefFrame> frame = _browser->GetFrameByIdentifier(id);
+    if (frame && frame->IsValid()) {
+      [records addObject:MoriExtensionFrameRecord(frame, tabID)];
     }
   }
+  if (records.count == 0) {
+    CefRefPtr<CefFrame> main = _browser->GetMainFrame();
+    if (main && main->IsValid()) {
+      [records addObject:MoriExtensionFrameRecord(main, tabID)];
+    }
+  }
+  return records;
 }
 
 - (BOOL)evaluateJavaScript:(NSString*)source

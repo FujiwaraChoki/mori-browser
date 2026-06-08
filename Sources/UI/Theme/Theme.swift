@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// A full set of Mori color tokens for one appearance, transcribed from
 /// `~/Developer/mori/src/app/globals.css` (`:root` = light, `.dark` = dark).
@@ -283,12 +284,95 @@ struct PressShrinkButtonStyle: ButtonStyle {
     }
 }
 
+/// Zen-style press feedback for draggable rows: the view shrinks to the tab
+/// press-scale *while the pointer is held down* and springs back on release,
+/// matching Zen's `scale 0.1s` on `:active`.
+///
+/// Selection stays on `.onTapGesture` (drag-safe). The press visual rides a
+/// `simultaneousGesture` — the *simultaneous* variant deliberately does not take
+/// gesture priority, so unlike a plain `.gesture`/`Button` (which `TabRow`'s
+/// note warns steals the pointer) it leaves `.onDrag` free to start. The press
+/// releases the instant the pointer travels far enough to begin a drag, so the
+/// shrink never sticks while reordering. Mirrors `IconButton`'s approach.
+/// Live press/hover state for `PressShrink`, held in a reference type so the
+/// long-lived `NSEvent` monitor closure reads the *current* hover value rather
+/// than the stale snapshot a captured `@State` would give.
+private final class PressShrinkState: ObservableObject {
+    @Published var pressed = false
+    var hovering = false
+}
+
+/// Select on tap with a Zen-style press-to-shrink while held.
+///
+/// Crucially this uses a *passive* `NSEvent` monitor (which observes mouse-down /
+/// mouse-up without consuming them) instead of a SwiftUI `DragGesture`. A
+/// `DragGesture(minimumDistance:)` claims the pointer on mouse-down and stops the
+/// row's `.onDrag` from ever starting a drag session — the exact bug that broke
+/// sidebar drag-and-drop. The monitor attaches no gesture, so `.onDrag`,
+/// `.onTapGesture`, and the shrink all coexist.
+struct PressShrink: ViewModifier {
+    let action: () -> Void
+    @StateObject private var state = PressShrinkState()
+    @State private var monitor: Any?
+
+    func body(content: Content) -> some View {
+        content
+            .scaleEffect(state.pressed ? TabSurface.pressScale : 1)
+            .animation(.easeOut(duration: 0.12), value: state.pressed)
+            .onTapGesture(perform: action)
+            .onHover { inside in
+                state.hovering = inside
+                // Clear when the pointer leaves — covers the case where a drag
+                // session swallows the mouse-up that would otherwise reset it.
+                if !inside { state.pressed = false }
+            }
+            .onAppear {
+                guard monitor == nil else { return }
+                monitor = NSEvent.addLocalMonitorForEvents(
+                    matching: [.leftMouseDown, .leftMouseUp]
+                ) { [state] event in
+                    if event.type == .leftMouseDown {
+                        if state.hovering { state.pressed = true }
+                    } else if state.pressed {
+                        state.pressed = false
+                    }
+                    return event   // never consume — let .onDrag / .onTapGesture run
+                }
+            }
+            .onDisappear {
+                if let monitor { NSEvent.removeMonitor(monitor) }
+                monitor = nil
+            }
+    }
+}
+
+extension View {
+    /// Select on tap with a Zen-style press-to-shrink while held. Use in place
+    /// of `.onTapGesture(perform:)` on draggable rows.
+    func pressShrink(perform action: @escaping () -> Void) -> some View {
+        modifier(PressShrink(action: action))
+    }
+}
+
 /// Motion tokens (MASTER §3): snappy easing, 150ms default state change.
 enum Motion {
     /// `--ease-snappy: cubic-bezier(0.2, 0.4, 0.1, 0.95)`
     static let snappy = Animation.timingCurve(0.2, 0.4, 0.1, 0.95, duration: 0.15)
     static let state = Animation.easeInOut(duration: 0.15)
     static let reveal = Animation.easeInOut(duration: 0.25)
+    /// Tab close, matching Zen browser: a quick easeOut as the row fades, shrinks
+    /// to 95%, and the rows below collapse up into the gap (Zen uses 0.1s easeOut).
+    static let tabClose = Animation.easeOut(duration: 0.12)
+}
+
+/// Zen-style tab removal: fade to 0 and scale to 95% while the surrounding stack
+/// collapses the freed height. Insertion is left untouched (`.identity`) so only
+/// closing animates, mirroring Zen's `animateItemClose`.
+extension AnyTransition {
+    static let tabClose = AnyTransition.asymmetric(
+        insertion: .identity,
+        removal: .scale(scale: 0.95).combined(with: .opacity)
+    )
 }
 
 /// SwiftUI environment access to the active palette.

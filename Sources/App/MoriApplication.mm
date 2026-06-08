@@ -19,6 +19,8 @@
   if (event.type == NSEventTypeKeyDown) {
     BOOL handled = [MoriRoot handleShortcutEvent:event];
     if (handled) return;
+  } else if (event.type == NSEventTypeKeyUp) {
+    [MoriRoot releaseShortcutEvent:event];
   }
 
   CefScopedSendingEvent sendingEventScoper;

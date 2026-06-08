@@ -19,6 +19,7 @@ struct TabRow: View {
     @Environment(\.palette) private var p
     @Environment(\.colorScheme) private var scheme
     @State private var hovering = false
+    @State private var closeHovering = false
 
     var body: some View {
         HStack(spacing: 9) {
@@ -42,17 +43,22 @@ struct TabRow: View {
                     .frame(width: 18, height: 18)
                     .background(
                         RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(hovering ? p.sidebarForeground.color.opacity(0.10) : .clear)
+                            .fill(closeHovering ? p.sidebarForeground.color.opacity(0.10) : .clear)
                     )
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .onHover { closeHovering = $0 }
             .help("Close tab")
             .opacity(showsCloseButton ? 1 : 0)
             .allowsHitTesting(showsCloseButton)
             .accessibilityHidden(!showsCloseButton)
         }
-        .padding(.horizontal, 9)
+        .padding(.leading, 9)
+        // The xmark asset carries ~3pt of its own trailing whitespace, so a
+        // smaller pad here lands the glyph the same ~9pt from the card edge as
+        // the favicon sits from the leading edge.
+        .padding(.trailing, 6)
         .frame(height: 34)
         .background(
             RoundedRectangle(cornerRadius: TabSurface.radius, style: .continuous)
@@ -62,9 +68,8 @@ struct TabRow: View {
                         x: 0, y: isSelected ? TabSurface.shadowY : 0)
         )
         .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
+        .pressShrink(perform: onSelect)
         .onHover { hovering = $0 }
-        .animation(Motion.state, value: isSelected)
     }
 
     private var showsCloseButton: Bool {

@@ -2,8 +2,16 @@
 // passkeys work under CEF's Alloy embedding (which lacks Chromium's native
 // passkey support — see PasskeyAuthenticator.swift).
 //
-//   • Overrides navigator.credentials.create()/get() for `publicKey` requests
-//     and PublicKeyCredential's capability probes.
+//   • kMoriPasskeyAgent overrides navigator.credentials.create()/get() for
+//     `publicKey` requests. Conditional-mediation get() requests wait silently
+//     (no modal) since we have no inline autofill chip; the explicit "use a
+//     passkey" button issues a normal get() that runs the Touch ID ceremony.
+//   • kMoriPasskeyCapabilities overrides PublicKeyCredential's capability
+//     probes (UVPAA, conditional mediation, getClientCapabilities) so relying
+//     parties report full passkey support. It is a SEPARATE snippet because it
+//     must be re-injected *after* extension content scripts (a password manager
+//     such as Proton Pass wraps these probes at document_start and reports
+//     partial support); see BrowserClient::OnLoadStart/OnLoadEnd.
 //   • Serializes the request (BufferSources → base64url) and ships it to native
 //     over the console channel (`console.debug('__MORI_WEBAUTHN__' + json)`),
 //     captured in BrowserClient::OnConsoleMessage.
@@ -155,7 +163,7 @@ static const char kMoriPasskeyAgent[] = R"JS(
     }
   };
 
-  function dispatch(op, pk, signal){
+  function dispatch(op, pk, signal, mediation){
     return new Promise(function(resolve, reject){
       if (signal && signal.aborted) {
         reject(new DOMException('Aborted', 'AbortError'));
@@ -170,6 +178,17 @@ static const char kMoriPasskeyAgent[] = R"JS(
             reject(new DOMException('Aborted', 'AbortError'));
           }
         });
+      }
+      // Conditional mediation (passkey autofill): per the WebAuthn spec this must
+      // never interrupt the user with a modal. We have no inline autofill chip, so
+      // the request waits silently and only settles if the page aborts it — at
+      // which point the user falls back to the explicit "Sign in with a passkey"
+      // button, which issues a normal (modal) get() that we satisfy via Touch ID.
+      // This matches how Safari/Chrome behave when nothing is autofilled, and lets
+      // us advertise conditional mediation so relying parties (e.g. GitHub) report
+      // full — not partial — passkey support.
+      if (op === 'get' && mediation === 'conditional') {
+        return;
       }
       var req = {
         id: id,
@@ -200,18 +219,62 @@ static const char kMoriPasskeyAgent[] = R"JS(
   };
   CC.get = function(options){
     if (options && options.publicKey) {
-      return dispatch('get', options.publicKey, options.signal);
+      return dispatch('get', options.publicKey, options.signal,
+                      options.mediation);
     }
     return origGet.apply(this, arguments);
   };
 
-  // Capability probes: we are a user-verifying platform authenticator, but we
-  // do not implement conditional-mediation (autofill) UI.
-  try {
-    window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable =
-      function(){ return Promise.resolve(true); };
-    window.PublicKeyCredential.isConditionalMediationAvailable =
-      function(){ return Promise.resolve(false); };
-  } catch (e) {}
+  // Capability probes are installed separately (kMoriPasskeyCapabilities) so we
+  // can re-assert them *after* extension content scripts run — see below.
+})();
+)JS";
+
+// Capability probes, kept separate from the credential overrides above.
+//
+// We advertise a user-verifying platform authenticator AND conditional
+// mediation so relying parties treat the browser as having full (not partial)
+// passkey support. The crucial reason this lives in its own snippet: a
+// password-manager extension (e.g. Proton Pass) injects a MAIN-world content
+// script at document_start that wraps PublicKeyCredential's static methods and
+// reports isUserVerifyingPlatformAuthenticatorAvailable() === false in this
+// CEF embedding — which is exactly what surfaces "this browser is reporting
+// partial passkey support". We inject this snippet *after* the extension
+// content scripts (end of OnLoadStart, and again in OnLoadEnd) so Mori's
+// honest capability values win, without disturbing the extension's own
+// credential create/get handling (so its passkeys keep working).
+//
+// These native static methods are writable, so Object.defineProperty cleanly
+// overwrites whatever the extension installed.
+static const char kMoriPasskeyCapabilities[] = R"JS(
+(function(){
+  if (!window.PublicKeyCredential) { return; }
+  function defineCap(name, fn){
+    try {
+      Object.defineProperty(window.PublicKeyCredential, name, {
+        value: fn, writable: true, configurable: true, enumerable: true
+      });
+    } catch (e) {
+      try { window.PublicKeyCredential[name] = fn; } catch (e2) {}
+    }
+  }
+  defineCap('isUserVerifyingPlatformAuthenticatorAvailable',
+            function(){ return Promise.resolve(true); });
+  defineCap('isConditionalMediationAvailable',
+            function(){ return Promise.resolve(true); });
+  // Newer feature-detection API (getClientCapabilities).
+  defineCap('getClientCapabilities', function(){
+    return Promise.resolve({
+      conditionalCreate: false,
+      conditionalGet: true,
+      hybridTransport: false,
+      passkeyPlatformAuthenticator: true,
+      userVerifyingPlatformAuthenticator: true,
+      relatedOrigins: true,
+      signalAllAcceptedCredentials: false,
+      signalCurrentUserDetails: false,
+      signalUnknownCredential: false
+    });
+  });
 })();
 )JS";

@@ -33,6 +33,7 @@ final class TopChromeContainerView: NSView {
     weak var store: BrowserStore?
     var sidebarPosition: SidebarPosition = .right
     private var closeWork: DispatchWorkItem?
+    private var hoverValidationTimer: Timer?
     private var appliedTrafficLightVisibility: Bool?
 
     /// Hover band at the very top that triggers the reveal when closed.
@@ -61,10 +62,13 @@ final class TopChromeContainerView: NSView {
         guard let store, store.topChromeRevealed != open else { return }
         withAnimation(Motion.snappy) { store.topChromeRevealed = open }
         applyTrafficLights(visible: open, animated: true)
+        syncHoverValidationTimer()
     }
 
     func syncFromStore() {
         applyTrafficLights(visible: isOpen, animated: false)
+        syncHoverValidationTimer()
+        validateOpenStateAgainstMouse()
     }
 
     private func applyTrafficLights(visible: Bool, animated: Bool) {
@@ -121,6 +125,10 @@ final class TopChromeContainerView: NSView {
         updateTrackingAreas()
     }
 
+    deinit {
+        hoverValidationTimer?.invalidate()
+    }
+
     // MARK: Hover tracking — one persistent area, position read continuously.
 
     override func updateTrackingAreas() {
@@ -160,6 +168,36 @@ final class TopChromeContainerView: NSView {
             closeWork = nil
             setOpen(true)
         }
+    }
+
+    private func syncHoverValidationTimer() {
+        if isOpen {
+            guard hoverValidationTimer == nil else { return }
+            let timer = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in
+                self?.validateOpenStateAgainstMouse()
+            }
+            hoverValidationTimer = timer
+            RunLoop.main.add(timer, forMode: .common)
+        } else {
+            hoverValidationTimer?.invalidate()
+            hoverValidationTimer = nil
+            closeWork?.cancel()
+            closeWork = nil
+        }
+    }
+
+    private func validateOpenStateAgainstMouse() {
+        guard isOpen, let window else { return }
+        let windowPoint = window.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let point = convert(windowPoint, from: nil)
+
+        guard bounds.contains(point), !isInSidebarPeekZone(point), point.y <= keepOpenHeight else {
+            scheduleClose()
+            return
+        }
+
+        closeWork?.cancel()
+        closeWork = nil
     }
 
     private func isInSidebarPeekZone(_ point: NSPoint) -> Bool {

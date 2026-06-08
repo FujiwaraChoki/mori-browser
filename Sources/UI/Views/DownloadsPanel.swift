@@ -1,42 +1,71 @@
 import SwiftUI
 
 /// Toolbar entry point for downloads. Hidden until the first download starts,
-/// then reveals a button that pulses while transfers are active and opens the
-/// Downloads popover.
+/// then reveals a button wrapped in a live progress ring while transfers are
+/// active. The Downloads popover opens on tap, and auto-opens the instant a
+/// download finishes so the user never has to go hunting for the result.
 struct DownloadsButton: View {
     @ObservedObject var downloads: DownloadStore
     @Binding var isOpen: Bool
     @Environment(\.palette) private var p
-    @State private var pulse = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var spin = false
 
     var body: some View {
         Group {
             if downloads.items.isEmpty {
                 EmptyView()
             } else {
-                IconButton(systemName: glyph,
-                           kind: isOpen ? .primary : .ghost,
-                           size: 28) { isOpen.toggle() }
-                    .opacity(downloads.hasActiveDownloads && pulse ? 0.55 : 1)
-                    .animation(downloads.hasActiveDownloads
-                               ? .easeInOut(duration: 0.7).repeatForever(autoreverses: true)
-                               : .default,
-                               value: pulse)
-                    .onAppear { pulse = downloads.hasActiveDownloads }
-                    .onChange(of: downloads.hasActiveDownloads) { _, active in
-                        pulse = active
+                ZStack {
+                    if downloads.hasActiveDownloads {
+                        progressRing
                     }
-                    .popover(isPresented: $isOpen, arrowEdge: .bottom) {
-                        DownloadsPanel(downloads: downloads)
-                            .environment(\.palette, p)
-                    }
-                    .help("Downloads")
+                    IconButton(systemName: glyph,
+                               kind: isOpen ? .primary : .ghost,
+                               size: 28) { isOpen.toggle() }
+                }
+                .popover(isPresented: $isOpen, arrowEdge: .bottom) {
+                    DownloadsPanel(downloads: downloads)
+                        .environment(\.palette, p)
+                }
+                .help(downloads.hasActiveDownloads ? "Downloading…" : "Downloads")
+                .onChange(of: downloads.completionToken) { _, _ in
+                    isOpen = true
+                }
             }
         }
     }
 
+    @ViewBuilder private var progressRing: some View {
+        if downloads.hasIndeterminateActive {
+            // Unknown size: a sweeping arc instead of a fill.
+            Circle()
+                .trim(from: 0, to: 0.7)
+                .stroke(p.primary.color,
+                        style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                .frame(width: 26, height: 26)
+                .rotationEffect(.degrees(spin ? 360 : 0))
+                .animation(reduceMotion ? nil
+                           : .linear(duration: 0.9).repeatForever(autoreverses: false),
+                           value: spin)
+                .onAppear { spin = true }
+        } else {
+            ZStack {
+                Circle()
+                    .stroke(p.primary.color.opacity(0.18), lineWidth: 2)
+                Circle()
+                    .trim(from: 0, to: max(downloads.aggregateFraction, 0.03))
+                    .stroke(p.primary.color,
+                            style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                    .animation(.easeOut(duration: 0.25), value: downloads.aggregateFraction)
+            }
+            .frame(width: 26, height: 26)
+        }
+    }
+
     private var glyph: String {
-        downloads.hasActiveDownloads ? "arrow.down.circle.fill" : "arrow.down.circle"
+        downloads.hasActiveDownloads ? "arrow.down" : "arrow.down.circle"
     }
 }
 

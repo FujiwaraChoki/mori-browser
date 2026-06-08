@@ -173,7 +173,13 @@ JSON
 <!doctype html>
 <meta charset="utf-8">
 <title>Mori Smoke Page</title>
-<body data-mori-smoke-page="$run_id">Mori content script smoke page</body>
+<body data-mori-smoke-page="$run_id">
+  <form id="mori-smoke-login">
+    <label for="mori-smoke-input">Email</label>
+    <input id="mori-smoke-input" name="email" type="email" autocomplete="username">
+  </form>
+  <iframe id="mori-smoke-child-frame" src="$SMOKE_FRAME_URL"></iframe>
+</body>
 HTML
 
   cat >"$smoke_capture_page" <<HTML
@@ -285,6 +291,16 @@ PY
         "<all_urls>"
       ],
       "js": [
+        "main-world.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
         "start.js"
       ],
       "run_at": "document_start"
@@ -352,20 +368,32 @@ PY
     "browsingData",
     "clipboardRead",
     "clipboardWrite",
+    "contentSettings",
+    "contextMenus",
     "cookies",
     "declarativeNetRequest",
+    "dns",
     "downloads",
     "history",
+    "idle",
 	    "identity",
 	    "management",
 	    "nativeMessaging",
 	    "offscreen",
+	    "power",
+	    "privacy",
 	    "proxy",
 	    "sessions",
+	    "search",
     "sidePanel",
     "scripting",
     "storage",
+    "system.cpu",
+    "system.display",
+    "system.memory",
+    "system.storage",
     "topSites",
+    "userScripts",
     "webNavigation",
     "webRequest"
   ],
@@ -417,11 +445,80 @@ JS
 document.documentElement.dataset.moriStartContentScriptSmoke = "loaded";
 JS
 
+  cat >"$smoke_dir/main-world.js" <<'JS'
+document.documentElement.dataset.moriMainWorldManifestSmoke =
+  (globalThis.chrome && globalThis.chrome.runtime &&
+    globalThis.chrome.runtime.id) ? "runtime" : "page";
+JS
+
   cat >"$smoke_dir/content.js" <<'JS'
 document.documentElement.dataset.moriContentScriptSmoke = "loaded";
 
+function moriSenderSnapshot(sender) {
+  return {
+    id: sender && sender.id,
+    url: sender && sender.url,
+    origin: sender && sender.origin,
+    frameId: sender && sender.frameId,
+    tab: sender && sender.tab ? {
+      id: sender.tab.id,
+      url: sender.tab.url,
+      active: sender.tab.active
+    } : null
+  };
+}
+
+async function moriContentPortRoundTrip(runId) {
+  return new Promise((resolve, reject) => {
+    const port = chrome.runtime.connect(chrome.runtime.id, {
+      name: "content-focus-" + runId
+    });
+    const timer = setTimeout(() => {
+      try { port.disconnect(); } catch (_) {}
+      reject(new Error("content port timeout"));
+    }, 1000);
+    port.onMessage.addListener((message) => {
+      clearTimeout(timer);
+      resolve(message);
+      port.disconnect();
+    });
+    port.postMessage({ type: "smoke-port-ping", runId, source: "content" });
+  });
+}
+
+document.addEventListener("focusin", (event) => {
+  const input = event.target;
+  if (!(input instanceof HTMLInputElement)) return;
+  const runId = document.body && document.body.dataset.moriSmokePage || "";
+  input.dataset.moriExtensionFocusSmoke = runId;
+  input.value = "focused-" + runId;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  const overlay = document.createElement("button");
+  overlay.type = "button";
+  overlay.dataset.moriExtensionInputOverlay = runId;
+  overlay.textContent = "extension overlay";
+  input.insertAdjacentElement("afterend", overlay);
+  Promise.all([
+    chrome.runtime.sendMessage(chrome.runtime.id, {
+      type: "content-focus-smoke",
+      runId,
+      fieldId: input.id
+    }),
+    moriContentPortRoundTrip(runId)
+  ]).then(([background, port]) => {
+    window.__moriContentFocusBackground = background;
+    window.__moriContentFocusPort = port;
+    document.documentElement.dataset.moriContentFocusSmoke = "done";
+  }).catch((error) => {
+    window.__moriContentFocusError = error && error.message || String(error);
+    document.documentElement.dataset.moriContentFocusSmoke = "error";
+  });
+}, true);
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message && message.type === "content-smoke-ping") {
+    const input = document.getElementById("mori-smoke-input");
+    const overlay = document.querySelector("[data-mori-extension-input-overlay]");
     sendResponse({
       contentPong: true,
       href: location.href,
@@ -429,13 +526,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       startLoaded: document.documentElement.dataset.moriStartContentScriptSmoke,
       endLoaded: document.documentElement.dataset.moriContentScriptSmoke,
       idleLoaded: document.documentElement.dataset.moriIdleContentScriptSmoke,
+      mainWorldLoaded: document.documentElement.dataset.moriMainWorldManifestSmoke,
+      sender: moriSenderSnapshot(sender),
+      marker: document.body && document.body.dataset.moriSmokePage,
+      focus: {
+        done: document.documentElement.dataset.moriContentFocusSmoke,
+        error: window.__moriContentFocusError || "",
+        activeId: document.activeElement && document.activeElement.id,
+        inputValue: input && input.value,
+        inputDataset: input && input.dataset.moriExtensionFocusSmoke,
+        overlayRunId: overlay && overlay.dataset.moriExtensionInputOverlay,
+        background: window.__moriContentFocusBackground || null,
+        port: window.__moriContentFocusPort || null
+      }
+    });
+  }
+  return true;
+});
+JS
+
+  cat >"$smoke_dir/frame-target.js" <<'JS'
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.type === "frame-target-smoke") {
+    const context = chrome.runtime.getExtensionContext &&
+      chrome.runtime.getExtensionContext();
+    sendResponse({
+      frameTargetPong: true,
+      href: location.href,
+      frameId: chrome.runtime.getFrameId(),
+      documentId: context && context.documentId,
+      context,
+      marker: document.body && (
+        document.body.dataset.moriSmokePage ||
+        document.body.dataset.moriSmokeFrame
+      ),
       sender: {
         id: sender && sender.id,
         url: sender && sender.url,
-        origin: sender && sender.origin,
-        frameId: sender && sender.frameId
-      },
-      marker: document.body && document.body.dataset.moriSmokePage
+        frameId: sender && sender.frameId,
+        documentId: sender && sender.documentId
+      }
     });
   }
   return true;
@@ -444,6 +574,16 @@ JS
 
   cat >"$smoke_dir/idle.js" <<'JS'
 document.documentElement.dataset.moriIdleContentScriptSmoke = "loaded";
+JS
+
+  cat >"$smoke_dir/protected-late.js" <<'JS'
+if (!(globalThis.chrome &&
+    globalThis.chrome.runtime &&
+    globalThis.chrome.runtime.id)) {
+  throw new Error("late dynamic script missing chrome.runtime.id");
+}
+document.documentElement.dataset.moriProtectedLateRuntime =
+  globalThis.chrome.runtime.id;
 JS
 
   cat >"$smoke_dir/dynamic.js" <<'JS'
@@ -506,6 +646,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
     });
   }
+  if (message && message.type === "content-focus-smoke") {
+    sendResponse({
+      focusPong: true,
+      message,
+      sender: {
+        id: sender && sender.id,
+        url: sender && sender.url,
+        origin: sender && sender.origin,
+        frameId: sender && sender.frameId,
+        tab: sender && sender.tab ? {
+          id: sender.tab.id,
+          url: sender.tab.url,
+          active: sender.tab.active
+        } : null
+      }
+    });
+  }
   if (message && message.type === "command-smoke-state") {
     sendResponse({
       commandEvents: commandEvents.slice()
@@ -534,6 +691,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message && message.type === "alarm-smoke-state") {
     sendResponse({ events: alarmEvents.slice() });
+  }
+  if (message && message.type === "legacy-extension-views-smoke") {
+    const allViews = chrome.extension.getViews();
+    const popupViews = chrome.extension.getViews({ type: "popup" });
+    const tabViews = chrome.extension.getViews({ type: "tab" });
+    const extensionTabs = chrome.extension.getExtensionTabs();
+    Promise.resolve(chrome.runtime.getBackgroundPage()).then((backgroundPage) => {
+      sendResponse({
+        namespace: !!chrome.extension,
+        inIncognitoContext: chrome.extension.inIncognitoContext,
+        backgroundPageIsSelf: chrome.extension.getBackgroundPage() === globalThis,
+        runtimeBackgroundPageIsSelf: backgroundPage === globalThis,
+        allViewsIncludeSelf: allViews.includes(globalThis),
+        allViewsLength: allViews.length,
+        popupViewsLength: popupViews.length,
+        tabViewsLength: tabViews.length,
+        extensionTabsLength: extensionTabs.length,
+        getURL: chrome.extension.getURL("popup.html")
+      });
+    });
   }
   return true;
 });
@@ -728,6 +905,326 @@ JS
     throw new Error(label + ": " + (lastError && lastError.message || "no response"));
   }
 
+  async function runtimeIntrospectionRoundTrip() {
+    const platformPromise = await chrome.runtime.getPlatformInfo();
+    const platformCallback = await new Promise((resolve) => {
+      chrome.runtime.getPlatformInfo((platform) => resolve(platform));
+    });
+    const updatePromise = await chrome.runtime.requestUpdateCheck();
+    const updateCallback = await new Promise((resolve) => {
+      chrome.runtime.requestUpdateCheck((status, details) => {
+        resolve({
+          status,
+          details: details || null
+        });
+      });
+    });
+    let restartAfterDelayCallback = false;
+    const restartAfterDelayPromise = chrome.runtime.restartAfterDelay(1, () => {
+      restartAfterDelayCallback = true;
+    });
+    await restartAfterDelayPromise;
+    chrome.runtime.restart();
+    const reloadResult = chrome.runtime.reload();
+    return {
+      version: chrome.runtime.getVersion(),
+      manifestVersion: chrome.runtime.getManifest().version,
+      platformPromise,
+      platformCallback,
+      updatePromise,
+      updateCallback,
+      restartAfterDelayCallback,
+      reloadResultType: typeof reloadResult
+    };
+  }
+
+  async function powerRoundTrip() {
+    const initial = await chrome.power.__moriSmokeState();
+    const systemReturn = await chrome.power.requestKeepAwake(
+      chrome.power.Level.SYSTEM);
+    const afterSystem = await retry("power system keep-awake", async () => {
+      const state = await chrome.power.__moriSmokeState();
+      if (!state || state.level !== "system") {
+        throw new Error("system assertion not active");
+      }
+      return state;
+    });
+    const displayReturn = await chrome.power.requestKeepAwake(
+      chrome.power.Level.DISPLAY);
+    const afterDisplay = await retry("power display keep-awake", async () => {
+      const state = await chrome.power.__moriSmokeState();
+      if (!state || state.level !== "display") {
+        throw new Error("display assertion not active");
+      }
+      return state;
+    });
+    const releaseReturn = await chrome.power.releaseKeepAwake();
+    const afterRelease = await retry("power release", async () => {
+      const state = await chrome.power.__moriSmokeState();
+      if (state !== null) {
+        throw new Error("power assertion still active");
+      }
+      return state;
+    });
+    let invalidError = "";
+    try {
+      await chrome.power.requestKeepAwake("screen");
+    } catch (error) {
+      invalidError = error && error.message || String(error);
+    }
+    return {
+      initial,
+      levels: chrome.power.Level,
+      systemReturn,
+      afterSystem,
+      displayReturn,
+      afterDisplay,
+      releaseReturn,
+      afterRelease,
+      invalidError
+    };
+  }
+
+  async function idleRoundTrip() {
+    const validStates = ["active", "idle", "locked"];
+    const events = [];
+    chrome.idle.onStateChanged.addListener((state) => {
+      events.push(state);
+    });
+    const callbackState = await new Promise((resolve) => {
+      chrome.idle.queryState(1, (state) => resolve(state));
+    });
+    const promiseState = await chrome.idle.queryState(1);
+    const setReturn = await chrome.idle.setDetectionInterval(1);
+    await delay(1100);
+    const browserState = await browser.idle.queryState(1);
+    const autoLockDelay = await chrome.idle.getAutoLockDelay();
+    const autoLockDelayCallback = await new Promise((resolve) => {
+      chrome.idle.getAutoLockDelay((delay) => resolve(delay));
+    });
+    return {
+      namespace: !!(chrome.idle &&
+        chrome.idle.queryState &&
+        chrome.idle.setDetectionInterval &&
+        chrome.idle.getAutoLockDelay &&
+        chrome.idle.onStateChanged),
+      browserNamespace: !!(browser.idle &&
+        browser.idle.queryState &&
+        browser.idle.setDetectionInterval &&
+        browser.idle.getAutoLockDelay),
+      idleStateEnum: chrome.idle.IdleState,
+      callbackState,
+      promiseState,
+      browserState,
+      statesValid: validStates.includes(callbackState) &&
+        validStates.includes(promiseState) &&
+        validStates.includes(browserState) &&
+        events.every((state) => validStates.includes(state)),
+      setReturn,
+      autoLockDelay,
+      autoLockDelayCallback,
+      events
+    };
+  }
+
+  async function systemRoundTrip() {
+    const cpu = await chrome.system.cpu.getInfo();
+    const cpuCallback = await new Promise((resolve) => {
+      chrome.system.cpu.getInfo((info) => resolve(info));
+    });
+    const memory = await chrome.system.memory.getInfo();
+    const memoryCallback = await new Promise((resolve) => {
+      chrome.system.memory.getInfo((info) => resolve(info));
+    });
+    const displays = await chrome.system.display.getInfo();
+    const displaysCallback = await new Promise((resolve) => {
+      chrome.system.display.getInfo((info) => resolve(info));
+    });
+    const storageUnits = await chrome.system.storage.getInfo();
+    const storageCallback = await new Promise((resolve) => {
+      chrome.system.storage.getInfo((info) => resolve(info));
+    });
+    const firstStorageId =
+      storageUnits && storageUnits[0] && storageUnits[0].id || "";
+    const available = firstStorageId
+      ? await chrome.system.storage.getAvailableCapacity(firstStorageId)
+      : null;
+    const availableCallback = firstStorageId
+      ? await new Promise((resolve) => {
+          chrome.system.storage.getAvailableCapacity(firstStorageId,
+            (info) => resolve(info));
+        })
+      : null;
+    const ejectMissing = await chrome.system.storage.ejectDevice(
+      "missing-" + runId);
+    const ejectFixed = firstStorageId
+      ? await chrome.system.storage.ejectDevice(firstStorageId)
+      : "";
+    return {
+      hasNamespace: !!(chrome.system &&
+        chrome.system.cpu &&
+        chrome.system.memory &&
+        chrome.system.display &&
+        chrome.system.storage),
+      browserNamespace: !!(globalThis.browser &&
+        browser.system &&
+        browser.system.cpu &&
+        browser.system.memory &&
+        browser.system.display &&
+        browser.system.storage),
+      storageEvents: {
+        attached: !!(chrome.system.storage.onAttached &&
+          chrome.system.storage.onAttached.addListener),
+        detached: !!(chrome.system.storage.onDetached &&
+          chrome.system.storage.onDetached.addListener)
+      },
+      cpu,
+      cpuCallback,
+      memory,
+      memoryCallback,
+      displays,
+      displaysCallback,
+      storageUnits,
+      storageCallback,
+      available,
+      availableCallback,
+      ejectMissing,
+      ejectFixed
+    };
+  }
+
+  function moriEncodedQueryToken(text) {
+    return encodeURIComponent(text);
+  }
+
+  async function waitForSearchURL(tabId, text) {
+    const token = moriEncodedQueryToken(text);
+    return retry("search tab " + tabId, async () => {
+      const tab = await chrome.tabs.get(tabId);
+      if (!tab || !String(tab.url || "").includes(token)) {
+        throw new Error("search URL not loaded yet");
+      }
+      return tab;
+    });
+  }
+
+  async function searchRoundTrip() {
+    const tabText = "mori search tabid " + runId;
+    const currentText = "mori search current " + runId;
+    const newTabText = "mori search newtab " + runId;
+    const browserText = "mori search browser " + runId;
+
+    const tabTarget = await chrome.tabs.create({
+      url: "about:blank",
+      active: false
+    });
+    const tabReturn = await chrome.search.query({
+      text: tabText,
+      tabId: tabTarget.id
+    });
+    const tabAfter = await waitForSearchURL(tabTarget.id, tabText);
+
+    const currentTarget = await chrome.tabs.create({
+      url: "about:blank",
+      active: true
+    });
+    const currentReturn = await chrome.search.query({
+      text: currentText
+    });
+    const currentAfter = await waitForSearchURL(currentTarget.id, currentText);
+
+    const beforeNewTabs = await chrome.tabs.query({});
+    const newTabCallback = await new Promise((resolve) => {
+      chrome.search.query({
+        text: newTabText,
+        disposition: chrome.search.Disposition.NEW_TAB
+      }, () => {
+        resolve({
+          lastError: chrome.runtime.lastError &&
+            chrome.runtime.lastError.message || ""
+        });
+      });
+    });
+    const newTabAfter = await retry("search new tab", async () => {
+      const tabs = await chrome.tabs.query({});
+      const token = moriEncodedQueryToken(newTabText);
+      const tab = tabs.find((item) =>
+        item && String(item.url || "").includes(token));
+      if (!tab) throw new Error("new search tab not visible");
+      return tab;
+    });
+
+    const browserReturn = await browser.search.query({
+      text: browserText,
+      disposition: "NEW_WINDOW"
+    });
+    const browserAfter = await retry("browser.search new window", async () => {
+      const tabs = await chrome.tabs.query({});
+      const token = moriEncodedQueryToken(browserText);
+      const tab = tabs.find((item) =>
+        item && String(item.url || "").includes(token));
+      if (!tab) throw new Error("browser.search tab not visible");
+      return tab;
+    });
+
+    let invalidError = "";
+    try {
+      await chrome.search.query({
+        text: "invalid " + runId,
+        tabId: tabTarget.id,
+        disposition: "NEW_TAB"
+      });
+    } catch (error) {
+      invalidError = error && error.message || String(error);
+    }
+
+    await chrome.tabs.remove([
+      tabTarget.id,
+      currentTarget.id,
+      newTabAfter.id,
+      browserAfter.id
+    ]).catch(() => null);
+
+    return {
+      namespace: {
+        chrome: !!(chrome.search && chrome.search.query),
+        browser: !!(browser.search && browser.search.query),
+        disposition: chrome.search.Disposition
+      },
+      tabText,
+      currentText,
+      newTabText,
+      browserText,
+      tabReturn,
+      currentReturn,
+      browserReturn,
+      tabAfter,
+      currentAfter,
+      beforeNewTabCount: beforeNewTabs.length,
+      newTabCallback,
+      newTabAfter,
+      browserAfter,
+      invalidError
+    };
+  }
+
+  async function dnsRoundTrip() {
+    const promiseResult = await chrome.dns.resolve("localhost");
+    const callbackResult = await new Promise((resolve) => {
+      chrome.dns.resolve("localhost", (info) => resolve(info));
+    });
+    const browserResult = await browser.dns.resolve("localhost");
+    const invalidResult = await chrome.dns.resolve("https://localhost/");
+    return {
+      namespace: !!(chrome.dns && chrome.dns.resolve),
+      browserNamespace: !!(browser.dns && browser.dns.resolve),
+      promiseResult,
+      callbackResult,
+      browserResult,
+      invalidResult
+    };
+  }
+
   function portRoundTrip() {
     return new Promise((resolve, reject) => {
       const port = chrome.runtime.connect(chrome.runtime.id, {
@@ -814,10 +1311,209 @@ JS
   }
 
   async function contentScriptRoundTrip() {
+    const frameScriptId = "mori-frame-target-smoke";
+    await chrome.scripting.unregisterContentScripts({ ids: [frameScriptId] })
+      .catch(() => null);
+    await chrome.scripting.registerContentScripts([{
+      id: frameScriptId,
+      matches: ["<all_urls>"],
+      js: ["frame-target.js"],
+      runAt: "document_end",
+      allFrames: true
+    }]);
     const tab = await chrome.tabs.create({ url: smokePageURL, active: true });
-    await delay(700);
-    return retry("tabs.sendMessage", () =>
-      chrome.tabs.sendMessage(tab.id, { type: "content-smoke-ping", runId }));
+    try {
+      await delay(700);
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          const input = document.getElementById("mori-smoke-input");
+          if (!input) return false;
+          input.focus();
+          input.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+          return document.activeElement === input;
+        }
+      });
+      const result = await retry("tabs.sendMessage", () =>
+        chrome.tabs.sendMessage(tab.id, { type: "content-smoke-ping", runId })
+          .then((result) => {
+            if (!result ||
+                !result.focus ||
+                result.focus.done !== "done") {
+              throw new Error(result && result.focus &&
+                (result.focus.error || result.focus.done) ||
+                "content focus path not ready");
+            }
+            return result;
+          }));
+      const protectedSetup = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        world: "MAIN",
+        func: () => {
+          const runtimeIdOf = (value) => {
+            try {
+              return value && value.runtime && value.runtime.id || null;
+            } catch (_) {
+              return null;
+            }
+          };
+          const installProtected = (name, value) => {
+            const beforeRuntime = runtimeIdOf(globalThis[name]);
+            let mode = "none";
+            let error = "";
+            try {
+              Object.defineProperty(globalThis, name, {
+                configurable: true,
+                writable: true,
+                value
+              });
+              mode = "defineProperty";
+            } catch (defineError) {
+              error = defineError && defineError.message || String(defineError);
+              try {
+                globalThis[name] = value;
+                mode = "assignment";
+              } catch (assignError) {
+                error += " / " +
+                  (assignError && assignError.message || String(assignError));
+              }
+            }
+            return {
+              beforeRuntime,
+              afterRuntime: runtimeIdOf(globalThis[name]),
+              mode,
+              error
+            };
+          };
+          const realChrome = globalThis.chrome;
+          const realBrowser = globalThis.browser;
+          const protectedProxy = new Proxy(realChrome || {}, {
+            get(target, prop) {
+              if (prop === "app") return target[prop];
+              return undefined;
+            },
+            set() {
+              return false;
+            }
+          });
+          const protectedBrowserProxy = new Proxy(realBrowser || protectedProxy, {
+            get(target, prop) {
+              if (prop === "app") return target[prop];
+              return undefined;
+            },
+            set() {
+              return false;
+            }
+          });
+          return {
+            chrome: installProtected("chrome", protectedProxy),
+            browser: installProtected("browser", protectedBrowserProxy)
+          };
+        }
+      });
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["protected-late.js"]
+      });
+      const protectedDynamic = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => ({
+          runtimeId: globalThis.chrome &&
+            globalThis.chrome.runtime &&
+            globalThis.chrome.runtime.id,
+          browserRuntimeId: globalThis.browser &&
+            globalThis.browser.runtime &&
+            globalThis.browser.runtime.id,
+          marker: document.documentElement.dataset.moriProtectedLateRuntime
+        })
+      });
+      const frames = await retry("webNavigation.getAllFrames child", async () => {
+        const all = await chrome.webNavigation.getAllFrames({ tabId: tab.id });
+        const child = (all || []).find((frame) =>
+          frame &&
+          frame.frameId !== 0 &&
+          String(frame.url || "").includes("frame-smoke.html"));
+        if (!child) {
+          throw new Error("child frame not observed " + JSON.stringify(all));
+        }
+        return all;
+      });
+      const childFrame = frames.find((frame) =>
+        frame &&
+        frame.frameId !== 0 &&
+        String(frame.url || "").includes("frame-smoke.html"));
+      if (!childFrame.documentId) {
+        throw new Error("child frame missing documentId " +
+          JSON.stringify(childFrame));
+      }
+      const documentFrame = await chrome.webNavigation.getFrame({
+        tabId: tab.id,
+        documentId: childFrame.documentId
+      });
+      if (!documentFrame ||
+          documentFrame.frameId !== childFrame.frameId ||
+          documentFrame.documentId !== childFrame.documentId) {
+        throw new Error("documentId getFrame mismatch " + JSON.stringify({
+          documentFrame,
+          childFrame
+        }));
+      }
+      const targeted = await retry("tabs.sendMessage frameId", () =>
+        chrome.tabs.sendMessage(tab.id, {
+          type: "frame-target-smoke",
+          runId
+        }, {
+          frameId: childFrame.frameId
+        }).then((response) => {
+          if (!response ||
+              response.frameTargetPong !== true ||
+              response.frameId !== childFrame.frameId ||
+              !String(response.href || "").includes("frame-smoke.html")) {
+            throw new Error("wrong frame response " + JSON.stringify({
+              response,
+              childFrame
+            }));
+          }
+          return response;
+        }));
+      const documentTargeted = await retry("tabs.sendMessage documentId", () =>
+        chrome.tabs.sendMessage(tab.id, {
+          type: "frame-target-smoke",
+          runId
+        }, {
+          documentId: childFrame.documentId
+        }).then((response) => {
+          if (!response ||
+              response.frameTargetPong !== true ||
+              response.frameId !== childFrame.frameId ||
+              response.documentId !== childFrame.documentId ||
+              !response.context ||
+              response.context.documentId !== childFrame.documentId ||
+              !String(response.href || "").includes("frame-smoke.html")) {
+            throw new Error("wrong document response " + JSON.stringify({
+              response,
+              childFrame
+            }));
+          }
+          return response;
+        }));
+      return {
+        ...result,
+        protectedDynamic,
+        protectedSetup,
+        frameTarget: {
+          frames,
+          childFrame,
+          documentFrame,
+          targeted,
+          documentTargeted
+        }
+      };
+    } finally {
+      await chrome.scripting.unregisterContentScripts({ ids: [frameScriptId] })
+        .catch(() => null);
+      await chrome.tabs.remove(tab.id).catch(() => null);
+    }
   }
 
   async function executeScriptRoundTrip() {
@@ -860,7 +1556,134 @@ JS
       args: [runId]
     });
     await chrome.tabs.remove(asyncTab.id);
-    return { sync: result, async: asyncResult };
+    const worldTab = await chrome.tabs.create({
+      url: smokePageURL + "?execute-world=" + encodeURIComponent(runId),
+      active: true
+    });
+    await delay(700);
+    const mainWorldResult = await chrome.scripting.executeScript({
+      target: { tabId: worldTab.id },
+      world: "MAIN",
+      func: () => {
+        const previous = globalThis.chrome || {};
+        globalThis.chrome = new Proxy(previous, {
+          get(target, prop) {
+            if (prop === "app") return target[prop];
+            return undefined;
+          },
+          set() {
+            return false;
+          }
+        });
+        return {
+          mainHasRuntime: !!(globalThis.chrome &&
+            globalThis.chrome.runtime &&
+            globalThis.chrome.runtime.id)
+        };
+      }
+    });
+    const isolatedAfterMainResult = await chrome.scripting.executeScript({
+      target: { tabId: worldTab.id },
+      func: () => ({
+        runtimeId: chrome.runtime && chrome.runtime.id,
+        url: chrome.runtime && chrome.runtime.getURL &&
+          chrome.runtime.getURL("/dropdown.html"),
+        context: chrome.runtime && chrome.runtime.getExtensionContext &&
+          chrome.runtime.getExtensionContext()
+      })
+    });
+    await chrome.tabs.remove(worldTab.id);
+    const frameTab = await chrome.tabs.create({
+      url: smokePageURL + "?execute-frames=" + encodeURIComponent(runId),
+      active: true
+    });
+    await delay(700);
+    const frames = await retry("scripting.executeScript frames", async () => {
+      const all = await chrome.webNavigation.getAllFrames({ tabId: frameTab.id });
+      const child = (all || []).find((frame) =>
+        frame &&
+        frame.frameId !== 0 &&
+        String(frame.url || "").includes("frame-smoke.html"));
+      if (!child) {
+        throw new Error("child frame not observed " + JSON.stringify(all));
+      }
+      return all;
+    });
+    const childFrame = frames.find((frame) =>
+      frame &&
+      frame.frameId !== 0 &&
+      String(frame.url || "").includes("frame-smoke.html"));
+    if (!childFrame.documentId) {
+      throw new Error("child frame missing documentId " +
+        JSON.stringify(childFrame));
+    }
+    const documentFrame = await chrome.webNavigation.getFrame({
+      tabId: frameTab.id,
+      documentId: childFrame.documentId
+    });
+    if (!documentFrame ||
+        documentFrame.frameId !== childFrame.frameId ||
+        documentFrame.documentId !== childFrame.documentId) {
+      throw new Error("documentId execute getFrame mismatch " +
+        JSON.stringify({ documentFrame, childFrame }));
+    }
+    const allFrameResult = await chrome.scripting.executeScript({
+      target: { tabId: frameTab.id, allFrames: true },
+      func: (value) => ({
+        value,
+        href: location.href,
+        runtimeFrameId: chrome.runtime && chrome.runtime.getFrameId &&
+          chrome.runtime.getFrameId(),
+        context: chrome.runtime && chrome.runtime.getExtensionContext &&
+          chrome.runtime.getExtensionContext(),
+        pageMarker: document.body && document.body.dataset.moriSmokePage,
+        frameMarker: document.body && document.body.dataset.moriSmokeFrame
+      }),
+      args: [runId]
+    });
+    const targetedFrameResult = await chrome.scripting.executeScript({
+      target: { tabId: frameTab.id, frameIds: [childFrame.frameId] },
+      func: (value) => ({
+        value,
+        href: location.href,
+        runtimeFrameId: chrome.runtime && chrome.runtime.getFrameId &&
+          chrome.runtime.getFrameId(),
+        context: chrome.runtime && chrome.runtime.getExtensionContext &&
+          chrome.runtime.getExtensionContext(),
+        frameMarker: document.body && document.body.dataset.moriSmokeFrame
+      }),
+      args: [runId]
+    });
+    const targetedDocumentResult = await chrome.scripting.executeScript({
+      target: { tabId: frameTab.id, documentIds: [childFrame.documentId] },
+      func: (value) => ({
+        value,
+        href: location.href,
+        runtimeFrameId: chrome.runtime && chrome.runtime.getFrameId &&
+          chrome.runtime.getFrameId(),
+        context: chrome.runtime && chrome.runtime.getExtensionContext &&
+          chrome.runtime.getExtensionContext(),
+        frameMarker: document.body && document.body.dataset.moriSmokeFrame
+      }),
+      args: [runId]
+    });
+    await chrome.tabs.remove(frameTab.id);
+    return {
+      sync: result,
+      async: asyncResult,
+      world: {
+        main: mainWorldResult,
+        isolatedAfterMain: isolatedAfterMainResult
+      },
+      frames: {
+        observed: frames,
+        childFrame,
+        documentFrame,
+        all: allFrameResult,
+        targeted: targetedFrameResult,
+        documentTargeted: targetedDocumentResult
+      }
+    };
   }
 
   async function cssInjectionRoundTrip() {
@@ -905,12 +1728,74 @@ JS
       func: () => getComputedStyle(document.body).color
     });
     await chrome.tabs.remove(tab.id);
+    const frameTab = await chrome.tabs.create({
+      url: smokePageURL + "?css-frames=" + encodeURIComponent(runId),
+      active: true
+    });
+    await delay(700);
+    let frameTargetCSS = null;
+    try {
+      const frames = await retry("scripting CSS frames", async () => {
+        const all = await chrome.webNavigation.getAllFrames({ tabId: frameTab.id });
+        const child = (all || []).find((frame) =>
+          frame &&
+          frame.frameId !== 0 &&
+          String(frame.url || "").includes("frame-smoke.html"));
+        if (!child) {
+          throw new Error("child frame not observed " + JSON.stringify(all));
+        }
+        return all;
+      });
+      const childFrame = frames.find((frame) =>
+        frame &&
+        frame.frameId !== 0 &&
+        String(frame.url || "").includes("frame-smoke.html"));
+      await chrome.scripting.executeScript({
+        target: { tabId: frameTab.id, allFrames: true },
+        func: () => {
+          document.body.style.backgroundColor = "rgb(11, 22, 33)";
+        }
+      });
+      const frameCSS =
+        "body { background-color: rgb(88, 99, 111) !important; }";
+      await chrome.scripting.insertCSS({
+        target: { tabId: frameTab.id, frameIds: [childFrame.frameId] },
+        css: frameCSS
+      });
+      const frameAfterInsert = await chrome.scripting.executeScript({
+        target: { tabId: frameTab.id, allFrames: true },
+        func: () => ({
+          href: location.href,
+          color: getComputedStyle(document.body).backgroundColor
+        })
+      });
+      await chrome.scripting.removeCSS({
+        target: { tabId: frameTab.id, frameIds: [childFrame.frameId] },
+        css: frameCSS
+      });
+      const frameAfterRemove = await chrome.scripting.executeScript({
+        target: { tabId: frameTab.id, allFrames: true },
+        func: () => ({
+          href: location.href,
+          color: getComputedStyle(document.body).backgroundColor
+        })
+      });
+      frameTargetCSS = {
+        frames,
+        childFrame,
+        afterInsert: frameAfterInsert,
+        afterRemove: frameAfterRemove
+      };
+    } finally {
+      await chrome.tabs.remove(frameTab.id).catch(() => null);
+    }
     return {
       tab,
       afterInsert,
       afterRemove,
       legacyAfterInsert,
-      legacyAfterRemove
+      legacyAfterRemove,
+      frameTargetCSS
     };
   }
 
@@ -1025,25 +1910,170 @@ JS
     return { registered, response, updated, afterUnregister };
   }
 
+  async function userScriptsRoundTrip() {
+    const scriptId = "mori-user-script-smoke";
+    const worldId = "moriUserWorld";
+    await chrome.userScripts.unregister({ ids: [scriptId] }).catch(() => null);
+    await chrome.userScripts.resetWorldConfiguration(worldId).catch(() => null);
+    const before = await chrome.userScripts.getScripts({ ids: [scriptId] });
+
+    await chrome.userScripts.configureWorld({
+      worldId,
+      messaging: true,
+      csp: "script-src 'self'"
+    });
+    const worldConfigurations =
+      await chrome.userScripts.getWorldConfigurations();
+
+    const registeredValue = "registered-" + runId;
+    await chrome.userScripts.register([{
+      id: scriptId,
+      matches: ["<all_urls>"],
+      includeGlobs: ["*user-script*"],
+      excludeGlobs: ["*excluded*"],
+      js: [{
+        code: "document.documentElement.dataset.moriUserScriptSmoke = " +
+          JSON.stringify(registeredValue) + ";"
+      }],
+      runAt: "document_end",
+      allFrames: false,
+      world: chrome.userScripts.ExecutionWorld.USER_SCRIPT,
+      worldId
+    }]);
+    const registered = await chrome.userScripts.getScripts({ ids: [scriptId] });
+    const tab = await chrome.tabs.create({
+      url: smokePageURL + "?user-script=" + encodeURIComponent(runId),
+      active: true
+    });
+    const injected = await retry("userScripts registered injection", async () => {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => document.documentElement.dataset.moriUserScriptSmoke || ""
+      });
+      const value = result && result[0] && result[0].result || "";
+      if (value !== registeredValue) throw new Error("user script not injected");
+      return value;
+    });
+
+    const updatedValue = "updated-" + runId;
+    await chrome.userScripts.update([{
+      id: scriptId,
+      js: [{
+        code: "document.documentElement.dataset.moriUserScriptSmoke = " +
+          JSON.stringify(updatedValue) + ";"
+      }]
+    }]);
+    const updated = await browser.userScripts.getScripts({ ids: [scriptId] });
+    const updateTab = await chrome.tabs.create({
+      url: smokePageURL + "?user-script-updated=" + encodeURIComponent(runId),
+      active: true
+    });
+    const injectedAfterUpdate = await retry("userScripts updated injection", async () => {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId: updateTab.id },
+        func: () => document.documentElement.dataset.moriUserScriptSmoke || ""
+      });
+      const value = result && result[0] && result[0].result || "";
+      if (value !== updatedValue) throw new Error("updated user script not injected");
+      return value;
+    });
+
+    const executeValue = "executed-" + runId;
+    const executeResult = await chrome.userScripts.execute({
+      target: { tabId: updateTab.id },
+      js: [{
+        code: "document.documentElement.dataset.moriUserScriptExecute = " +
+          JSON.stringify(executeValue) + ";"
+      }],
+      world: chrome.userScripts.ExecutionWorld.USER_SCRIPT
+    });
+    const executeObserved = await retry("userScripts execute", async () => {
+      const result = await chrome.scripting.executeScript({
+        target: { tabId: updateTab.id },
+        func: () => document.documentElement.dataset.moriUserScriptExecute || ""
+      });
+      const value = result && result[0] && result[0].result || "";
+      if (value !== executeValue) throw new Error("userScripts.execute did not run");
+      return value;
+    });
+
+    await chrome.userScripts.unregister({ ids: [scriptId] });
+    const afterUnregister = await chrome.userScripts.getScripts({ ids: [scriptId] });
+    await chrome.userScripts.resetWorldConfiguration(worldId);
+    const worldConfigurationsAfterReset =
+      await chrome.userScripts.getWorldConfigurations();
+    await chrome.tabs.remove([tab.id, updateTab.id]).catch(() => null);
+
+    return {
+      namespace: !!(chrome.userScripts &&
+        chrome.userScripts.register &&
+        chrome.userScripts.getScripts &&
+        chrome.runtime.onUserScriptMessage &&
+        chrome.runtime.onUserScriptConnect),
+      browserNamespace: !!(browser.userScripts &&
+        browser.userScripts.getScripts),
+      executionWorld: chrome.userScripts.ExecutionWorld,
+      before,
+      worldConfigurations,
+      registered,
+      injected,
+      updated,
+      injectedAfterUpdate,
+      executeResult,
+      executeObserved,
+      afterUnregister,
+      worldConfigurationsAfterReset
+    };
+  }
+
   async function webRequestRoundTrip() {
     const target = smokePageURL + "?webrequest=" + encodeURIComponent(runId);
+    const targetURL = new URL(target);
+    const targetPattern = targetURL.protocol.replace(":", "") +
+      "://" + targetURL.hostname + "/*webrequest=*";
     const events = {
       beforeRequest: [],
       beforeSendHeaders: [],
+      beforeSendHeadersWithoutExtra: [],
       headersReceived: [],
+      headersReceivedWithoutExtra: [],
       completed: [],
-      errors: []
+      errors: [],
+      nonMatching: [],
+      removed: []
     };
-    const filter = { urls: ["<all_urls>"] };
+    const filter = { urls: [targetPattern], types: ["main_frame"] };
+    const removedListener = (details) => {
+      events.removed.push(details);
+    };
+    chrome.webRequest.onBeforeRequest.addListener(removedListener, filter);
+    const hasBeforeRemove =
+      chrome.webRequest.onBeforeRequest.hasListener(removedListener);
+    chrome.webRequest.onBeforeRequest.removeListener(removedListener);
+    const hasAfterRemove =
+      chrome.webRequest.onBeforeRequest.hasListener(removedListener);
     chrome.webRequest.onBeforeRequest.addListener((details) => {
       if (String(details.url || "") === target) events.beforeRequest.push(details);
     }, filter);
+    chrome.webRequest.onBeforeRequest.addListener((details) => {
+      events.nonMatching.push(details);
+    }, { urls: ["*://example.invalid/*"] });
     chrome.webRequest.onBeforeSendHeaders.addListener((details) => {
       if (String(details.url || "") === target) events.beforeSendHeaders.push(details);
     }, filter, ["requestHeaders"]);
+    chrome.webRequest.onBeforeSendHeaders.addListener((details) => {
+      if (String(details.url || "") === target) {
+        events.beforeSendHeadersWithoutExtra.push(details);
+      }
+    }, filter);
     chrome.webRequest.onHeadersReceived.addListener((details) => {
       if (String(details.url || "") === target) events.headersReceived.push(details);
     }, filter, ["responseHeaders"]);
+    chrome.webRequest.onHeadersReceived.addListener((details) => {
+      if (String(details.url || "") === target) {
+        events.headersReceivedWithoutExtra.push(details);
+      }
+    }, filter);
     chrome.webRequest.onCompleted.addListener((details) => {
       if (String(details.url || "") === target) events.completed.push(details);
     }, filter);
@@ -1062,6 +2092,8 @@ JS
       return events;
     });
     await chrome.tabs.remove(tab.id);
+    events.hasBeforeRemove = hasBeforeRemove;
+    events.hasAfterRemove = hasAfterRemove;
     return events;
   }
 
@@ -1107,14 +2139,20 @@ JS
     const ruleId = 9001;
     const redirectRuleId = 9002;
     const modifyHeadersRuleId = 9003;
+    const responseHeadersRuleId = 9004;
     const blockedURL = smokePageURL + "?dnr-blocked=" + encodeURIComponent(runId);
     const redirectSourceURL = smokePageURL + "?dnr-source=" + encodeURIComponent(runId);
     const redirectTargetURL = smokePageURL + "?dnr-redirected=" + encodeURIComponent(runId);
     const headerURL = smokePageURL + "?dnr-headers=" + encodeURIComponent(runId);
+    const responseHeaderURL = new URL(
+      "/dnr-response?run=" + encodeURIComponent(runId),
+      corsURL
+    ).href;
     const observedErrors = [];
     const observedRedirects = [];
     const redirectCompletions = [];
     const observedHeaderRequests = [];
+    const observedHeaderResponses = [];
     const headerValue = (headers, name) => {
       const header = (headers || []).find((item) =>
         String(item.name || "").toLowerCase() === name.toLowerCase());
@@ -1132,9 +2170,19 @@ JS
     chrome.webRequest.onBeforeSendHeaders.addListener((details) => {
       if (String(details.url || "") === headerURL) observedHeaderRequests.push(details);
     }, { urls: ["<all_urls>"] }, ["requestHeaders"]);
+    chrome.webRequest.onHeadersReceived.addListener((details) => {
+      if (String(details.url || "") === responseHeaderURL) {
+        observedHeaderResponses.push(details);
+      }
+    }, { urls: ["<all_urls>"] }, ["responseHeaders"]);
 
     await chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: [ruleId, redirectRuleId, modifyHeadersRuleId],
+      removeRuleIds: [
+        ruleId,
+        redirectRuleId,
+        modifyHeadersRuleId,
+        responseHeadersRuleId
+      ],
       addRules: [{
         id: ruleId,
         priority: 1,
@@ -1172,10 +2220,33 @@ JS
           urlFilter: "dnr-headers=" + runId,
           resourceTypes: ["main_frame"]
         }
+      }, {
+        id: responseHeadersRuleId,
+        priority: 1,
+        action: {
+          type: "modifyHeaders",
+          responseHeaders: [{
+            header: "X-Mori-DNR-Response",
+            operation: "set",
+            value: "response-" + runId
+          }, {
+            header: "X-Mori-DNR-Remove",
+            operation: "remove"
+          }]
+        },
+        condition: {
+          urlFilter: "dnr-response?run=" + runId,
+          resourceTypes: ["main_frame"]
+        }
       }]
     });
     const rules = await chrome.declarativeNetRequest.getSessionRules({
-      ruleIds: [ruleId, redirectRuleId, modifyHeadersRuleId]
+      ruleIds: [
+        ruleId,
+        redirectRuleId,
+        modifyHeadersRuleId,
+        responseHeadersRuleId
+      ]
     });
     const tab = await chrome.tabs.create({ url: blockedURL, active: true });
     await retry("DNR block", () => {
@@ -1216,11 +2287,38 @@ JS
       return { request };
     });
     await chrome.tabs.remove(headerTab.id);
+    const responseHeaderTab = await chrome.tabs.create({
+      url: responseHeaderURL,
+      active: true
+    });
+    await retry("DNR response modifyHeaders", () => {
+      const response = observedHeaderResponses.find((event) =>
+        headerValue(event.responseHeaders, "X-Mori-DNR-Response") ===
+          "response-" + runId &&
+        !headerValue(event.responseHeaders, "X-Mori-DNR-Remove"));
+      if (!response) {
+        throw new Error("modified response headers not observed " + JSON.stringify({
+          responses: observedHeaderResponses.slice(-3)
+        }));
+      }
+      return { response };
+    });
+    await chrome.tabs.remove(responseHeaderTab.id);
     await chrome.declarativeNetRequest.updateSessionRules({
-      removeRuleIds: [ruleId, redirectRuleId, modifyHeadersRuleId]
+      removeRuleIds: [
+        ruleId,
+        redirectRuleId,
+        modifyHeadersRuleId,
+        responseHeadersRuleId
+      ]
     });
     const afterRemove = await chrome.declarativeNetRequest.getSessionRules({
-      ruleIds: [ruleId, redirectRuleId, modifyHeadersRuleId]
+      ruleIds: [
+        ruleId,
+        redirectRuleId,
+        modifyHeadersRuleId,
+        responseHeadersRuleId
+      ]
     });
     return {
       rules,
@@ -1228,6 +2326,7 @@ JS
       observedRedirects,
       redirectCompletions,
       observedHeaderRequests,
+      observedHeaderResponses,
       afterRemove
     };
   }
@@ -1263,6 +2362,170 @@ JS
       moved,
       highlightedWindow,
       activeAfterHighlight: activeTabs[0] || null,
+      events
+    };
+  }
+
+  async function tabGroupsRoundTrip() {
+    const events = {
+      created: [],
+      updated: [],
+      moved: [],
+      removed: [],
+      tabUpdated: []
+    };
+    chrome.tabGroups.onCreated.addListener((group) => events.created.push(group));
+    chrome.tabGroups.onUpdated.addListener((group) => events.updated.push(group));
+    chrome.tabGroups.onMoved.addListener((group) => events.moved.push(group));
+    chrome.tabGroups.onRemoved.addListener((group) => events.removed.push(group));
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      events.tabUpdated.push({ tabId, changeInfo, tab });
+    });
+
+    const first = await chrome.tabs.create({
+      url: smokePageURL + "?group-a=" + encodeURIComponent(runId),
+      active: false
+    });
+    const second = await chrome.tabs.create({
+      url: smokePageURL + "?group-b=" + encodeURIComponent(runId),
+      active: false
+    });
+    const groupId = await chrome.tabs.group({ tabIds: [first.id, second.id] });
+    const group = await chrome.tabGroups.get(groupId);
+    const firstAfterGroup = await chrome.tabs.get(first.id);
+    const updated = await chrome.tabGroups.update(groupId, {
+      title: "Mori Group " + runId,
+      color: "cyan",
+      collapsed: true
+    });
+    const queried = await chrome.tabGroups.query({
+      title: "*Group " + runId,
+      color: "cyan",
+      collapsed: true
+    });
+    const moved = await chrome.tabGroups.move(groupId, { index: 0 });
+    await chrome.tabs.ungroup(first.id);
+    const firstAfterUngroup = await chrome.tabs.get(first.id);
+    await chrome.tabs.ungroup(second.id);
+    await delay(250);
+    await chrome.tabs.remove([first.id, second.id]).catch(() => null);
+    return {
+      constants: {
+        tabIdNone: chrome.tabs.TAB_ID_NONE,
+        tabIndexNone: chrome.tabs.TAB_INDEX_NONE,
+        tabGroupIdNone: chrome.tabGroups.TAB_GROUP_ID_NONE
+      },
+      first,
+      second,
+      groupId,
+      group,
+      firstAfterGroup,
+      updated,
+      queried,
+      moved,
+      firstAfterUngroup,
+      events
+    };
+  }
+
+  async function protectedGlobalRoundTrip() {
+    const realChrome = globalThis.chrome;
+    const realBrowser = globalThis.browser;
+    const proxyReads = [];
+    const protectedProxy = new Proxy(realChrome, {
+      get(target, prop) {
+        proxyReads.push(String(prop));
+        if (prop === "app") return target[prop];
+        return undefined;
+      },
+      set() {
+        return false;
+      }
+    });
+    globalThis.chrome = protectedProxy;
+    globalThis.browser = protectedProxy;
+    await retry("protected global restore", () => {
+      if (!(globalThis.chrome === realChrome &&
+          globalThis.browser === realBrowser &&
+          globalThis.chrome &&
+          globalThis.chrome.runtime &&
+          globalThis.chrome.runtime.id === extensionId &&
+          typeof globalThis.chrome.runtime.sendMessage === "function")) {
+        throw new Error("chrome/browser globals still protected");
+      }
+      return true;
+    });
+    const response = await chrome.runtime.sendMessage(chrome.runtime.id, {
+      type: "smoke-ping",
+      runId,
+      protectedGlobal: true
+    });
+    return {
+      chromeStillReal: globalThis.chrome === realChrome,
+      browserStillReal: globalThis.browser === realBrowser,
+      runtimeId: globalThis.chrome && globalThis.chrome.runtime && globalThis.chrome.runtime.id,
+      browserRuntimeId: globalThis.browser && globalThis.browser.runtime && globalThis.browser.runtime.id,
+      sendMessageType: typeof globalThis.chrome.runtime.sendMessage,
+      response,
+      proxyReads
+    };
+  }
+
+  async function contextMenusRoundTrip() {
+    const events = [];
+    chrome.contextMenus.onClicked.addListener(function(info, tab) {
+      events.push({
+        info,
+        tab,
+        argCount: arguments.length
+      });
+    });
+    await chrome.contextMenus.removeAll();
+    const normalId = "normal-" + runId;
+    const checkboxId = "checkbox-" + runId;
+    const createdNormalId = await chrome.contextMenus.create({
+      id: normalId,
+      title: "Mori selection %s",
+      contexts: ["selection"]
+    });
+    const createdCheckboxId = await chrome.contextMenus.create({
+      id: checkboxId,
+      title: "Mori checkbox",
+      type: "checkbox",
+      checked: false,
+      contexts: ["page"]
+    });
+    await chrome.contextMenus.update(normalId, {
+      title: "Mori updated selection %s",
+      enabled: true
+    });
+    const tab = await chrome.tabs.create({
+      url: smokePageURL + "?contextmenu=" + encodeURIComponent(runId),
+      active: true
+    });
+    await chrome.contextMenus.__moriSmokeClick({
+      id: checkboxId,
+      pageUrl: tab.url,
+      selectionText: "selected smoke text",
+      editable: false,
+      frameId: 0,
+      parentFrameId: -1,
+      tabId: tab.id
+    });
+    const clicked = await retry("contextMenus.onClicked", () => {
+      if (!events.length) throw new Error("context menu click not observed");
+      return events[0];
+    });
+    await chrome.contextMenus.remove(normalId);
+    await chrome.contextMenus.removeAll();
+    await chrome.tabs.remove(tab.id);
+    return {
+      normalId,
+      checkboxId,
+      createdNormalId,
+      createdCheckboxId,
+      tab,
+      clicked,
       events
     };
   }
@@ -1399,6 +2662,192 @@ JS
       afterSet,
       afterClear,
       changes
+    };
+  }
+
+  async function privacyRoundTrip() {
+    const passwordChanges = [];
+    chrome.privacy.services.passwordSavingEnabled.onChange.addListener(
+      (details) => passwordChanges.push(details));
+    await chrome.privacy.services.passwordSavingEnabled.clear({});
+    await chrome.privacy.network.webRTCIPHandlingPolicy.clear({});
+    await chrome.privacy.websites.topicsEnabled.clear({});
+    const passwordBefore =
+      await chrome.privacy.services.passwordSavingEnabled.get({});
+    const passwordCallbackBefore = await new Promise((resolve) => {
+      chrome.privacy.services.passwordSavingEnabled.get({}, (details) =>
+        resolve(details));
+    });
+    await chrome.privacy.services.passwordSavingEnabled.set({
+      value: false,
+      scope: "regular"
+    });
+    const passwordAfterSet =
+      await chrome.privacy.services.passwordSavingEnabled.get({});
+    await chrome.privacy.services.passwordSavingEnabled.clear({});
+    const passwordAfterClear =
+      await chrome.privacy.services.passwordSavingEnabled.get({});
+
+    const webRTCPolicy =
+      chrome.privacy.IPHandlingPolicy.DISABLE_NON_PROXIED_UDP;
+    await chrome.privacy.network.webRTCIPHandlingPolicy.set({
+      value: webRTCPolicy,
+      scope: "regular"
+    });
+    const webRTCAfterSet =
+      await chrome.privacy.network.webRTCIPHandlingPolicy.get({});
+    await chrome.privacy.network.webRTCIPHandlingPolicy.clear({});
+    const webRTCAfterClear =
+      await chrome.privacy.network.webRTCIPHandlingPolicy.get({});
+
+    let topicsEnableError = "";
+    try {
+      await chrome.privacy.websites.topicsEnabled.set({ value: true });
+    } catch (error) {
+      topicsEnableError = error && error.message || String(error);
+    }
+    const browserThirdPartyCookies =
+      await browser.privacy.websites.thirdPartyCookiesAllowed.get({});
+    await delay(100);
+    return {
+      namespace: !!(chrome.privacy &&
+        chrome.privacy.network &&
+        chrome.privacy.services &&
+        chrome.privacy.websites &&
+        chrome.privacy.services.passwordSavingEnabled &&
+        chrome.privacy.services.passwordSavingEnabled.onChange),
+      browserNamespace: !!(browser.privacy &&
+        browser.privacy.websites &&
+        browser.privacy.websites.thirdPartyCookiesAllowed),
+      ipHandlingPolicyEnum: chrome.privacy.IPHandlingPolicy,
+      passwordBefore,
+      passwordCallbackBefore,
+      passwordAfterSet,
+      passwordAfterClear,
+      passwordChanges,
+      webRTCAfterSet,
+      webRTCAfterClear,
+      browserThirdPartyCookies,
+      topicsEnableError
+    };
+  }
+
+  async function contentSettingsRoundTrip() {
+    const primary = "https://content.example.com/path/" +
+      encodeURIComponent(runId);
+    const secondary = "https://top.example.org/frame/" +
+      encodeURIComponent(runId);
+    const allPrimary = "https://elsewhere.test/path";
+    await chrome.contentSettings.cookies.clear({});
+    await chrome.contentSettings.images.clear({});
+    await chrome.contentSettings.notifications.clear({});
+
+    const cookieBefore = await chrome.contentSettings.cookies.get({
+      primaryUrl: primary,
+      secondaryUrl: secondary
+    });
+    const cookieCallbackBefore = await new Promise((resolve) => {
+      chrome.contentSettings.cookies.get({
+        primaryUrl: primary,
+        secondaryUrl: secondary
+      }, (details) => resolve(details));
+    });
+
+    await chrome.contentSettings.cookies.set({
+      primaryPattern: "https://*.example.com/*",
+      secondaryPattern: "<all_urls>",
+      setting: "block"
+    });
+    await chrome.contentSettings.cookies.set({
+      primaryPattern: "https://content.example.com/*",
+      secondaryPattern: "https://top.example.org/*",
+      setting: "session_only"
+    });
+    const cookieAfterSpecific = await chrome.contentSettings.cookies.get({
+      primaryUrl: primary,
+      secondaryUrl: secondary
+    });
+    const cookieAfterWildcard = await chrome.contentSettings.cookies.get({
+      primaryUrl: "https://other.example.com/path",
+      secondaryUrl: secondary
+    });
+
+    const imageCallback = await new Promise((resolve) => {
+      browser.contentSettings.images.set({
+        primaryPattern: "<all_urls>",
+        setting: "block"
+      }, () => {
+        browser.contentSettings.images.get({
+          primaryUrl: allPrimary
+        }, (details) => resolve({
+          details,
+          lastError: chrome.runtime.lastError &&
+            chrome.runtime.lastError.message || ""
+        }));
+      });
+    });
+    await browser.contentSettings.images.clear({});
+    const imageAfterClear = await chrome.contentSettings.images.get({
+      primaryUrl: allPrimary
+    });
+
+    await chrome.contentSettings.notifications.set({
+      primaryPattern: "https://notify.example.com/*",
+      setting: "allow",
+      scope: "incognito_session_only"
+    });
+    const notificationRegular = await chrome.contentSettings.notifications.get({
+      primaryUrl: "https://notify.example.com/path"
+    });
+    const notificationIncognito = await chrome.contentSettings.notifications.get({
+      primaryUrl: "https://notify.example.com/path",
+      incognito: true
+    });
+    const notificationResources =
+      await chrome.contentSettings.notifications.getResourceIdentifiers();
+    const pluginResources =
+      await chrome.contentSettings.plugins.getResourceIdentifiers();
+    const pluginFixed = await chrome.contentSettings.plugins.get({
+      primaryUrl: primary
+    });
+    const fullscreenFixed = await chrome.contentSettings.fullscreen.get({
+      primaryUrl: primary
+    });
+
+    let invalidError = "";
+    try {
+      await chrome.contentSettings.javascript.set({
+        primaryPattern: "<all_urls>",
+        setting: "ask"
+      });
+    } catch (error) {
+      invalidError = error && error.message || String(error);
+    }
+
+    await chrome.contentSettings.cookies.clear({});
+    await chrome.contentSettings.notifications.clear({
+      scope: "incognito_session_only"
+    });
+
+    return {
+      namespace: !!(chrome.contentSettings &&
+        chrome.contentSettings.cookies &&
+        chrome.contentSettings.javascript),
+      browserNamespace: !!(browser.contentSettings &&
+        browser.contentSettings.images),
+      cookieBefore,
+      cookieCallbackBefore,
+      cookieAfterSpecific,
+      cookieAfterWildcard,
+      imageCallback,
+      imageAfterClear,
+      notificationRegular,
+      notificationIncognito,
+      notificationResources,
+      pluginResources,
+      pluginFixed,
+      fullscreenFixed,
+      invalidError
     };
   }
 
@@ -2101,6 +3550,33 @@ JS
     return { tab, dataUrlPrefix: dataUrl.slice(0, 32), imageInfo };
   }
 
+  async function legacyExtensionViewsRoundTrip() {
+    const allViews = chrome.extension.getViews();
+    const popupViews = chrome.extension.getViews({ type: "popup" });
+    const tabViews = chrome.extension.getViews({ type: "tab" });
+    const extensionTabs = chrome.extension.getExtensionTabs();
+    const backgroundFromPopup = chrome.extension.getBackgroundPage();
+    const runtimeBackgroundFromPopup = await chrome.runtime.getBackgroundPage();
+    const background = await retry("legacy extension background views", () =>
+      chrome.runtime.sendMessage(chrome.runtime.id, {
+        type: "legacy-extension-views-smoke"
+      }));
+    return {
+      namespace: !!chrome.extension,
+      inIncognitoContext: chrome.extension.inIncognitoContext,
+      getURL: chrome.extension.getURL("popup.html"),
+      allViewsIncludeSelf: allViews.includes(globalThis),
+      allViewsLength: allViews.length,
+      popupViewsIncludeSelf: popupViews.includes(globalThis),
+      popupViewsLength: popupViews.length,
+      tabViewsLength: tabViews.length,
+      extensionTabsLength: extensionTabs.length,
+      backgroundFromPopupIsMissing: backgroundFromPopup == null,
+      runtimeBackgroundFromPopupIsMissing: runtimeBackgroundFromPopup == null,
+      background
+    };
+  }
+
   try {
 	    const checks = {
 	      runtimeId: chrome.runtime.id === extensionId,
@@ -2134,6 +3610,7 @@ JS
       }
       return result;
     });
+    const legacyExtensionViewsResponse = await legacyExtensionViewsRoundTrip();
     const storageEvents = [];
     chrome.storage.onChanged.addListener((changes, areaName) => {
       storageEvents.push({ changes, areaName });
@@ -2190,13 +3667,18 @@ JS
     const executeScriptResponse = await executeScriptRoundTrip();
     const cssInjectionResponse = await cssInjectionRoundTrip();
     const dynamicContentResponse = await dynamicContentScriptRoundTrip();
+    const userScriptsResponse = await userScriptsRoundTrip();
     const webRequestResponse = await webRequestRoundTrip();
     const webNavigationResponse = await webNavigationRoundTrip();
     const dnrResponse = await declarativeNetRequestRoundTrip();
     const tabManagementResponse = await tabManagementRoundTrip();
+    const tabGroupsResponse = await tabGroupsRoundTrip();
+    const contextMenusResponse = await contextMenusRoundTrip();
     const windowsResponse = await windowsRoundTrip();
     const permissionsResponse = await permissionsRoundTrip();
     const proxySettingsResponse = await proxySettingsRoundTrip();
+    const privacyResponse = await privacyRoundTrip();
+    const contentSettingsResponse = await contentSettingsRoundTrip();
     const historyResponse = await historyRoundTrip();
     const cookiesResponse = await cookiesRoundTrip();
     const browsingDataResponse = await browsingDataRoundTrip();
@@ -2214,6 +3696,13 @@ JS
     const captureVisibleTabResponse = await captureVisibleTabRoundTrip();
     const identityResponse = await identityRoundTrip();
     const sidePanelResponse = await sidePanelRoundTrip();
+    const runtimeIntrospectionResponse = await runtimeIntrospectionRoundTrip();
+    const powerResponse = await powerRoundTrip();
+	    const idleResponse = await idleRoundTrip();
+	    const systemResponse = await systemRoundTrip();
+	    const searchResponse = await searchRoundTrip();
+	    const dnsResponse = await dnsRoundTrip();
+	    const protectedGlobalResponse = await protectedGlobalRoundTrip();
     const ok = Object.values(checks).every(Boolean) &&
       Array.isArray(contexts) &&
       contexts.some((context) =>
@@ -2225,7 +3714,190 @@ JS
         context &&
         context.contextType === chrome.runtime.ContextType.BACKGROUND &&
         context.documentUrl === chrome.runtime.getURL("__mori_background__.html")) &&
-      stored && stored.smokeKey === runId && stored.count === 1 &&
+      legacyExtensionViewsResponse &&
+      legacyExtensionViewsResponse.namespace === true &&
+      legacyExtensionViewsResponse.inIncognitoContext === false &&
+      legacyExtensionViewsResponse.getURL === chrome.runtime.getURL("popup.html") &&
+      legacyExtensionViewsResponse.allViewsIncludeSelf === true &&
+      legacyExtensionViewsResponse.allViewsLength >= 1 &&
+      legacyExtensionViewsResponse.popupViewsIncludeSelf === true &&
+      legacyExtensionViewsResponse.popupViewsLength >= 1 &&
+      legacyExtensionViewsResponse.tabViewsLength === 0 &&
+      legacyExtensionViewsResponse.extensionTabsLength === 0 &&
+      legacyExtensionViewsResponse.backgroundFromPopupIsMissing === true &&
+      legacyExtensionViewsResponse.runtimeBackgroundFromPopupIsMissing === true &&
+      legacyExtensionViewsResponse.background &&
+      legacyExtensionViewsResponse.background.namespace === true &&
+      legacyExtensionViewsResponse.background.inIncognitoContext === false &&
+      legacyExtensionViewsResponse.background.backgroundPageIsSelf === true &&
+      legacyExtensionViewsResponse.background.runtimeBackgroundPageIsSelf === true &&
+      legacyExtensionViewsResponse.background.allViewsIncludeSelf === true &&
+      legacyExtensionViewsResponse.background.allViewsLength >= 1 &&
+      legacyExtensionViewsResponse.background.popupViewsLength === 0 &&
+      legacyExtensionViewsResponse.background.tabViewsLength === 0 &&
+      legacyExtensionViewsResponse.background.extensionTabsLength === 0 &&
+      legacyExtensionViewsResponse.background.getURL === chrome.runtime.getURL("popup.html") &&
+      runtimeIntrospectionResponse &&
+      runtimeIntrospectionResponse.version === runtimeIntrospectionResponse.manifestVersion &&
+      runtimeIntrospectionResponse.version === "1.0.0" &&
+      runtimeIntrospectionResponse.platformPromise &&
+      runtimeIntrospectionResponse.platformPromise.os === "mac" &&
+      ["arm", "arm64", "x86-32", "x86-64", "mips", "mips64", "riscv64"]
+        .includes(runtimeIntrospectionResponse.platformPromise.arch) &&
+      ["arm", "x86-32", "x86-64", "mips", "mips64"]
+        .includes(runtimeIntrospectionResponse.platformPromise.nacl_arch) &&
+      runtimeIntrospectionResponse.platformCallback &&
+      runtimeIntrospectionResponse.platformCallback.os ===
+        runtimeIntrospectionResponse.platformPromise.os &&
+      runtimeIntrospectionResponse.platformCallback.arch ===
+        runtimeIntrospectionResponse.platformPromise.arch &&
+      runtimeIntrospectionResponse.platformCallback.nacl_arch ===
+        runtimeIntrospectionResponse.platformPromise.nacl_arch &&
+      runtimeIntrospectionResponse.updatePromise &&
+      runtimeIntrospectionResponse.updatePromise.status === "no_update" &&
+      runtimeIntrospectionResponse.updateCallback &&
+      runtimeIntrospectionResponse.updateCallback.status === "no_update" &&
+      runtimeIntrospectionResponse.restartAfterDelayCallback === true &&
+      runtimeIntrospectionResponse.reloadResultType === "undefined" &&
+      powerResponse &&
+      powerResponse.initial === null &&
+      powerResponse.levels &&
+      powerResponse.levels.SYSTEM === "system" &&
+      powerResponse.levels.DISPLAY === "display" &&
+      powerResponse.systemReturn === null &&
+      powerResponse.afterSystem &&
+      powerResponse.afterSystem.level === "system" &&
+      powerResponse.displayReturn === null &&
+      powerResponse.afterDisplay &&
+      powerResponse.afterDisplay.level === "display" &&
+      powerResponse.releaseReturn === null &&
+      powerResponse.afterRelease === null &&
+      typeof powerResponse.invalidError === "string" &&
+      powerResponse.invalidError.includes("requires level") &&
+      idleResponse &&
+      idleResponse.namespace === true &&
+      idleResponse.browserNamespace === true &&
+      idleResponse.idleStateEnum &&
+      idleResponse.idleStateEnum.ACTIVE === "active" &&
+      idleResponse.idleStateEnum.IDLE === "idle" &&
+      idleResponse.idleStateEnum.LOCKED === "locked" &&
+      idleResponse.statesValid === true &&
+      idleResponse.setReturn === null &&
+      idleResponse.autoLockDelay === 0 &&
+      idleResponse.autoLockDelayCallback === 0 &&
+      systemResponse &&
+      systemResponse.hasNamespace === true &&
+      systemResponse.browserNamespace === true &&
+      systemResponse.cpu &&
+      typeof systemResponse.cpu.archName === "string" &&
+      systemResponse.cpu.archName.length > 0 &&
+      typeof systemResponse.cpu.modelName === "string" &&
+      systemResponse.cpu.modelName.length > 0 &&
+      Number(systemResponse.cpu.numOfProcessors) >= 1 &&
+      Array.isArray(systemResponse.cpu.processors) &&
+      systemResponse.cpu.processors.length === systemResponse.cpu.numOfProcessors &&
+      systemResponse.cpu.processors.every((processor) =>
+        processor &&
+        processor.usage &&
+        Number(processor.usage.total) >=
+          Number(processor.usage.user) + Number(processor.usage.kernel) &&
+        Number(processor.usage.total) >= Number(processor.usage.idle)) &&
+      systemResponse.cpuCallback &&
+      systemResponse.cpuCallback.numOfProcessors ===
+        systemResponse.cpu.numOfProcessors &&
+      systemResponse.memory &&
+      Number(systemResponse.memory.capacity) > 0 &&
+      Number(systemResponse.memory.availableCapacity) >= 0 &&
+      Number(systemResponse.memory.availableCapacity) <=
+        Number(systemResponse.memory.capacity) &&
+      systemResponse.memoryCallback &&
+      systemResponse.memoryCallback.capacity === systemResponse.memory.capacity &&
+      Array.isArray(systemResponse.displays) &&
+      systemResponse.displays.length >= 1 &&
+      systemResponse.displays.some((display) =>
+        display &&
+        typeof display.id === "string" &&
+        display.id.length > 0 &&
+        display.isEnabled === true &&
+        display.bounds &&
+        Number(display.bounds.width) > 0 &&
+        Number(display.bounds.height) > 0 &&
+        display.workArea &&
+        Number(display.workArea.width) > 0 &&
+        Number(display.workArea.height) > 0 &&
+        Array.isArray(display.modes) &&
+        Array.isArray(display.availableDisplayZoomFactors)) &&
+      Array.isArray(systemResponse.displaysCallback) &&
+      systemResponse.displaysCallback.length === systemResponse.displays.length &&
+      Array.isArray(systemResponse.storageUnits) &&
+      systemResponse.storageUnits.length >= 1 &&
+      systemResponse.storageUnits[0] &&
+      typeof systemResponse.storageUnits[0].id === "string" &&
+      systemResponse.storageUnits[0].id.length > 0 &&
+      ["fixed", "removable", "unknown"].includes(systemResponse.storageUnits[0].type) &&
+      Number(systemResponse.storageUnits[0].capacity) > 0 &&
+      Array.isArray(systemResponse.storageCallback) &&
+      systemResponse.storageCallback.length === systemResponse.storageUnits.length &&
+      systemResponse.available &&
+      systemResponse.available.id === systemResponse.storageUnits[0].id &&
+      Number(systemResponse.available.availableCapacity) >= 0 &&
+      systemResponse.availableCallback &&
+      systemResponse.availableCallback.id === systemResponse.available.id &&
+      Number(systemResponse.availableCallback.availableCapacity) >= 0 &&
+      Number(systemResponse.availableCallback.availableCapacity) <=
+        Number(systemResponse.storageUnits[0].capacity) &&
+      systemResponse.ejectMissing === "no_such_device" &&
+      ["failure", "in_use", "success"].includes(systemResponse.ejectFixed) &&
+      systemResponse.storageEvents &&
+      systemResponse.storageEvents.attached === true &&
+      systemResponse.storageEvents.detached === true &&
+      searchResponse &&
+      searchResponse.namespace &&
+      searchResponse.namespace.chrome === true &&
+      searchResponse.namespace.browser === true &&
+      searchResponse.namespace.disposition &&
+      searchResponse.namespace.disposition.CURRENT_TAB === "CURRENT_TAB" &&
+      searchResponse.namespace.disposition.NEW_TAB === "NEW_TAB" &&
+      searchResponse.namespace.disposition.NEW_WINDOW === "NEW_WINDOW" &&
+      searchResponse.tabReturn === null &&
+      searchResponse.currentReturn === null &&
+      searchResponse.browserReturn === null &&
+      searchResponse.tabAfter &&
+      searchResponse.tabAfter.id &&
+      String(searchResponse.tabAfter.url || "")
+        .includes(moriEncodedQueryToken(searchResponse.tabText)) &&
+      searchResponse.currentAfter &&
+      String(searchResponse.currentAfter.url || "")
+        .includes(moriEncodedQueryToken(searchResponse.currentText)) &&
+      searchResponse.newTabCallback &&
+      searchResponse.newTabCallback.lastError === "" &&
+      searchResponse.newTabAfter &&
+      String(searchResponse.newTabAfter.url || "")
+        .includes(moriEncodedQueryToken(searchResponse.newTabText)) &&
+	      searchResponse.browserAfter &&
+	      String(searchResponse.browserAfter.url || "")
+	        .includes(moriEncodedQueryToken(searchResponse.browserText)) &&
+	      typeof searchResponse.invalidError === "string" &&
+	      searchResponse.invalidError.includes("cannot use tabId") &&
+	      dnsResponse &&
+	      dnsResponse.namespace === true &&
+	      dnsResponse.browserNamespace === true &&
+	      dnsResponse.promiseResult &&
+	      dnsResponse.promiseResult.resultCode === 0 &&
+	      typeof dnsResponse.promiseResult.address === "string" &&
+	      dnsResponse.promiseResult.address.length > 0 &&
+	      dnsResponse.callbackResult &&
+	      dnsResponse.callbackResult.resultCode === 0 &&
+	      typeof dnsResponse.callbackResult.address === "string" &&
+	      dnsResponse.callbackResult.address.length > 0 &&
+	      dnsResponse.browserResult &&
+	      dnsResponse.browserResult.resultCode === 0 &&
+	      typeof dnsResponse.browserResult.address === "string" &&
+	      dnsResponse.browserResult.address.length > 0 &&
+	      dnsResponse.invalidResult &&
+	      Number(dnsResponse.invalidResult.resultCode) !== 0 &&
+	      dnsResponse.invalidResult.address === undefined &&
+	      stored && stored.smokeKey === runId && stored.count === 1 &&
       Array.isArray(storageKeys) &&
       storageKeys.includes("smokeKey") &&
       storageKeys.includes("count") &&
@@ -2340,6 +4012,79 @@ JS
       contentResponse.startLoaded === "loaded" &&
       contentResponse.endLoaded === "loaded" &&
       contentResponse.idleLoaded === "loaded" &&
+      contentResponse.mainWorldLoaded === "page" &&
+      contentResponse.focus &&
+      contentResponse.focus.done === "done" &&
+      contentResponse.focus.error === "" &&
+      contentResponse.focus.inputValue === "focused-" + runId &&
+      contentResponse.focus.inputDataset === runId &&
+      contentResponse.focus.overlayRunId === runId &&
+      contentResponse.focus.background &&
+      contentResponse.focus.background.focusPong === true &&
+      contentResponse.focus.background.sender &&
+      contentResponse.focus.background.sender.id === extensionId &&
+      contentResponse.focus.background.sender.frameId === 0 &&
+      contentResponse.focus.background.sender.tab &&
+      String(contentResponse.focus.background.sender.tab.url || "") === smokePageURL &&
+      contentResponse.focus.port &&
+      contentResponse.focus.port.pong === true &&
+      contentResponse.focus.port.sender &&
+      contentResponse.focus.port.sender.id === extensionId &&
+      contentResponse.focus.port.sender.frameId === 0 &&
+      contentResponse.focus.port.sender.tab &&
+      String(contentResponse.focus.port.sender.tab.url || "") === smokePageURL &&
+      Array.isArray(contentResponse.protectedSetup) &&
+      contentResponse.protectedSetup.some((item) =>
+        item &&
+        item.frameId === 0 &&
+        item.result &&
+        item.result.chrome &&
+        item.result.chrome.afterRuntime !== extensionId &&
+        item.result.browser &&
+        item.result.browser.afterRuntime !== extensionId) &&
+      Array.isArray(contentResponse.protectedDynamic) &&
+      contentResponse.protectedDynamic.some((item) =>
+        item &&
+        item.frameId === 0 &&
+        item.result &&
+        item.result.runtimeId === extensionId &&
+        item.result.browserRuntimeId === extensionId &&
+        item.result.marker === extensionId) &&
+      contentResponse.frameTarget &&
+      Array.isArray(contentResponse.frameTarget.frames) &&
+      contentResponse.frameTarget.childFrame &&
+      contentResponse.frameTarget.childFrame.frameId > 0 &&
+      typeof contentResponse.frameTarget.childFrame.documentId === "string" &&
+      contentResponse.frameTarget.childFrame.documentId.length > 0 &&
+      String(contentResponse.frameTarget.childFrame.url || "")
+        .includes("frame-smoke.html") &&
+      contentResponse.frameTarget.documentFrame &&
+      contentResponse.frameTarget.documentFrame.frameId ===
+        contentResponse.frameTarget.childFrame.frameId &&
+      contentResponse.frameTarget.documentFrame.documentId ===
+        contentResponse.frameTarget.childFrame.documentId &&
+      contentResponse.frameTarget.targeted &&
+      contentResponse.frameTarget.targeted.frameTargetPong === true &&
+      contentResponse.frameTarget.targeted.frameId ===
+        contentResponse.frameTarget.childFrame.frameId &&
+      contentResponse.frameTarget.targeted.documentId ===
+        contentResponse.frameTarget.childFrame.documentId &&
+      contentResponse.frameTarget.targeted.context &&
+      contentResponse.frameTarget.targeted.context.documentId ===
+        contentResponse.frameTarget.childFrame.documentId &&
+      contentResponse.frameTarget.documentTargeted &&
+      contentResponse.frameTarget.documentTargeted.frameTargetPong === true &&
+      contentResponse.frameTarget.documentTargeted.frameId ===
+        contentResponse.frameTarget.childFrame.frameId &&
+      contentResponse.frameTarget.documentTargeted.documentId ===
+        contentResponse.frameTarget.childFrame.documentId &&
+      contentResponse.frameTarget.documentTargeted.context &&
+      contentResponse.frameTarget.documentTargeted.context.documentId ===
+        contentResponse.frameTarget.childFrame.documentId &&
+      String(contentResponse.frameTarget.targeted.href || "")
+        .includes("frame-smoke.html") &&
+      String(contentResponse.frameTarget.documentTargeted.href || "")
+        .includes("frame-smoke.html") &&
       String(contentResponse.href || "") === smokePageURL &&
       executeScriptResponse &&
       Array.isArray(executeScriptResponse.sync) &&
@@ -2352,17 +4097,103 @@ JS
         item.result.dataset === runId &&
         String(item.result.href || "") ===
           smokePageURL + "?execute=" + encodeURIComponent(runId)) &&
-      Array.isArray(executeScriptResponse.async) &&
-      executeScriptResponse.async.some((item) =>
-        item &&
-        item.frameId === 0 &&
-        item.result &&
-        item.result.asyncValue === runId &&
-        item.result.marker === runId &&
-        item.result.dataset === runId &&
-        String(item.result.href || "") ===
-          smokePageURL + "?execute-async=" + encodeURIComponent(runId)) &&
-      cssInjectionResponse &&
+	      Array.isArray(executeScriptResponse.async) &&
+	      executeScriptResponse.async.some((item) =>
+	        item &&
+	        item.frameId === 0 &&
+	        item.result &&
+	        item.result.asyncValue === runId &&
+	        item.result.marker === runId &&
+	        item.result.dataset === runId &&
+	        String(item.result.href || "") ===
+	          smokePageURL + "?execute-async=" + encodeURIComponent(runId)) &&
+	      executeScriptResponse.world &&
+	      Array.isArray(executeScriptResponse.world.main) &&
+	      executeScriptResponse.world.main.some((item) =>
+	        item &&
+	        item.frameId === 0 &&
+	        item.result &&
+	        item.result.mainHasRuntime === false) &&
+	      Array.isArray(executeScriptResponse.world.isolatedAfterMain) &&
+	      executeScriptResponse.world.isolatedAfterMain.some((item) =>
+	        item &&
+	        item.frameId === 0 &&
+	        item.result &&
+	        item.result.runtimeId === extensionId &&
+	        String(item.result.url || "") ===
+	          "mori-extension://" + extensionId + "/dropdown.html" &&
+	        item.result.context &&
+	        item.result.context.frameId === 0) &&
+	      executeScriptResponse.frames &&
+	      executeScriptResponse.frames.childFrame &&
+	      executeScriptResponse.frames.childFrame.frameId > 0 &&
+	      typeof executeScriptResponse.frames.childFrame.documentId === "string" &&
+	      executeScriptResponse.frames.childFrame.documentId.length > 0 &&
+	      executeScriptResponse.frames.documentFrame &&
+	      executeScriptResponse.frames.documentFrame.frameId ===
+	        executeScriptResponse.frames.childFrame.frameId &&
+	      executeScriptResponse.frames.documentFrame.documentId ===
+	        executeScriptResponse.frames.childFrame.documentId &&
+	      Array.isArray(executeScriptResponse.frames.all) &&
+	      executeScriptResponse.frames.all.some((item) =>
+	        item &&
+	        item.frameId === 0 &&
+	        item.result &&
+	        item.result.value === runId &&
+	        item.result.runtimeFrameId === 0 &&
+	        item.result.context &&
+	        item.result.context.frameId === 0 &&
+	        item.result.pageMarker === runId &&
+	        String(item.result.href || "")
+	          .includes("smoke-page.html?execute-frames=")) &&
+	      executeScriptResponse.frames.all.some((item) =>
+	        item &&
+	        item.frameId === executeScriptResponse.frames.childFrame.frameId &&
+	        item.documentId === executeScriptResponse.frames.childFrame.documentId &&
+	        item.result &&
+	        item.result.value === runId &&
+	        item.result.runtimeFrameId ===
+	          executeScriptResponse.frames.childFrame.frameId &&
+	        item.result.context &&
+	        item.result.context.frameId ===
+	          executeScriptResponse.frames.childFrame.frameId &&
+	        item.result.context.documentId ===
+	          executeScriptResponse.frames.childFrame.documentId &&
+	        item.result.frameMarker === runId &&
+	        String(item.result.href || "").includes("frame-smoke.html")) &&
+	      Array.isArray(executeScriptResponse.frames.targeted) &&
+	      executeScriptResponse.frames.targeted.length === 1 &&
+	      executeScriptResponse.frames.targeted[0] &&
+	      executeScriptResponse.frames.targeted[0].frameId ===
+	        executeScriptResponse.frames.childFrame.frameId &&
+	      executeScriptResponse.frames.targeted[0].documentId ===
+	        executeScriptResponse.frames.childFrame.documentId &&
+	      executeScriptResponse.frames.targeted[0].result &&
+	      executeScriptResponse.frames.targeted[0].result.runtimeFrameId ===
+	        executeScriptResponse.frames.childFrame.frameId &&
+	      executeScriptResponse.frames.targeted[0].result.context &&
+	      executeScriptResponse.frames.targeted[0].result.context.frameId ===
+	        executeScriptResponse.frames.childFrame.frameId &&
+	      executeScriptResponse.frames.targeted[0].result.context.documentId ===
+	        executeScriptResponse.frames.childFrame.documentId &&
+	      executeScriptResponse.frames.targeted[0].result.frameMarker === runId &&
+	      Array.isArray(executeScriptResponse.frames.documentTargeted) &&
+	      executeScriptResponse.frames.documentTargeted.length === 1 &&
+	      executeScriptResponse.frames.documentTargeted[0] &&
+	      executeScriptResponse.frames.documentTargeted[0].frameId ===
+	        executeScriptResponse.frames.childFrame.frameId &&
+	      executeScriptResponse.frames.documentTargeted[0].documentId ===
+	        executeScriptResponse.frames.childFrame.documentId &&
+	      executeScriptResponse.frames.documentTargeted[0].result &&
+	      executeScriptResponse.frames.documentTargeted[0].result.runtimeFrameId ===
+	        executeScriptResponse.frames.childFrame.frameId &&
+	      executeScriptResponse.frames.documentTargeted[0].result.context &&
+	      executeScriptResponse.frames.documentTargeted[0].result.context.frameId ===
+	        executeScriptResponse.frames.childFrame.frameId &&
+	      executeScriptResponse.frames.documentTargeted[0].result.context.documentId ===
+	        executeScriptResponse.frames.childFrame.documentId &&
+	      executeScriptResponse.frames.documentTargeted[0].result.frameMarker === runId &&
+	      cssInjectionResponse &&
       Array.isArray(cssInjectionResponse.afterInsert) &&
       cssInjectionResponse.afterInsert.some((item) =>
         item && item.result === "rgb(9, 87, 165)") &&
@@ -2375,6 +4206,33 @@ JS
       Array.isArray(cssInjectionResponse.legacyAfterRemove) &&
       cssInjectionResponse.legacyAfterRemove.some((item) =>
         item && item.result === "rgb(4, 5, 6)") &&
+      cssInjectionResponse.frameTargetCSS &&
+      cssInjectionResponse.frameTargetCSS.childFrame &&
+      cssInjectionResponse.frameTargetCSS.childFrame.frameId > 0 &&
+      Array.isArray(cssInjectionResponse.frameTargetCSS.afterInsert) &&
+      cssInjectionResponse.frameTargetCSS.afterInsert.some((item) =>
+        item &&
+        item.frameId === 0 &&
+        item.result &&
+        item.result.color === "rgb(11, 22, 33)" &&
+        String(item.result.href || "").includes("smoke-page.html?css-frames=")) &&
+      cssInjectionResponse.frameTargetCSS.afterInsert.some((item) =>
+        item &&
+        item.frameId === cssInjectionResponse.frameTargetCSS.childFrame.frameId &&
+        item.result &&
+        item.result.color === "rgb(88, 99, 111)" &&
+        String(item.result.href || "").includes("frame-smoke.html")) &&
+      Array.isArray(cssInjectionResponse.frameTargetCSS.afterRemove) &&
+      cssInjectionResponse.frameTargetCSS.afterRemove.some((item) =>
+        item &&
+        item.frameId === 0 &&
+        item.result &&
+        item.result.color === "rgb(11, 22, 33)") &&
+      cssInjectionResponse.frameTargetCSS.afterRemove.some((item) =>
+        item &&
+        item.frameId === cssInjectionResponse.frameTargetCSS.childFrame.frameId &&
+        item.result &&
+        item.result.color === "rgb(11, 22, 33)") &&
       dynamicContentResponse &&
       Array.isArray(dynamicContentResponse.registered) &&
       dynamicContentResponse.registered.length === 1 &&
@@ -2389,7 +4247,44 @@ JS
       dynamicContentResponse.updated[0].runAt === "document_idle" &&
       Array.isArray(dynamicContentResponse.afterUnregister) &&
       dynamicContentResponse.afterUnregister.length === 0 &&
+      userScriptsResponse &&
+      userScriptsResponse.namespace === true &&
+      userScriptsResponse.browserNamespace === true &&
+      userScriptsResponse.executionWorld &&
+      userScriptsResponse.executionWorld.USER_SCRIPT === "USER_SCRIPT" &&
+      Array.isArray(userScriptsResponse.before) &&
+      userScriptsResponse.before.length === 0 &&
+      Array.isArray(userScriptsResponse.worldConfigurations) &&
+      userScriptsResponse.worldConfigurations.some((world) =>
+        world &&
+        world.worldId === "moriUserWorld" &&
+        world.messaging === true &&
+        world.csp === "script-src 'self'") &&
+      Array.isArray(userScriptsResponse.registered) &&
+      userScriptsResponse.registered.length === 1 &&
+      userScriptsResponse.registered[0].id === "mori-user-script-smoke" &&
+      Array.isArray(userScriptsResponse.registered[0].js) &&
+      userScriptsResponse.registered[0].js[0] &&
+      String(userScriptsResponse.registered[0].js[0].code || "").includes("registered-") &&
+      userScriptsResponse.injected === "registered-" + runId &&
+      Array.isArray(userScriptsResponse.updated) &&
+      userScriptsResponse.updated.length === 1 &&
+      String(userScriptsResponse.updated[0].js[0].code || "").includes("updated-") &&
+      userScriptsResponse.injectedAfterUpdate === "updated-" + runId &&
+      Array.isArray(userScriptsResponse.executeResult) &&
+      userScriptsResponse.executeObserved === "executed-" + runId &&
+      Array.isArray(userScriptsResponse.afterUnregister) &&
+      userScriptsResponse.afterUnregister.length === 0 &&
+      Array.isArray(userScriptsResponse.worldConfigurationsAfterReset) &&
+      !userScriptsResponse.worldConfigurationsAfterReset.some((world) =>
+        world && world.worldId === "moriUserWorld") &&
       webRequestResponse &&
+      webRequestResponse.hasBeforeRemove === true &&
+      webRequestResponse.hasAfterRemove === false &&
+      Array.isArray(webRequestResponse.nonMatching) &&
+      webRequestResponse.nonMatching.length === 0 &&
+      Array.isArray(webRequestResponse.removed) &&
+      webRequestResponse.removed.length === 0 &&
       Array.isArray(webRequestResponse.beforeRequest) &&
       webRequestResponse.beforeRequest.some((event) =>
         event &&
@@ -2399,10 +4294,19 @@ JS
       webRequestResponse.beforeSendHeaders.some((event) =>
         event &&
         Array.isArray(event.requestHeaders)) &&
+      Array.isArray(webRequestResponse.beforeSendHeadersWithoutExtra) &&
+      webRequestResponse.beforeSendHeadersWithoutExtra.some((event) =>
+        event &&
+        event.requestHeaders === undefined) &&
       Array.isArray(webRequestResponse.headersReceived) &&
       webRequestResponse.headersReceived.some((event) =>
         event &&
         Array.isArray(event.responseHeaders) &&
+        typeof event.statusCode === "number") &&
+      Array.isArray(webRequestResponse.headersReceivedWithoutExtra) &&
+      webRequestResponse.headersReceivedWithoutExtra.some((event) =>
+        event &&
+        event.responseHeaders === undefined &&
         typeof event.statusCode === "number") &&
       Array.isArray(webRequestResponse.completed) &&
       webRequestResponse.completed.some((event) =>
@@ -2436,6 +4340,7 @@ JS
       dnrResponse.rules.some((rule) => rule && rule.id === 9001) &&
       dnrResponse.rules.some((rule) => rule && rule.id === 9002) &&
       dnrResponse.rules.some((rule) => rule && rule.id === 9003) &&
+      dnrResponse.rules.some((rule) => rule && rule.id === 9004) &&
       Array.isArray(dnrResponse.observedErrors) &&
       dnrResponse.observedErrors.some((event) =>
         event &&
@@ -2461,6 +4366,22 @@ JS
         !event.requestHeaders.some((header) =>
           header &&
           String(header.name || "").toLowerCase() === "upgrade-insecure-requests")) &&
+      Array.isArray(dnrResponse.observedHeaderResponses) &&
+      dnrResponse.observedHeaderResponses.some((event) =>
+        event &&
+        String(event.url || "").includes("/dnr-response?run=" + encodeURIComponent(runId)) &&
+        Array.isArray(event.responseHeaders) &&
+        event.responseHeaders.some((header) =>
+          header &&
+          String(header.name || "").toLowerCase() === "x-mori-dnr-response" &&
+          header.value === "response-" + runId) &&
+        event.responseHeaders.some((header) =>
+          header &&
+          String(header.name || "").toLowerCase() === "x-mori-dnr-original" &&
+          header.value === "original-" + runId) &&
+        !event.responseHeaders.some((header) =>
+          header &&
+          String(header.name || "").toLowerCase() === "x-mori-dnr-remove")) &&
       Array.isArray(dnrResponse.afterRemove) &&
       dnrResponse.afterRemove.length === 0 &&
       tabManagementResponse &&
@@ -2497,6 +4418,74 @@ JS
       Array.isArray(tabManagementResponse.events.removed) &&
       tabManagementResponse.events.removed.some((event) => event && event.tabId === tabManagementResponse.managed.id) &&
       tabManagementResponse.events.removed.some((event) => event && event.tabId === tabManagementResponse.duplicated.id) &&
+      tabGroupsResponse &&
+      tabGroupsResponse.constants &&
+      tabGroupsResponse.constants.tabIdNone === -1 &&
+      tabGroupsResponse.constants.tabIndexNone === -1 &&
+      tabGroupsResponse.constants.tabGroupIdNone === -1 &&
+      Number(tabGroupsResponse.groupId) >= 1 &&
+      tabGroupsResponse.group &&
+      tabGroupsResponse.group.id === tabGroupsResponse.groupId &&
+      tabGroupsResponse.group.color === "grey" &&
+      tabGroupsResponse.group.collapsed === false &&
+      tabGroupsResponse.firstAfterGroup &&
+      tabGroupsResponse.firstAfterGroup.groupId === tabGroupsResponse.groupId &&
+      tabGroupsResponse.updated &&
+      tabGroupsResponse.updated.id === tabGroupsResponse.groupId &&
+      tabGroupsResponse.updated.title === "Mori Group " + runId &&
+      tabGroupsResponse.updated.color === "cyan" &&
+      tabGroupsResponse.updated.collapsed === true &&
+      Array.isArray(tabGroupsResponse.queried) &&
+      tabGroupsResponse.queried.some((group) =>
+        group && group.id === tabGroupsResponse.groupId) &&
+      tabGroupsResponse.moved &&
+      tabGroupsResponse.moved.id === tabGroupsResponse.groupId &&
+      tabGroupsResponse.firstAfterUngroup &&
+      tabGroupsResponse.firstAfterUngroup.groupId === -1 &&
+      tabGroupsResponse.events &&
+      Array.isArray(tabGroupsResponse.events.created) &&
+      tabGroupsResponse.events.created.some((group) =>
+        group && group.id === tabGroupsResponse.groupId) &&
+      Array.isArray(tabGroupsResponse.events.updated) &&
+      tabGroupsResponse.events.updated.some((group) =>
+        group &&
+        group.id === tabGroupsResponse.groupId &&
+        group.color === "cyan" &&
+        group.collapsed === true) &&
+      Array.isArray(tabGroupsResponse.events.moved) &&
+      tabGroupsResponse.events.moved.some((group) =>
+        group && group.id === tabGroupsResponse.groupId) &&
+      Array.isArray(tabGroupsResponse.events.removed) &&
+      tabGroupsResponse.events.removed.some((group) =>
+        group && group.id === tabGroupsResponse.groupId) &&
+      Array.isArray(tabGroupsResponse.events.tabUpdated) &&
+      tabGroupsResponse.events.tabUpdated.some((event) =>
+        event &&
+        event.tabId === tabGroupsResponse.first.id &&
+        event.changeInfo &&
+        event.changeInfo.groupId === tabGroupsResponse.groupId) &&
+      tabGroupsResponse.events.tabUpdated.some((event) =>
+        event &&
+        event.tabId === tabGroupsResponse.first.id &&
+        event.changeInfo &&
+        event.changeInfo.groupId === -1) &&
+      contextMenusResponse &&
+      contextMenusResponse.createdNormalId === contextMenusResponse.normalId &&
+      contextMenusResponse.createdCheckboxId === contextMenusResponse.checkboxId &&
+      contextMenusResponse.clicked &&
+      contextMenusResponse.clicked.argCount === 2 &&
+      contextMenusResponse.clicked.info &&
+      contextMenusResponse.clicked.info.menuItemId === contextMenusResponse.checkboxId &&
+      contextMenusResponse.clicked.info.pageUrl === contextMenusResponse.tab.url &&
+      contextMenusResponse.clicked.info.selectionText === "selected smoke text" &&
+      contextMenusResponse.clicked.info.checked === true &&
+      contextMenusResponse.clicked.info.wasChecked === false &&
+      contextMenusResponse.clicked.info.frameId === 0 &&
+      contextMenusResponse.clicked.info.parentFrameId === -1 &&
+      contextMenusResponse.clicked.tab &&
+      contextMenusResponse.clicked.tab.id === contextMenusResponse.tab.id &&
+      contextMenusResponse.clicked.tab.windowId === 1 &&
+      contextMenusResponse.clicked.tab.url === contextMenusResponse.tab.url &&
       windowsResponse &&
       windowsResponse.current &&
       windowsResponse.current.id === 1 &&
@@ -2579,11 +4568,82 @@ JS
         event.levelOfControl === "controlled_by_this_extension" &&
         event.value &&
         event.value.mode === "direct") &&
-      proxySettingsResponse.changes.some((event) =>
-        event &&
-        event.levelOfControl === "controllable_by_this_extension" &&
-        event.value &&
-        event.value.mode === "system") &&
+	      proxySettingsResponse.changes.some((event) =>
+	        event &&
+	        event.levelOfControl === "controllable_by_this_extension" &&
+	        event.value &&
+	        event.value.mode === "system") &&
+	      privacyResponse &&
+	      privacyResponse.namespace === true &&
+	      privacyResponse.browserNamespace === true &&
+	      privacyResponse.ipHandlingPolicyEnum &&
+	      privacyResponse.ipHandlingPolicyEnum.DEFAULT === "default" &&
+	      privacyResponse.ipHandlingPolicyEnum.DISABLE_NON_PROXIED_UDP ===
+	        "disable_non_proxied_udp" &&
+	      privacyResponse.passwordBefore &&
+	      privacyResponse.passwordBefore.levelOfControl ===
+	        "controllable_by_this_extension" &&
+	      privacyResponse.passwordBefore.value === true &&
+	      privacyResponse.passwordCallbackBefore &&
+	      privacyResponse.passwordCallbackBefore.value ===
+	        privacyResponse.passwordBefore.value &&
+	      privacyResponse.passwordAfterSet &&
+	      privacyResponse.passwordAfterSet.levelOfControl ===
+	        "controlled_by_this_extension" &&
+	      privacyResponse.passwordAfterSet.value === false &&
+	      privacyResponse.passwordAfterClear &&
+	      privacyResponse.passwordAfterClear.levelOfControl ===
+	        "controllable_by_this_extension" &&
+	      privacyResponse.passwordAfterClear.value === true &&
+	      Array.isArray(privacyResponse.passwordChanges) &&
+	      privacyResponse.passwordChanges.some((event) =>
+	        event &&
+	        event.levelOfControl === "controlled_by_this_extension" &&
+	        event.value === false) &&
+	      privacyResponse.passwordChanges.some((event) =>
+	        event &&
+	        event.levelOfControl === "controllable_by_this_extension" &&
+	        event.value === true) &&
+	      privacyResponse.webRTCAfterSet &&
+	      privacyResponse.webRTCAfterSet.value === "disable_non_proxied_udp" &&
+	      privacyResponse.webRTCAfterSet.levelOfControl ===
+	        "controlled_by_this_extension" &&
+	      privacyResponse.webRTCAfterClear &&
+	      privacyResponse.webRTCAfterClear.value === "default" &&
+	      privacyResponse.browserThirdPartyCookies &&
+	      privacyResponse.browserThirdPartyCookies.value === true &&
+	      privacyResponse.browserThirdPartyCookies.levelOfControl ===
+	        "controllable_by_this_extension" &&
+	      typeof privacyResponse.topicsEnableError === "string" &&
+	      privacyResponse.topicsEnableError.includes("only be disabled") &&
+	      contentSettingsResponse &&
+      contentSettingsResponse.namespace === true &&
+      contentSettingsResponse.browserNamespace === true &&
+      contentSettingsResponse.cookieBefore &&
+      contentSettingsResponse.cookieBefore.setting === "allow" &&
+      contentSettingsResponse.cookieCallbackBefore &&
+      contentSettingsResponse.cookieCallbackBefore.setting === "allow" &&
+      contentSettingsResponse.cookieAfterSpecific &&
+      contentSettingsResponse.cookieAfterSpecific.setting === "session_only" &&
+      contentSettingsResponse.cookieAfterWildcard &&
+      contentSettingsResponse.cookieAfterWildcard.setting === "block" &&
+      contentSettingsResponse.imageCallback &&
+      contentSettingsResponse.imageCallback.details &&
+      contentSettingsResponse.imageCallback.details.setting === "block" &&
+      contentSettingsResponse.imageCallback.lastError === "" &&
+      contentSettingsResponse.imageAfterClear &&
+      contentSettingsResponse.imageAfterClear.setting === "allow" &&
+      contentSettingsResponse.notificationRegular &&
+      contentSettingsResponse.notificationRegular.setting === "ask" &&
+      contentSettingsResponse.notificationIncognito &&
+      contentSettingsResponse.notificationIncognito.setting === "allow" &&
+      Array.isArray(contentSettingsResponse.notificationResources) &&
+      Array.isArray(contentSettingsResponse.pluginResources) &&
+      contentSettingsResponse.pluginFixed &&
+      contentSettingsResponse.pluginFixed.setting === "block" &&
+      contentSettingsResponse.fullscreenFixed &&
+      contentSettingsResponse.fullscreenFixed.setting === "allow" &&
+      String(contentSettingsResponse.invalidError || "").includes("Invalid javascript") &&
       historyResponse &&
       Array.isArray(historyResponse.search) &&
       historyResponse.search.some((item) =>
@@ -2913,17 +4973,26 @@ JS
       sidePanelResponse.loaded &&
       sidePanelResponse.loaded.sidePanelLoaded === runId &&
       sidePanelResponse.loaded.sidePanelRuntimeId === extensionId &&
-      sidePanelResponse.loaded.sidePanelURL === chrome.runtime.getURL("sidepanel.html");
+      sidePanelResponse.loaded.sidePanelURL === chrome.runtime.getURL("sidepanel.html") &&
+      protectedGlobalResponse &&
+      protectedGlobalResponse.chromeStillReal === true &&
+      protectedGlobalResponse.browserStillReal === true &&
+      protectedGlobalResponse.runtimeId === extensionId &&
+      protectedGlobalResponse.browserRuntimeId === extensionId &&
+      protectedGlobalResponse.sendMessageType === "function" &&
+      protectedGlobalResponse.response &&
+      protectedGlobalResponse.response.pong === true;
 
-    document.body.textContent = ok
-      ? "Mori extension smoke ok: storage sync/session/managed"
-      : "Mori extension smoke failed";
+	    document.body.textContent = ok
+	      ? "Mori extension smoke ok: storage sync/session/managed/power/idle/system/search/dns/privacy/contentSettings/userScripts"
+	      : "Mori extension smoke failed";
     console.info("__MORI_EXTENSION_SMOKE__" + JSON.stringify({
       runId,
       ok,
       checks,
       contexts,
       backgroundContexts,
+      legacyExtensionViewsResponse,
       storage: {
         stored,
         storageKeys,
@@ -2948,13 +5017,18 @@ JS
       executeScriptResponse,
       cssInjectionResponse,
       dynamicContentResponse,
+      userScriptsResponse,
       webRequestResponse,
       webNavigationResponse,
       dnrResponse,
       tabManagementResponse,
+      tabGroupsResponse,
+      contextMenusResponse,
       windowsResponse,
-      permissionsResponse,
-      proxySettingsResponse,
+	      permissionsResponse,
+	      proxySettingsResponse,
+	      privacyResponse,
+	      contentSettingsResponse,
       historyResponse,
       cookiesResponse,
       browsingDataResponse,
@@ -2972,6 +5046,13 @@ JS
       captureVisibleTabResponse,
       identityResponse,
       sidePanelResponse,
+      runtimeIntrospectionResponse,
+      powerResponse,
+	      idleResponse,
+	      systemResponse,
+	      searchResponse,
+	      dnsResponse,
+	      protectedGlobalResponse,
       href: location.href
     }));
   } catch (error) {
@@ -3104,6 +5185,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        if self.path.startswith("/frame-smoke.html"):
+            body = f"""<!doctype html>
+<meta charset=\"utf-8\">
+<title>Mori Smoke Child Frame</title>
+<body data-mori-smoke-frame=\"{run_id}\">
+  <input id=\"mori-smoke-frame-input\" name=\"frame-email\" autocomplete=\"username\">
+</body>
+"""
+            data = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if self.path.startswith("/external-message.html"):
             body = f"""<!doctype html>
 <meta charset=\"utf-8\">
@@ -3138,6 +5234,16 @@ setTimeout(go, 25);
             return
         if self.path.startswith("/cors-json"):
             self.send_cors_json()
+            return
+        if self.path.startswith("/dnr-response"):
+            body = ("mori-dnr-response-" + run_id).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("X-Mori-DNR-Original", "original-" + run_id)
+            self.send_header("X-Mori-DNR-Remove", "remove-" + run_id)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         if not self.path.startswith("/slow.bin"):
             self.send_response(404)
@@ -3252,7 +5358,7 @@ for line in sys.stdin:
       api_popup_logs="$(printf '%s\n' "$all_popup_logs" | /usr/bin/grep -F " api" || true)"
       command_popup_logs="$(printf '%s\n' "$all_popup_logs" | /usr/bin/grep -F " command" || true)"
       if [[ -n "$api_popup_logs" && -n "$command_popup_logs" ]]; then
-        printf 'Verified extension runtime smoke: popup rendered, extension pages report navigator.onLine=true, extension-page fetch POST/GET returned Response JSON through Mori-owned networking with CEF cookie sharing, externally_connectable account-page fork messages reached onMessageExternal with a web sender tab, proxy.settings get/set/clear/onChange matched ChromeSetting semantics, popup/background/offscreen runtime.getContexts, browser.* namespace mirrors Mori extension APIs, extension window creation stayed inside Mori tabs, web_accessible_resources exposed only declared extension files, scripting.insertCSS/removeCSS and legacy tabs CSS APIs changed and restored Chromium-rendered page styles, MV3 offscreen document create/close plus offscreen clipboard read/write/copy/paste worked in Mori, sidePanel.open rendered an extension page in Mori chrome, action.openPopup and _execute_action reached Mori chrome for an unpinned extension, identity.launchWebAuthFlow captured a Mori tab redirect, cookies/history/topSites, bookmarks create/update/move/remove with events, sessions restore, management enable/disable/uninstall, CRX3 header id parsing installed a generically named package into Mori without external Chrome handoff, legacy extension-scheme navigations rewrote into Mori tabs, runtime.setUninstallURL plus management.uninstallSelf opened a Mori tab, runtime.sendNativeMessage and runtime.connectNative round-tripped through a native host, notifications shared across extension contexts, alarms fired in the extension background context, tabs.captureVisibleTab captured real page pixels, browsingData history/cookie removal, and downloads.cancel round-tripped through Mori-owned stores, runtime.sendMessage, runtime.connect, content script injection, and tabs.sendMessage round-tripped through Mori.\n'
+        printf 'Verified extension runtime smoke: popup rendered, extension pages report navigator.onLine=true, extension-page fetch POST/GET returned Response JSON through Mori-owned networking with CEF cookie sharing, externally_connectable account-page fork messages reached onMessageExternal with a web sender tab, proxy.settings get/set/clear/onChange matched ChromeSetting semantics, chrome.power system/display keep-awake assertions acquired and released via macOS activity assertions, chrome.system cpu/memory/display/storage metadata and storage capacity/eject result shapes round-tripped from macOS, chrome.search.query loaded configured-provider searches into tabId/current/new-tab/browser namespace paths, chrome.contentSettings get/set/clear/getResourceIdentifiers persisted extension-owned rules with primary/secondary precedence, chrome.userScripts register/get/update/unregister/configureWorld/execute injected inline user scripts into Mori tabs, popup/background/offscreen runtime.getContexts, browser.* namespace mirrors Mori extension APIs, extension window creation stayed inside Mori tabs, web_accessible_resources exposed only declared extension files, webNavigation.getFrame/getAllFrames returned stable frame and document ids, scripting.executeScript returned per-frame allFrames/frameIds/documentIds results, manifest world MAIN content scripts stayed page-world, scripting.insertCSS/removeCSS and legacy tabs CSS APIs changed and restored Chromium-rendered page styles, frame-targeted scripting.insertCSS/removeCSS stayed isolated to the requested child frame, MV3 offscreen document create/close plus offscreen clipboard read/write/copy/paste worked in Mori, sidePanel.open rendered an extension page in Mori chrome, action.openPopup and _execute_action reached Mori chrome for an unpinned extension, identity.launchWebAuthFlow captured a Mori tab redirect, cookies/history/topSites, bookmarks create/update/move/remove with events, tabs.group/ungroup and tabGroups.* events round-tripped, contextMenus create/update/remove and onClicked(info, tab) checkbox state round-tripped, DNR block/redirect/request-header and response-header modifications round-tripped, sessions restore, management enable/disable/uninstall, CRX3 header id parsing installed a generically named package into Mori without external Chrome handoff, legacy extension-scheme navigations rewrote into Mori tabs, runtime.getVersion/getPlatformInfo/requestUpdateCheck/restartAfterDelay/reload shape, runtime.setUninstallURL plus management.uninstallSelf opened a Mori tab, runtime.sendNativeMessage and runtime.connectNative round-tripped through a native host, notifications shared across extension contexts, alarms fired in the extension background context, tabs.captureVisibleTab captured real page pixels, browsingData history/cookie removal, downloads.cancel round-tripped through Mori-owned stores, Proton-style protected global chrome/browser replacement was ignored while runtime stayed usable, dynamic content-script file injection recovered chrome.runtime after protected globals, content scripts manipulated focused page inputs and delivered sender.tab/sender.frameId/documentId to background messages and ports, tabs.sendMessage honored frameId/documentId-targeted child-frame delivery, and runtime.sendMessage, runtime.connect, content script injection, and tabs.sendMessage round-tripped through Mori.\n'
         return 0
       fi
     fi
@@ -3447,6 +5553,7 @@ case "$MODE" in
 	    SMOKE_CRX_URL="http://127.0.0.1:$SMOKE_DOWNLOAD_PORT/extension.crx?run=$SMOKE_RUN_ID"
 	    SMOKE_EXTERNAL_PAGE_URL="http://127.0.0.1:$SMOKE_DOWNLOAD_PORT/external-message.html?run=$SMOKE_RUN_ID"
 	    SMOKE_CORS_URL="http://127.0.0.1:$SMOKE_DOWNLOAD_PORT/cors-json?run=$SMOKE_RUN_ID"
+	    SMOKE_FRAME_URL="http://127.0.0.1:$SMOKE_DOWNLOAD_PORT/frame-smoke.html?run=$SMOKE_RUN_ID"
 	    create_extension_smoke_fixture "$SMOKE_RUN_ID"
 	    if ! start_smoke_download_server "$SMOKE_DOWNLOAD_PORT" "$SMOKE_RUN_ID" "$SMOKE_CRX_PATH"; then
 	      exit 1

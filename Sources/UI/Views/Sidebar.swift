@@ -8,11 +8,31 @@ import UniformTypeIdentifiers
 /// `--sidebar-*` tokens.
 struct Sidebar: View {
     @ObservedObject var store: BrowserStore
+    @ObservedObject private var settings = BrowserSettings.shared
 
     /// The tab currently being dragged in the sidebar, shared across all drop
     /// targets so any container can reorder/accept it live. Held here at the top
     /// level and threaded down as a binding.
     @State private var draggingTabID: BrowserTab.ID?
+
+    /// Live width while the resize handle is being dragged. Kept local so each
+    /// drag frame is a cheap in-view update — the persisted (and UserDefaults-
+    /// backed) `settings.sidebarWidth` is only written once, on release.
+    @State private var liveWidth: CGFloat?
+
+    /// The web card floats with an 8pt gap on its sidebar-facing edge. Trim the
+    /// row padding by that gap on the same side so tab cards sit evenly inset
+    /// within the visible chrome instead of crowding the outer window edge.
+    private static let webCardGap: CGFloat = 8
+    private func rowInsets(_ base: CGFloat) -> EdgeInsets {
+        let trimLeading = settings.sidebarPosition == .right
+        return EdgeInsets(
+            top: 0,
+            leading: base - (trimLeading ? Self.webCardGap : 0),
+            bottom: 0,
+            trailing: base - (trimLeading ? 0 : Self.webCardGap)
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -24,15 +44,19 @@ struct Sidebar: View {
                 VStack(alignment: .leading, spacing: 10) {
                     if !store.pinnedTabs.isEmpty || draggingTabID != nil {
                         PinnedGrid(store: store, draggingTabID: $draggingTabID)
-                            .padding(.horizontal, 10)
+                            .padding(rowInsets(10))
                     }
 
-                    FolderSection(store: store, draggingTabID: $draggingTabID)
-                        .padding(.horizontal, 8)
+                    if !store.folders.isEmpty {
+                        FolderSection(store: store, draggingTabID: $draggingTabID)
+                            .padding(rowInsets(8))
+                    }
 
                     NewTabRow { store.presentLauncher() }
-                        .padding(.horizontal, 8)
-                        .padding(.top, 2)
+                        .padding(rowInsets(8))
+                        // Pull up to tighten the gap above New Tab in every
+                        // state (first row, or below pins/folders).
+                        .padding(.top, -6)
                         .onDrop(of: SidebarTabDrag.acceptedTypes,
                                 delegate: TabReorderDropDelegate(
                                     target: .loose(index: 0),
@@ -40,7 +64,7 @@ struct Sidebar: View {
                                     store: store))
 
                     LooseTabList(store: store, draggingTabID: $draggingTabID)
-                        .padding(.horizontal, 8)
+                        .padding(rowInsets(8))
                         .padding(.bottom, 10)
                 }
                 .padding(.top, 8)
@@ -48,7 +72,7 @@ struct Sidebar: View {
             SidebarMediaSection(store: store, media: store.media)
             SidebarBottomBar(store: store)
         }
-        .frame(width: 256)
+        .frame(width: liveWidth ?? settings.sidebarWidth)
         .contentShape(Rectangle())
         .contextMenu { SidebarContextMenu(store: store) }
         .onDrop(of: SidebarTabDrag.acceptedTypes,
@@ -57,8 +81,61 @@ struct Sidebar: View {
                     draggingID: $draggingTabID,
                     store: store,
                     moveOnEnter: false))
+        // Resize handle on the inner (web-card-facing) edge: leading when the
+        // sidebar sits on the right, trailing when it sits on the left.
+        .overlay(alignment: settings.sidebarPosition == .right ? .leading : .trailing) {
+            SidebarResizeHandle(store: store, position: settings.sidebarPosition,
+                                liveWidth: $liveWidth)
+        }
         // No own background: the unified chrome surface (set on the root) shows
         // through, so the sidebar and the card's inset gaps are the same color.
+    }
+}
+
+/// A thin, draggable strip along the sidebar's inner edge that resizes it.
+/// Shows a faint divider on hover (hidden while dragging) and a resize cursor.
+/// During the drag it only updates the parent's cheap `liveWidth` state;
+/// the persisted `settings.sidebarWidth` is written once, on release.
+private struct SidebarResizeHandle: View {
+    @ObservedObject var store: BrowserStore
+    let position: SidebarPosition
+    @Binding var liveWidth: CGFloat?
+    @ObservedObject private var settings = BrowserSettings.shared
+    @State private var dragStartWidth: CGFloat?
+
+    private static let hitWidth: CGFloat = 8
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.clear)
+            .frame(width: Self.hitWidth)
+            .contentShape(Rectangle())
+            .onHover { inside in
+                if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        let start = dragStartWidth ?? settings.sidebarWidth
+                        if dragStartWidth == nil {
+                            dragStartWidth = start
+                            store.isResizingSidebar = true
+                        }
+                        // Right sidebar grows when dragged left (negative dx);
+                        // left sidebar grows when dragged right (positive dx).
+                        let delta = position == .right ? -value.translation.width
+                                                       : value.translation.width
+                        liveWidth = (start + delta).clamped(
+                            to: BrowserSettings.minSidebarWidth...BrowserSettings.maxSidebarWidth)
+                    }
+                    .onEnded { _ in
+                        if let final = liveWidth { settings.sidebarWidth = final }
+                        dragStartWidth = nil
+                        liveWidth = nil
+                        // Unfreeze the web card; the CEF view resizes once now.
+                        store.isResizingSidebar = false
+                    }
+            )
     }
 }
 
@@ -143,9 +220,9 @@ private struct SidebarHeader: View {
                 }
                     .help("Toggle sidebar")
                 Spacer()
-                IconButton(systemName: "chevron.left", size: 28,
+                IconButton(systemName: "arrow.backward", size: 28,
                            disabled: !tab.canGoBack) { store.goBack() }
-                IconButton(systemName: "chevron.right", size: 28,
+                IconButton(systemName: "arrow.forward", size: 28,
                            disabled: !tab.canGoForward) { store.goForward() }
                 IconButton(systemName: tab.isLoading ? "xmark" : "arrow.clockwise",
                            size: 28) {
@@ -157,7 +234,11 @@ private struct SidebarHeader: View {
             Omnibox(store: store, tab: tab)
                 .frame(maxWidth: .infinity)
         }
-        .padding(.horizontal, 10)
+        // Mirror the tab rows: trim the padding on the web-card-facing edge by
+        // its 8pt float gap so the header reads as evenly inset, not crowded
+        // toward the outer window edge.
+        .padding(.leading, settings.sidebarPosition == .right ? 2 : 10)
+        .padding(.trailing, settings.sidebarPosition == .right ? 10 : 2)
         .padding(.top, 10)
         .padding(.bottom, 6)
     }
@@ -170,7 +251,7 @@ private struct PinnedGrid: View {
     @Binding var draggingTabID: BrowserTab.ID?
     @State private var dropTargeted = false
 
-    private let columns = [GridItem(.adaptive(minimum: 56, maximum: 80), spacing: 6)]
+    private let columns = [GridItem(.adaptive(minimum: 64, maximum: 92), spacing: 6)]
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 6) {
@@ -219,8 +300,8 @@ private struct PinnedTile: View {
 
     var body: some View {
         Favicon(icon: tab.faviconURL, page: tab.urlString, image: tab.faviconImage,
-                isLoading: tab.isLoading, size: 20)
-            .frame(height: 40)
+                isLoading: tab.isLoading, size: 24)
+            .frame(height: 48)
             .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: TabSurface.radius, style: .continuous)
@@ -230,9 +311,8 @@ private struct PinnedTile: View {
                             x: 0, y: isSelected ? TabSurface.shadowY : 0)
             )
             .contentShape(Rectangle())
-            .onTapGesture(perform: onSelect)
+            .pressShrink(perform: onSelect)
             .onHover { hovering = $0 }
-            .animation(Motion.state, value: isSelected)
             .help(tab.title)
     }
 
@@ -278,7 +358,7 @@ private struct FolderRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: 4) {
             // Folder header row.
             HStack(spacing: 8) {
                 MorphingFolderIcon(
@@ -348,6 +428,7 @@ private struct FolderRow: View {
                         onClose: { store.closeTab(tab.id) }
                     )
                     .padding(.leading, 16)
+                    .transition(.tabClose)
                     .contextMenu { TabMenu(store: store, tab: tab) }
                     .onDrag {
                         draggingTabID = tab.id
@@ -406,7 +487,7 @@ private struct LooseTabList: View {
     @State private var appendDropTargeted = false
 
     var body: some View {
-        LazyVStack(spacing: 2) {
+        LazyVStack(spacing: 4) {
             ForEach(Array(store.looseTabs.enumerated()), id: \.element.id) { idx, tab in
                 TabRow(
                     tab: tab,
@@ -414,6 +495,7 @@ private struct LooseTabList: View {
                     onSelect: { store.selectTab(tab.id) },
                     onClose: { store.closeTab(tab.id) }
                 )
+                .transition(.tabClose)
                 .contextMenu { TabMenu(store: store, tab: tab) }
                 .onDrag {
                     draggingTabID = tab.id
@@ -475,12 +557,12 @@ private struct NewTabRow: View {
             .padding(.horizontal, 9)
             .frame(height: 32)
             .background(
-                RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                RoundedRectangle(cornerRadius: TabSurface.radius, style: .continuous)
                     .fill(hovering ? p.foreground.color.opacity(0.05) : .clear)
             )
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PressShrinkButtonStyle())
         .onHover { hovering = $0 }
     }
 }

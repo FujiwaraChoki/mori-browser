@@ -312,13 +312,41 @@ bool IsExtensionInternalRequest(NSString* extensionID,
   return false;
 }
 
+// A real web origin we can match web_accessible_resources `matches` against.
+// about:blank / data: / the extension scheme / schemeless URLs are not usable
+// as an initiator: a freshly-created subframe (e.g. Proton Pass's autofill
+// dropdown iframe) reports about:blank while it loads, which matches no
+// https://*/* pattern and would 403 the resource.
+bool IsMeaningfulInitiator(NSURL* url) {
+  NSString* scheme = url.scheme.lowercaseString;
+  if (scheme.length == 0) return false;
+  if ([scheme isEqualToString:@"about"] || [scheme isEqualToString:@"data"] ||
+      [scheme isEqualToString:@"blob"] ||
+      [scheme isEqualToString:@(mori::kExtensionScheme)]) {
+    return false;
+  }
+  return url.host.length > 0 || [scheme isEqualToString:@"file"];
+}
+
 NSURL* InitiatorURLForRequest(CefRefPtr<CefFrame> frame,
                               CefRefPtr<CefRequest> request) {
-  NSString* frameURL = frame ? NSStringFromCef(frame->GetURL()) : @"";
-  NSURL* frameNSURL = [NSURL URLWithString:frameURL];
-  if (frameNSURL) return frameNSURL;
-  NSString* referrer = request ? NSStringFromCef(request->GetReferrerURL()) : @"";
-  return [NSURL URLWithString:referrer];
+  NSURL* frameNSURL =
+      [NSURL URLWithString:(frame ? NSStringFromCef(frame->GetURL()) : @"")];
+  if (IsMeaningfulInitiator(frameNSURL)) return frameNSURL;
+
+  // about:blank subframes inherit their embedder's origin, so the embedding
+  // (parent) frame is the real initiator of a resource the page injected.
+  for (CefRefPtr<CefFrame> parent = frame ? frame->GetParent() : nullptr;
+       parent; parent = parent->GetParent()) {
+    NSURL* parentURL = [NSURL URLWithString:NSStringFromCef(parent->GetURL())];
+    if (IsMeaningfulInitiator(parentURL)) return parentURL;
+  }
+
+  NSURL* referrer =
+      [NSURL URLWithString:(request ? NSStringFromCef(request->GetReferrerURL())
+                                    : @"")];
+  if (IsMeaningfulInitiator(referrer)) return referrer;
+  return frameNSURL ?: referrer;
 }
 
 NSString* HTMLEscapedAttribute(NSString* raw) {

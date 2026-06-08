@@ -55,53 +55,52 @@ struct LoadingBar: View {
     }
 }
 
-/// The address/search field. Shows the page URL when idle; full editable text
-/// when focused.
+/// The address bar. Displays the current page URL; tapping it (or ⌘L) opens the
+/// launcher seeded with that URL, so editing the address and searching share the
+/// same command palette rather than an inline text field.
 struct Omnibox: View {
     @ObservedObject var store: BrowserStore
     @ObservedObject var tab: BrowserTab
     @ObservedObject private var extensions = ExtensionStore.shared
 
     @Environment(\.palette) private var p
-    @FocusState private var focused: Bool
-    @State private var editText: String = ""
-    @State private var suggestions: [HistoryEntry] = []
-    @State private var highlighted: Int? = nil
 
-    private var showSuggestions: Bool {
-        focused && !editText.isEmpty && !suggestions.isEmpty
-            && editText != tab.displayURL
-    }
+    private var displayText: String { tab.displayURL }
 
     var body: some View {
         HStack(spacing: 7) {
-            Icon(name: secureGlyph, size: 13, weight: .regular)
-                .foregroundStyle(secureColor)
+            // The URL display doubles as the launch target. Extension items stay
+            // outside the button so they remain independently clickable.
+            Button(action: { store.presentLauncherForCurrentTab() }) {
+                HStack(spacing: 7) {
+                    Icon(name: secureGlyph, size: 13, weight: .regular)
+                        .foregroundStyle(secureColor)
 
-            ZStack(alignment: .leading) {
-                if editText.isEmpty {
-                    Text("Search or enter address")
-                        .font(Typography.ui(Typography.base))
-                        .foregroundStyle(p.mutedForeground.color.opacity(0.7))
+                    if displayText.isEmpty {
+                        Text("Search or enter address")
+                            .font(Typography.ui(Typography.base))
+                            .foregroundStyle(p.mutedForeground.color.opacity(0.7))
+                    } else {
+                        Text(displayText)
+                            .font(Typography.ui(Typography.base))
+                            .foregroundStyle(p.foreground.color)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+
+                    Spacer(minLength: 0)
                 }
-                TextField("", text: $editText)
-                    .textFieldStyle(.plain)
-                    .font(Typography.ui(Typography.base))
-                    .foregroundStyle(p.foreground.color)
-                    .lineLimit(1)
-                    .focused($focused)
-                    .onSubmit(submit)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
 
-            if let id = ExtensionStore.webStoreExtensionID(from: tab.urlString), !focused {
+            if let id = ExtensionStore.webStoreExtensionID(from: tab.urlString) {
                 AddExtensionButton(installing: extensions.installingIDs.contains(id)) {
                     extensions.beginWebStoreInstall(extensionID: id)
                 }
             }
 
-            if !focused {
-                ExtensionToolbarItems(store: store)
-            }
+            ExtensionToolbarItems(store: store)
 
             if tab.isLoading {
                 ProgressView().controlSize(.small).scaleEffect(0.55)
@@ -110,62 +109,12 @@ struct Omnibox: View {
         .padding(.horizontal, 11)
         .frame(height: 30)
         .background {
-            if focused {
-                // Solid input fill while typing for maximum legibility.
-                RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
-                    .fill(p.background.color)
-            } else {
-                // Idle: Apple Liquid Glass capsule.
-                Color.clear.liquidGlass(cornerRadius: Radius.button)
-            }
+            Color.clear.liquidGlass(cornerRadius: Radius.button)
         }
         .overlay(
             RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
-                .strokeBorder(focused ? p.ring.color.opacity(0.55) : p.border.color.opacity(0.35),
-                              lineWidth: focused ? 1.5 : 1)
+                .strokeBorder(p.border.color.opacity(0.35), lineWidth: 1)
         )
-        // Autocomplete dropdown, floated just below the field.
-        .overlay(alignment: .topLeading) {
-            if showSuggestions {
-                OmniboxSuggestionsList(
-                    suggestions: suggestions,
-                    highlighted: highlighted,
-                    onPick: { commit($0.url) }
-                )
-                .offset(y: 36)
-                .transition(.opacity)
-            }
-        }
-        .animation(Motion.state, value: focused)
-        .onAppear { editText = tab.displayURL }
-        .onChange(of: focused) { _, now in
-            if now {
-                DispatchQueue.main.async { selectAll() }
-                refreshSuggestions()
-            } else {
-                // Snap back to the canonical URL when focus leaves.
-                editText = tab.displayURL
-                suggestions = []
-            }
-        }
-        .onChange(of: editText) { _, _ in
-            highlighted = nil
-            refreshSuggestions()
-        }
-        .onChange(of: tab.urlString) { _, _ in
-            if !focused { editText = tab.displayURL }
-        }
-        .onChange(of: tab.id) { _, _ in
-            editText = tab.displayURL
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .moriFocusOmnibox)) { _ in
-            focused = true
-        }
-    }
-
-    private func refreshSuggestions() {
-        guard focused, editText != tab.displayURL else { suggestions = []; return }
-        suggestions = HistoryStore.shared.suggestions(for: editText, limit: 6)
     }
 
     private var secureGlyph: String {
@@ -178,33 +127,6 @@ struct Omnibox: View {
         if tab.urlString.hasPrefix("https") { return p.mutedForeground.color }
         if tab.urlString.hasPrefix("http") { return p.statusWarningFg.color }
         return p.mutedForeground.color
-    }
-
-    private func submit() {
-        // A highlighted suggestion wins; otherwise treat the text as URL/search.
-        if let i = highlighted, suggestions.indices.contains(i) {
-            commit(suggestions[i].url)
-            return
-        }
-        let text = editText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
-        store.navigate(text)
-        suggestions = []
-        focused = false
-    }
-
-    /// Navigate straight to a chosen suggestion URL.
-    private func commit(_ url: String) {
-        store.navigate(url)
-        editText = url
-        suggestions = []
-        focused = false
-    }
-
-    private func selectAll() {
-        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
-            editor.selectAll(nil)
-        }
     }
 }
 
@@ -237,77 +159,6 @@ private struct AddExtensionButton: View {
         .buttonStyle(.plain)
         .disabled(installing)
         .help("Install this extension in Mori")
-    }
-}
-
-/// The omnibox autocomplete dropdown: history matches for what's been typed.
-private struct OmniboxSuggestionsList: View {
-    let suggestions: [HistoryEntry]
-    let highlighted: Int?
-    let onPick: (HistoryEntry) -> Void
-
-    @Environment(\.palette) private var p
-
-    var body: some View {
-        VStack(spacing: 1) {
-            ForEach(Array(suggestions.enumerated()), id: \.element.id) { idx, entry in
-                SuggestionRow(entry: entry, isHighlighted: idx == highlighted) {
-                    onPick(entry)
-                }
-            }
-        }
-        .padding(5)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: Radius.popover, style: .continuous)
-                .fill(p.popover.color)
-                .shadow(color: .black.opacity(0.22), radius: 16, y: 6)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: Radius.popover, style: .continuous)
-                .strokeBorder(p.border.color.opacity(0.6), lineWidth: 1)
-        )
-    }
-}
-
-private struct SuggestionRow: View {
-    let entry: HistoryEntry
-    let isHighlighted: Bool
-    let action: () -> Void
-
-    @Environment(\.palette) private var p
-    @State private var hovering = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 9) {
-                Icon(name: "clock.arrow.circlepath", size: 14, weight: .regular)
-                    .foregroundStyle(p.mutedForeground.color)
-                    .frame(width: 16)
-                Text(entry.title.isEmpty ? entry.url : entry.title)
-                    .font(Typography.ui(Typography.base))
-                    .foregroundStyle(p.foreground.color)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Text(prettyHost)
-                    .font(Typography.ui(Typography.small))
-                    .foregroundStyle(p.mutedForeground.color)
-                    .lineLimit(1)
-            }
-            .padding(.horizontal, 9)
-            .frame(height: 30)
-            .background(
-                RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                    .fill(isHighlighted || hovering ? p.accent.color.opacity(0.7) : .clear)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-    }
-
-    private var prettyHost: String {
-        URL(string: entry.url)?.host ?? ""
     }
 }
 

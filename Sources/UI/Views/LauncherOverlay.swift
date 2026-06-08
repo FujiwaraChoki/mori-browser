@@ -131,10 +131,26 @@ private struct LauncherView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear {
+            // Seed from the address bar (current URL) when invoked there; blank
+            // for a ⌘T launcher. Pre-select so the first keystroke replaces it.
+            query = store.launcherPrefill
             highlighted = 0
-            DispatchQueue.main.async { fieldFocused = true }
+            DispatchQueue.main.async {
+                fieldFocused = true
+                if !query.isEmpty {
+                    DispatchQueue.main.async { selectAllField() }
+                }
+            }
         }
         .onChange(of: query) { _, _ in highlighted = 0 }
+    }
+
+    /// Select the launcher field's text so a pre-filled URL is replaced wholesale
+    /// on the first keystroke (matching the old omnibox focus behavior).
+    private func selectAllField() {
+        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
+            editor.selectAll(nil)
+        }
     }
 
     private var card: some View {
@@ -142,20 +158,29 @@ private struct LauncherView: View {
             header
 
             if !items.isEmpty {
-                Divider()
-                    .overlay(p.border.color.opacity(0.45))
-                    .padding(.horizontal, 14)
+                Rectangle()
+                    .fill(p.border.color.opacity(0.4))
+                    .frame(height: 1)
+                    .padding(.horizontal, LauncherMetrics.headerPadding)
                 results
             }
         }
         .background(
             RoundedRectangle(cornerRadius: LauncherMetrics.cornerRadius, style: .continuous)
                 .fill(p.popover.color)
-                .shadow(color: .black.opacity(scheme == .dark ? 0.48 : 0.22), radius: 30, y: 14)
+                .shadow(color: .black.opacity(scheme == .dark ? 0.6 : 0.25), radius: 44, y: 22)
         )
         .overlay(
             RoundedRectangle(cornerRadius: LauncherMetrics.cornerRadius, style: .continuous)
-                .strokeBorder(p.border.color.opacity(0.5), lineWidth: 1)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: scheme == .dark
+                            ? [.white.opacity(0.1), .white.opacity(0.03)]
+                            : [.black.opacity(0.06), .black.opacity(0.02)],
+                        startPoint: .top, endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
         )
         // Swallow taps on the card so they don't fall through to the scrim.
         .contentShape(RoundedRectangle(cornerRadius: LauncherMetrics.cornerRadius, style: .continuous))
@@ -166,36 +191,26 @@ private struct LauncherView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 10) {
-            Icon(name: "magnifyingglass", size: 15, weight: .regular)
-                .foregroundStyle(p.mutedForeground.color)
+        HStack(spacing: 11) {
+            Icon(name: "magnifyingglass", size: 16, weight: .medium)
+                .foregroundStyle(p.mutedForeground.color.opacity(0.65))
 
             ZStack(alignment: .leading) {
                 if query.isEmpty {
-                    Text("Search…")
+                    Text("Search or Enter URL…")
                         .font(Typography.ui(15))
-                        .foregroundStyle(p.mutedForeground.color.opacity(0.7))
+                        .foregroundStyle(p.mutedForeground.color.opacity(0.65))
                 }
                 TextField("", text: $query)
                     .textFieldStyle(.plain)
                     .font(Typography.ui(15))
                     .foregroundStyle(p.foreground.color)
+                    .tint(p.primary.color)
                     .focused($fieldFocused)
                     .onSubmit(commit)
             }
-
-            Text("\(store.selectedTab?.zoomPercent ?? 100)%")
-                .font(Typography.ui(11, weight: .medium))
-                .foregroundStyle(p.mutedForeground.color)
-                .monospacedDigit()
-                .padding(.horizontal, 7)
-                .frame(height: 22)
-                .background(
-                    Capsule()
-                        .fill(p.foreground.color.opacity(0.06))
-                )
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, LauncherMetrics.headerPadding)
         .frame(height: LauncherMetrics.headerHeight)
     }
 
@@ -203,13 +218,14 @@ private struct LauncherView: View {
         ScrollView {
             VStack(spacing: LauncherMetrics.rowSpacing) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
-                    LauncherRow(item: item, isHighlighted: idx == highlighted) {
+                    LauncherRow(item: item, isHighlighted: idx == highlighted, scheme: scheme) {
                         activate(item)
                     }
                     .onHover { if $0 { highlighted = idx } }
                 }
             }
-            .padding(LauncherMetrics.resultsPadding)
+            .padding(.horizontal, LauncherMetrics.resultsPadding)
+            .padding(.vertical, LauncherMetrics.resultsPadding)
         }
         .frame(maxHeight: LauncherMetrics.maxResultsHeight)
         .scrollIndicators(.never)
@@ -240,11 +256,14 @@ private struct LauncherView: View {
 private enum LauncherMetrics {
     static let cardWidth: CGFloat = 620
     static let horizontalPadding: CGFloat = 24
-    static let headerHeight: CGFloat = 48
-    static let rowHeight: CGFloat = 46
+    static let headerHeight: CGFloat = 52
+    static let headerPadding: CGFloat = 16
+    static let rowHeight: CGFloat = 48
     static let rowSpacing: CGFloat = 1
     static let resultsPadding: CGFloat = 6
-    static let visibleResultCount = 5
+    static let rowInnerPadding: CGFloat = 10
+    static let rowCorner: CGFloat = 8
+    static let visibleResultCount = 6
     static let maxResultsHeight: CGFloat = {
         let rows = CGFloat(visibleResultCount)
         let gaps = CGFloat(max(visibleResultCount - 1, 0))
@@ -252,7 +271,13 @@ private enum LauncherMetrics {
     }()
     static let cornerRadius: CGFloat = Radius.popover
     /// Fraction of the window height at which the card's top edge is pinned.
-    static let topFraction: CGFloat = 0.28
+    static let topFraction: CGFloat = 0.24
+
+    /// The highlighted-row wash — a touch of light over the card surface so the
+    /// active result reads clearly without a heavy accent tint.
+    static func highlightFill(_ scheme: ColorScheme) -> Color {
+        scheme == .dark ? .white.opacity(0.07) : .black.opacity(0.05)
+    }
 }
 
 /// One launcher result: either an open tab (offers "Switch to Tab") or a history
@@ -264,6 +289,8 @@ private struct LauncherItem: Identifiable {
     let faviconURL: String?
     /// Non-nil when this result is an already-open tab.
     let tabID: BrowserTab.ID?
+    /// Trailing affordance label ("Switch to Tab", "Open", "Search").
+    let action: String
 
     static func build(query: String, store: BrowserStore) -> [LauncherItem] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -280,15 +307,24 @@ private struct LauncherItem: Identifiable {
             let resolved = URLInterpreter.resolve(rawQuery, settings: store.settings)
             let isAddress = URLInterpreter.resolvesAsAddress(rawQuery)
             seen.insert(resolved)
-            out.append(LauncherItem(id: "direct-\(resolved)",
+            // Stable id (not keyed on the resolved URL) so the row — and its
+            // Favicon/AsyncImage — persists across keystrokes instead of being
+            // torn down and reloaded on every character. The search-engine
+            // favicon is host-derived and therefore constant while typing, so a
+            // persistent view keeps it rock-solid with no reload flash.
+            out.append(LauncherItem(id: isAddress ? "direct-address" : "direct-search",
                                     title: isAddress ? "Open \(rawQuery)" : "Search \(rawQuery)",
                                     url: resolved,
                                     faviconURL: isAddress ? favicon(for: resolved) : nil,
-                                    tabID: nil))
+                                    tabID: nil,
+                                    action: isAddress ? "Open" : "Search"))
         }
 
-        // Open tabs first — all of them when idle, filtered while typing.
+        // Open tabs first — all of them when idle, filtered while typing. In
+        // address-bar mode the current tab is the one being edited, so offering
+        // to "Switch to" it would be redundant — skip it.
         for tab in store.tabs {
+            if store.launcherEditsCurrentTab, tab.id == store.selectedTabID { continue }
             let match = q.isEmpty
                 || tab.title.lowercased().contains(q)
                 || tab.urlString.lowercased().contains(q)
@@ -299,7 +335,8 @@ private struct LauncherItem: Identifiable {
                                     title: tab.title,
                                     url: tab.displayURL,
                                     faviconURL: tab.faviconURL ?? favicon(for: tab.urlString),
-                                    tabID: tab.id))
+                                    tabID: tab.id,
+                                    action: "Switch to Tab"))
         }
 
         // Then history: recent when idle, best matches while typing.
@@ -312,7 +349,8 @@ private struct LauncherItem: Identifiable {
                                     title: entry.title.isEmpty ? entry.url : entry.title,
                                     url: entry.url,
                                     faviconURL: favicon(for: entry.url),
-                                    tabID: nil))
+                                    tabID: nil,
+                                    action: "Open"))
         }
 
         return Array(out.prefix(7))
@@ -322,59 +360,59 @@ private struct LauncherItem: Identifiable {
 private struct LauncherRow: View {
     let item: LauncherItem
     let isHighlighted: Bool
+    let scheme: ColorScheme
     let action: () -> Void
 
     @Environment(\.palette) private var p
     @State private var hovering = false
 
+    /// Tab rows advertise "Switch to Tab" at all times (dimmed at rest);
+    /// open/search rows only reveal their affordance once active.
+    private var showsAction: Bool {
+        item.tabID != nil || isHighlighted || hovering
+    }
+
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 10) {
+            HStack(spacing: 11) {
                 Favicon(icon: item.faviconURL, page: item.url, size: 18)
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(item.title.isEmpty ? item.url : item.title)
-                        .font(Typography.ui(13, weight: .medium))
-                        .foregroundStyle(p.foreground.color)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-
-                    if !item.url.isEmpty {
-                        Text(item.url)
-                            .font(Typography.ui(11))
-                            .foregroundStyle(p.mutedForeground.color)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    }
-                }
+                Text(item.title.isEmpty ? item.url : item.title)
+                    .font(Typography.ui(13, weight: .medium))
+                    .foregroundStyle(p.foreground.color)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
                 Spacer(minLength: 12)
 
-                if item.tabID != nil, isHighlighted || hovering {
-                    HStack(spacing: 6) {
-                        Text("Switch to Tab")
-                            .font(Typography.ui(11, weight: .medium))
-                            .foregroundStyle(p.mutedForeground.color)
-                        Icon(name: "arrow.right", size: 11, weight: .semibold)
-                            .foregroundStyle(p.foreground.color.opacity(0.7))
-                            .frame(width: 20, height: 20)
-                            .background(
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(p.foreground.color.opacity(0.08))
-                            )
-                    }
-                    .fixedSize()
-                }
+                if showsAction { trailing }
             }
-            .padding(.horizontal, 10)
+            .padding(.horizontal, LauncherMetrics.rowInnerPadding)
             .frame(height: LauncherMetrics.rowHeight)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isHighlighted ? p.accent.color.opacity(0.12) : .clear)
+                RoundedRectangle(cornerRadius: LauncherMetrics.rowCorner, style: .continuous)
+                    .fill(isHighlighted ? LauncherMetrics.highlightFill(scheme) : .clear)
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+    }
+
+    private var trailing: some View {
+        HStack(spacing: 7) {
+            Text(item.action)
+                .font(Typography.ui(11, weight: .medium))
+                .foregroundStyle(isHighlighted ? p.foreground.color : p.mutedForeground.color.opacity(0.7))
+
+            Icon(name: "arrow.right", size: 11, weight: .semibold)
+                .foregroundStyle(isHighlighted ? p.popover.color : p.mutedForeground.color.opacity(0.7))
+                .frame(width: 20, height: 20)
+                .background(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .fill(isHighlighted ? p.foreground.color : p.foreground.color.opacity(0.07))
+                )
+        }
+        .fixedSize()
     }
 }

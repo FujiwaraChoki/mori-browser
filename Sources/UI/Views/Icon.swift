@@ -17,6 +17,9 @@ enum Nucleo {
         "xmark": ("close", 0),
         "arrow.up": ("arrow-up", 0),
         "arrow.right": ("arrow-right", 0),
+        // Line-style nav arrows for the sidebar's back / forward buttons.
+        "arrow.backward": ("arrow-line-left", 0),
+        "arrow.forward": ("arrow-line-right", 0),
         "arrow.clockwise": ("reload", 0),
         "lock.fill": ("security", 0),
         "exclamationmark.triangle": ("security-warning", 0),

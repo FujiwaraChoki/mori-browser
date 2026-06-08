@@ -6,6 +6,10 @@ final class BrowserStore: ObservableObject {
     @Published var tabs: [BrowserTab] = []
     @Published var selectedTabID: BrowserTab.ID?
     @Published var sidebarVisible: Bool
+    /// True while the sidebar's resize handle is being dragged. The web card
+    /// freezes its (expensive, async) CEF resize and shows a smooth cover for
+    /// the duration, so live dragging stays smooth instead of flickering.
+    @Published var isResizingSidebar: Bool = false
     @Published var aiPanelVisible: Bool = false
     @Published var extensionSidePanelURL: String?
     @Published var extensionSidePanelTitle: String?
@@ -13,6 +17,12 @@ final class BrowserStore: ObservableObject {
     @Published var findBarVisible: Bool = false
     /// The new-tab launcher (command palette) overlay.
     @Published var launcherVisible: Bool = false
+    /// Seeds the launcher's search field when it opens (e.g. the current URL when
+    /// invoked from the address bar). Empty for a blank ⌘T launcher.
+    var launcherPrefill: String = ""
+    /// When true the launcher edits the *current* tab in place (address-bar
+    /// behavior) instead of opening the destination in a fresh tab.
+    var launcherEditsCurrentTab: Bool = false
     /// True while the cursor is at the top edge: the web card slides down to
     /// reveal the titlebar (traffic lights) in the chrome above it.
     @Published var topChromeRevealed: Bool = false
@@ -54,8 +64,22 @@ final class BrowserStore: ObservableObject {
         var path: String?
         var enabled: Bool = true
     }
+    private struct ExtensionTabGroup {
+        let id: Int
+        var title: String?
+        var color: String = "grey"
+        var collapsed: Bool = false
+        var windowId: Int = 1
+        var shared: Bool = false
+    }
     private var sidePanelOptions: [String: ExtensionSidePanelOptions] = [:]
     private var sidePanelOpenOnActionClick: [String: Bool] = [:]
+    private var extensionTabGroups: [Int: ExtensionTabGroup] = [:]
+    private var extensionTabGroupMembership: [BrowserTab.ID: Int] = [:]
+    private var nextExtensionTabGroupID = 1
+    private let extensionTabGroupColors: Set<String> = [
+        "grey", "blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"
+    ]
     private struct PendingIdentityFlow {
         let extensionID: String
         let requestID: String
@@ -295,6 +319,23 @@ final class BrowserStore: ObservableObject {
     /// Open the new-tab launcher instead of immediately creating a blank tab, so
     /// the user can search, jump to an open tab, or pick from history first.
     func presentLauncher() {
+        launcherPrefill = ""
+        launcherEditsCurrentTab = false
+        withAnimation(Motion.reveal) { launcherVisible = true }
+    }
+
+    /// Address-bar behavior: open the launcher seeded with the current tab's URL
+    /// (text pre-selected), navigating the *current* tab on commit rather than
+    /// spawning a new one. Re-invoking while it's already up toggles it closed.
+    func presentLauncherForCurrentTab() {
+        if launcherVisible {
+            // Already up (e.g. ⌘L pressed twice, or while a ⌘T launcher is open):
+            // collapse it rather than stacking another invocation.
+            dismissLauncher()
+            return
+        }
+        launcherPrefill = selectedTab?.displayURL ?? ""
+        launcherEditsCurrentTab = true
         withAnimation(Motion.reveal) { launcherVisible = true }
     }
 
@@ -308,21 +349,38 @@ final class BrowserStore: ObservableObject {
     }
 
     func dismissLauncher() {
+        launcherEditsCurrentTab = false
         withAnimation(Motion.reveal) { launcherVisible = false }
     }
 
-    /// Commit typed launcher text: open it (URL or search) in a fresh tab.
+    /// Commit typed launcher text. In address-bar mode this loads into the
+    /// current tab; otherwise it opens a fresh tab. A blank commit makes a new
+    /// blank tab only in new-tab mode (in edit mode it's a no-op).
     func launcherOpen(_ input: String) {
         let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        let editing = launcherEditsCurrentTab && selectedTab != nil
         dismissLauncher()
-        guard !text.isEmpty else { newTab(); return }
-        newTab(url: URLInterpreter.resolve(text, settings: settings), select: true)
+        guard !text.isEmpty else {
+            if !editing { newTab() }
+            return
+        }
+        if editing {
+            navigate(text)
+        } else {
+            newTab(url: URLInterpreter.resolve(text, settings: settings), select: true)
+        }
     }
 
-    /// Open a chosen destination (history / suggestion) in a fresh tab.
+    /// Open a chosen destination (history / suggestion). Loads into the current
+    /// tab in address-bar mode, or a fresh tab otherwise.
     func launcherOpen(url: String) {
+        let editing = launcherEditsCurrentTab && selectedTab != nil
         dismissLauncher()
-        newTab(url: url, select: true)
+        if editing {
+            navigate(url)
+        } else {
+            newTab(url: url, select: true)
+        }
     }
 
     /// Jump to an already-open tab from the launcher.
@@ -349,11 +407,16 @@ final class BrowserStore: ObservableObject {
             emitExtensionEvent("sessions.onChanged", args: [])
         }
         tab.close()
-        tabs.remove(at: idx)
-        pinnedTabIDs.removeAll { $0 == id }
-        for folderIndex in folders.indices {
-            folders[folderIndex].tabIDs.removeAll { $0 == id }
+        // Animate the removal so the sidebar row fades + shrinks and the rows
+        // below collapse up into the gap, matching Zen's `animateItemClose`.
+        withAnimation(Motion.tabClose) {
+            tabs.remove(at: idx)
+            pinnedTabIDs.removeAll { $0 == id }
+            for folderIndex in folders.indices {
+                folders[folderIndex].tabIDs.removeAll { $0 == id }
+            }
         }
+        removeTabFromExtensionGroup(id, emitTabUpdate: false)
         emitExtensionEvent("tabs.onRemoved", args: [
             extensionTabID,
             ["windowId": 1, "isWindowClosing": false]
@@ -563,6 +626,22 @@ final class BrowserStore: ObservableObject {
             let url = args["url"] as? String ?? ""
             return ExtensionStore.shared.setUninstallURL(forExtensionID: extensionID, url: url)
 
+        case "runtime.reload":
+            guard let extensionID = args["extensionId"] as? String, !extensionID.isEmpty else {
+                return ["error": "Missing extension id."]
+            }
+            NotificationCenter.default.post(
+                name: .moriReloadExtensionRuntime,
+                object: nil,
+                userInfo: ["extensionId": extensionID]
+            )
+            if let sidePanelURL = extensionSidePanelURL,
+               sidePanelURL.lowercased().hasPrefix("mori-extension://\(extensionID.lowercased())/") {
+                extensionSidePanelURL = nil
+                extensionSidePanelTitle = nil
+            }
+            return ["result": NSNull()]
+
         case "identity.launchWebAuthFlow":
             guard let extensionID = args["extensionId"] as? String, !extensionID.isEmpty,
                   let requestID = args["requestId"] as? String, !requestID.isEmpty
@@ -653,6 +732,49 @@ final class BrowserStore: ObservableObject {
         default:
             return ["error": "Unsupported runtime method: \(method)"]
         }
+    }
+
+    func handleExtensionSearch(method: String, args: NSDictionary) -> NSDictionary {
+        guard method == "search.query" else {
+            return ["error": "Unsupported search method: \(method)"]
+        }
+        let queryInfo = args["queryInfo"] as? NSDictionary ?? [:]
+        guard let text = queryInfo["text"] as? String,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return ["error": "search.query requires a non-empty text value."]
+        }
+        let searchURL = settings.searchURL(for: text)
+        let hasTabID = queryInfo["tabId"] is NSNumber
+        let hasDisposition = queryInfo["disposition"] is String
+        if hasTabID && hasDisposition {
+            return ["error": "search.query cannot use tabId with disposition."]
+        }
+
+        if hasTabID {
+            guard let tab = extensionTab(for: queryInfo["tabId"]) else {
+                return ["error": "No tab with that id."]
+            }
+            tab.load(searchURL)
+            scheduleSessionSave()
+            return ["result": NSNull()]
+        }
+
+        let disposition = (queryInfo["disposition"] as? String) ?? "CURRENT_TAB"
+        switch disposition {
+        case "CURRENT_TAB":
+            if let tab = selectedTab {
+                tab.load(searchURL)
+            } else {
+                _ = newTab(url: searchURL, select: true)
+            }
+        case "NEW_TAB", "NEW_WINDOW":
+            _ = newTab(url: searchURL, select: true)
+        default:
+            return ["error": "Unsupported search disposition: \(disposition)"]
+        }
+        scheduleSessionSave()
+        return ["result": NSNull()]
     }
 
     func handleExtensionTabs(method: String, args: NSDictionary) -> NSDictionary {
@@ -761,6 +883,65 @@ final class BrowserStore: ObservableObject {
             }
             return ["result": NSNull()]
 
+        case "tabs.group":
+            let options = args["options"] as? NSDictionary ?? [:]
+            let tabIDs = extensionTabIDs(from: options["tabIds"])
+            guard !tabIDs.isEmpty else {
+                return ["error": "tabs.group requires at least one tab id."]
+            }
+            let groupedTabs = tabIDs.compactMap {
+                extensionTab(for: NSNumber(value: $0))
+            }
+            guard groupedTabs.count == tabIDs.count else {
+                return ["error": "No tab with one of those ids."]
+            }
+
+            let groupID: Int
+            if let existingID = options["groupId"] as? NSNumber {
+                groupID = existingID.intValue
+                guard extensionTabGroups[groupID] != nil else {
+                    return ["error": "No tab group with id \(groupID)."]
+                }
+            } else {
+                let createProperties = options["createProperties"] as? NSDictionary ?? [:]
+                groupID = nextExtensionTabGroupID
+                nextExtensionTabGroupID += 1
+                var group = ExtensionTabGroup(id: groupID)
+                if let windowID = createProperties["windowId"] as? NSNumber,
+                   windowID.intValue >= 0 {
+                    group.windowId = windowID.intValue
+                }
+                extensionTabGroups[groupID] = group
+                emitExtensionEvent("tabGroups.onCreated", args: [extensionTabGroupRecord(group)])
+            }
+
+            for tab in groupedTabs {
+                if let previousGroupID = extensionTabGroupMembership[tab.id],
+                   previousGroupID != groupID {
+                    extensionTabGroupMembership.removeValue(forKey: tab.id)
+                    pruneEmptyExtensionTabGroup(previousGroupID)
+                }
+                extensionTabGroupMembership[tab.id] = groupID
+                emitExtensionTabUpdated(tab, changeInfo: ["groupId": groupID])
+            }
+            return ["result": groupID]
+
+        case "tabs.ungroup":
+            let tabIDs = extensionTabIDs(from: args["tabIds"])
+            guard !tabIDs.isEmpty else {
+                return ["error": "tabs.ungroup requires at least one tab id."]
+            }
+            let ungroupedTabs = tabIDs.compactMap {
+                extensionTab(for: NSNumber(value: $0))
+            }
+            guard ungroupedTabs.count == tabIDs.count else {
+                return ["error": "No tab with one of those ids."]
+            }
+            for tab in ungroupedTabs {
+                removeTabFromExtensionGroup(tab.id)
+            }
+            return ["result": NSNull()]
+
         case "tabs.move":
             let tabIDs = extensionTabIDs(from: args["tabIds"])
             guard !tabIDs.isEmpty else {
@@ -820,15 +1001,92 @@ final class BrowserStore: ObservableObject {
             let requestID = args["messageRequestId"] ?? NSNull()
             let sourceURL = args["sourceUrl"] ?? NSNull()
             let sourceOrigin = args["sourceOrigin"] ?? NSNull()
+            let options = args["options"] as? NSDictionary ?? [:]
+            let frameID = (options["frameId"] as? NSNumber)?.intValue
+            let documentID = options["documentId"] as? String
             // The trailing true opts into content-script delivery: tabs.sendMessage
             // is explicitly aimed at the content scripts running in this tab, unlike
             // a runtime.sendMessage broadcast which reaches extension contexts only.
-            let source = "if(window.__moriExtDispatchMessage){window.__moriExtDispatchMessage(\(jsonLiteral(extensionID)),\(jsonLiteral(message)),\(jsonLiteral(requestID)),\(jsonLiteral(sourceURL)),\(jsonLiteral(sourceOrigin)),true);}"
+            let dispatch = "window.__moriExtDispatchMessage(\(jsonLiteral(extensionID)),\(jsonLiteral(message)),\(jsonLiteral(requestID)),\(jsonLiteral(sourceURL)),\(jsonLiteral(sourceOrigin)),true);"
+            let frameCheck = frameID.map { "__moriFrame===\($0)" }
+            let documentCheck = documentID.map { "__moriDocument===\(jsonLiteral($0))" }
+            let checks = [frameCheck, documentCheck].compactMap { $0 }
+            let source: String
+            if checks.isEmpty {
+                source = "if(window.__moriExtDispatchMessage){\(dispatch)}"
+            } else {
+                source = "if(window.__moriExtDispatchMessage){var __moriFrame=Number(globalThis.__moriNativeFrameId);if(!Number.isFinite(__moriFrame)){__moriFrame=globalThis.__moriRuntimeContext&&Number(globalThis.__moriRuntimeContext.frameId);}var __moriDocument=String(globalThis.__moriNativeDocumentId||(globalThis.__moriRuntimeContext&&globalThis.__moriRuntimeContext.documentId)||'');if(\(checks.joined(separator: "&&"))){\(dispatch)}}"
+            }
             tab.realize().executeExtensionJavaScript(source, allFrames: true)
             return ["result": NSNull()]
 
         default:
             return ["error": "Unsupported tabs method: \(method)"]
+        }
+    }
+
+    func handleExtensionTabGroups(method: String, args: NSDictionary) -> NSDictionary {
+        switch method {
+        case "tabGroups.get":
+            guard let groupID = (args["groupId"] as? NSNumber)?.intValue,
+                  let group = extensionTabGroups[groupID]
+            else { return ["error": "No tab group with that id."] }
+            return ["result": extensionTabGroupRecord(group)]
+
+        case "tabGroups.query":
+            let queryInfo = args["queryInfo"] as? NSDictionary ?? [:]
+            let result = extensionTabGroups.values
+                .filter { extensionTabGroup($0, matches: queryInfo) }
+                .sorted { $0.id < $1.id }
+                .map(extensionTabGroupRecord)
+            return ["result": result]
+
+        case "tabGroups.update":
+            guard let groupID = (args["groupId"] as? NSNumber)?.intValue,
+                  var group = extensionTabGroups[groupID]
+            else { return ["error": "No tab group with that id."] }
+            let updateProperties = args["updateProperties"] as? NSDictionary ?? [:]
+            if let collapsed = updateProperties["collapsed"] as? NSNumber {
+                group.collapsed = collapsed.boolValue
+            }
+            if let color = updateProperties["color"] as? String,
+               extensionTabGroupColors.contains(color) {
+                group.color = color
+            }
+            if updateProperties.allKeys.contains(where: { ($0 as? String) == "title" }) {
+                group.title = updateProperties["title"] as? String
+            }
+            extensionTabGroups[groupID] = group
+            let record = extensionTabGroupRecord(group)
+            emitExtensionEvent("tabGroups.onUpdated", args: [record])
+            return ["result": record]
+
+        case "tabGroups.move":
+            guard let groupID = (args["groupId"] as? NSNumber)?.intValue,
+                  let group = extensionTabGroups[groupID]
+            else { return ["error": "No tab group with that id."] }
+            let moveProperties = args["moveProperties"] as? NSDictionary ?? [:]
+            let requestedIndex = (moveProperties["index"] as? NSNumber)?.intValue ?? -1
+            let groupedIDs = Set(extensionTabGroupMembership.compactMap { entry -> BrowserTab.ID? in
+                entry.value == groupID ? entry.key : nil
+            })
+            guard !groupedIDs.isEmpty else {
+                pruneEmptyExtensionTabGroup(groupID)
+                return ["error": "No tabs remain in that tab group."]
+            }
+            let before = tabs
+            let groupedTabs = tabs.filter { groupedIDs.contains($0.id) }
+            tabs.removeAll { groupedIDs.contains($0.id) }
+            let insertionIndex = requestedIndex < 0
+                ? tabs.count
+                : max(0, min(Int(requestedIndex), tabs.count))
+            tabs.insert(contentsOf: groupedTabs, at: insertionIndex)
+            emitExtensionTabMoveEvents(before: before, movedIDs: groupedIDs)
+            emitExtensionEvent("tabGroups.onMoved", args: [extensionTabGroupRecord(group)])
+            return ["result": extensionTabGroupRecord(group)]
+
+        default:
+            return ["error": "Unsupported tabGroups method: \(method)"]
         }
     }
 
@@ -970,12 +1228,58 @@ final class BrowserStore: ObservableObject {
         }
     }
 
+    private func fallbackExtensionFrameRecord(tab: BrowserTab) -> [String: Any] {
+        [
+            "errorOccurred": false,
+            "tabId": tab.extensionTabID,
+            "frameId": 0,
+            "parentFrameId": -1,
+            "documentId": "mori-\(tab.extensionTabID)-main-document",
+            "documentLifecycle": "active",
+            "frameType": "outermost_frame",
+            "url": tab.urlString
+        ]
+    }
+
+    func handleExtensionWebNavigation(method: String, args: NSDictionary) -> NSDictionary {
+        let details = args["details"] as? NSDictionary ?? [:]
+        guard let tab = extensionTab(for: details["tabId"]) else {
+            return ["error": "No tab with that id."]
+        }
+
+        let records = tab.hasRealized
+            ? tab.realize().extensionFrameRecords(withTabID: tab.extensionTabID)
+            : []
+        let frameRecords = records.isEmpty ? [fallbackExtensionFrameRecord(tab: tab)] : records
+
+        switch method {
+        case "webNavigation.getFrame":
+            let frameID = (details["frameId"] as? NSNumber)?.intValue ?? 0
+            let documentID = details["documentId"] as? String
+            let result = frameRecords.first { record in
+                if let documentID {
+                    return (record["documentId"] as? String) == documentID
+                }
+                return (record["frameId"] as? NSNumber)?.intValue == frameID
+            }
+            return ["result": result ?? NSNull()]
+
+        case "webNavigation.getAllFrames":
+            return ["result": frameRecords]
+
+        default:
+            return ["error": "Unsupported webNavigation method: \(method)"]
+        }
+    }
+
     func handleExtensionScripting(method: String, args: NSDictionary) -> NSDictionary {
         let target = args["target"] as? NSDictionary ?? [:]
         let tab = extensionTab(for: target["tabId"]) ?? selectedTab
         guard let tab else { return ["error": "No target tab."] }
 
-        let allFrames = (target["allFrames"] as? NSNumber)?.boolValue ?? false
+        let frameIds = target["frameIds"] as? [NSNumber] ?? []
+        let documentIds = target["documentIds"] as? [String] ?? []
+        let allFrames = ((target["allFrames"] as? NSNumber)?.boolValue ?? false) || !frameIds.isEmpty || !documentIds.isEmpty
         switch method {
         case "scripting.executeScript", "scripting.insertCSS", "scripting.removeCSS":
             guard let source = args["source"] as? String, !source.isEmpty else {
@@ -1087,12 +1391,72 @@ final class BrowserStore: ObservableObject {
             "highlighted": active,
             "selected": active,
             "pinned": pinnedTabIDs.contains(tab.id),
+            "groupId": extensionTabGroupMembership[tab.id] ?? -1,
             "url": tab.urlString,
             "title": tab.title,
             "status": tab.isLoading ? "loading" : "complete"
         ]
         if let favicon = tab.faviconURL { record["favIconUrl"] = favicon }
         return record as NSDictionary
+    }
+
+    private func removeTabFromExtensionGroup(_ tabID: BrowserTab.ID,
+                                             emitTabUpdate: Bool = true) {
+        guard let groupID = extensionTabGroupMembership.removeValue(forKey: tabID) else {
+            return
+        }
+        if emitTabUpdate, let tab = tab(for: tabID) {
+            emitExtensionTabUpdated(tab, changeInfo: ["groupId": -1])
+        }
+        pruneEmptyExtensionTabGroup(groupID)
+    }
+
+    private func pruneEmptyExtensionTabGroup(_ groupID: Int) {
+        guard let group = extensionTabGroups[groupID],
+              !extensionTabGroupMembership.values.contains(groupID)
+        else { return }
+        extensionTabGroups.removeValue(forKey: groupID)
+        emitExtensionEvent("tabGroups.onRemoved", args: [extensionTabGroupRecord(group)])
+    }
+
+    private func extensionTabGroupRecord(_ group: ExtensionTabGroup) -> NSDictionary {
+        var record: [String: Any] = [
+            "id": group.id,
+            "collapsed": group.collapsed,
+            "color": group.color,
+            "windowId": group.windowId,
+            "shared": group.shared
+        ]
+        if let title = group.title {
+            record["title"] = title
+        }
+        return record as NSDictionary
+    }
+
+    private func extensionTabGroup(_ group: ExtensionTabGroup,
+                                   matches queryInfo: NSDictionary) -> Bool {
+        if let collapsed = queryInfo["collapsed"] as? NSNumber,
+           collapsed.boolValue != group.collapsed {
+            return false
+        }
+        if let color = queryInfo["color"] as? String,
+           color != group.color {
+            return false
+        }
+        if let shared = queryInfo["shared"] as? NSNumber,
+           shared.boolValue != group.shared {
+            return false
+        }
+        if let windowID = queryInfo["windowId"] as? NSNumber,
+           windowID.intValue >= 0,
+           windowID.intValue != group.windowId {
+            return false
+        }
+        if let titlePattern = queryInfo["title"] as? String,
+           !wildcard(titlePattern, matches: group.title ?? "") {
+            return false
+        }
+        return true
     }
 
     private func extensionSessionRecord(_ session: ClosedTabSession) -> NSDictionary {

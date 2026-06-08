@@ -1,10 +1,18 @@
 #include "BrowserClient.h"
 
 #import <Cocoa/Cocoa.h>
+#import <CoreGraphics/CoreGraphics.h>
 
 #include <atomic>
 #include <cstring>
+#include <functional>
+#include <limits>
 #include <map>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <sys/sysctl.h>
+#include <mach/mach.h>
 
 #include "MediaAgentScript.h"
 #include "PasskeyAgentScript.h"
@@ -86,6 +94,371 @@ NSMutableDictionary<NSNumber*, NSString*>* ExtensionCrxDownloadTargets() {
   return targets;
 }
 
+NSMutableDictionary<NSString*, NSDictionary*>* ExtensionPowerAssertions() {
+  static NSMutableDictionary<NSString*, NSDictionary*>* assertions =
+      [NSMutableDictionary dictionary];
+  return assertions;
+}
+
+void ReleaseExtensionPowerAssertion(NSString* extensionID) {
+  if (extensionID.length == 0) return;
+  NSMutableDictionary<NSString*, NSDictionary*>* assertions =
+      ExtensionPowerAssertions();
+  NSDictionary* record = assertions[extensionID];
+  id activity = record[@"activity"];
+  if (activity) {
+    [[NSProcessInfo processInfo] endActivity:activity];
+  }
+  [assertions removeObjectForKey:extensionID];
+}
+
+NSDictionary* HandlePower(NSString* method,
+                          NSDictionary* args,
+                          NSString* extensionID) {
+  if (extensionID.length == 0) {
+    return @{@"error" : @"Missing extension id."};
+  }
+
+  if ([method isEqualToString:@"power.requestKeepAwake"]) {
+    NSString* level = [args[@"level"] isKindOfClass:NSString.class]
+        ? args[@"level"]
+        : @"";
+    if (![level isEqualToString:@"system"] &&
+        ![level isEqualToString:@"display"]) {
+      return @{@"error" : @"power.requestKeepAwake requires level 'system' or 'display'."};
+    }
+
+    ReleaseExtensionPowerAssertion(extensionID);
+
+    NSActivityOptions options = NSActivityIdleSystemSleepDisabled;
+    if ([level isEqualToString:@"display"]) {
+      options |= NSActivityIdleDisplaySleepDisabled;
+    }
+    NSString* reason =
+        [NSString stringWithFormat:@"Mori extension %@ requested %@ keep-awake",
+                                   extensionID, level];
+    id activity = [[NSProcessInfo processInfo] beginActivityWithOptions:options
+                                                                 reason:reason];
+    if (!activity) {
+      return @{@"error" : @"Could not create power assertion."};
+    }
+    ExtensionPowerAssertions()[extensionID] = @{
+      @"activity" : activity,
+      @"level" : level
+    };
+    return @{@"result" : [NSNull null]};
+  }
+
+  if ([method isEqualToString:@"power.releaseKeepAwake"]) {
+    ReleaseExtensionPowerAssertion(extensionID);
+    return @{@"result" : [NSNull null]};
+  }
+
+  if ([method isEqualToString:@"power.__moriSmokeState"] &&
+      [extensionID isEqualToString:@"mori-smoke-extension"]) {
+    NSDictionary* record = ExtensionPowerAssertions()[extensionID];
+    return @{@"result" : record ? @{@"level" : record[@"level"] ?: @""}
+                                : [NSNull null]};
+  }
+
+  return @{@"error" : [NSString stringWithFormat:@"Unsupported power method: %@", method]};
+}
+
+NSString* MoriSysctlString(const char* name) {
+  size_t size = 0;
+  if (sysctlbyname(name, nullptr, &size, nullptr, 0) != 0 || size == 0) {
+    return @"";
+  }
+  NSMutableData* data = [NSMutableData dataWithLength:size];
+  if (sysctlbyname(name, data.mutableBytes, &size, nullptr, 0) != 0) {
+    return @"";
+  }
+  const char* raw = static_cast<const char*>(data.bytes);
+  return raw ? @(raw) : @"";
+}
+
+NSNumber* MoriUInt64Number(uint64_t value) {
+  return [NSNumber numberWithUnsignedLongLong:value];
+}
+
+NSDictionary* MoriSystemCPUInfo() {
+  NSString* arch = MoriSysctlString("hw.machine");
+  if (arch.length == 0) {
+#if defined(__aarch64__) || defined(__arm64__)
+    arch = @"arm64";
+#elif defined(__arm__) || defined(__arm)
+    arch = @"arm";
+#elif defined(__i386__) || defined(_M_IX86)
+    arch = @"x86-32";
+#elif defined(__x86_64__) || defined(_M_X64)
+    arch = @"x86-64";
+#elif defined(__riscv) && __riscv_xlen == 64
+    arch = @"riscv64";
+#else
+    arch = @"unknown";
+#endif
+  }
+  NSString* model = MoriSysctlString("machdep.cpu.brand_string");
+  if (model.length == 0) {
+    model = arch;
+  }
+
+  NSMutableArray<NSDictionary*>* processors = [NSMutableArray array];
+  natural_t cpuCount = 0;
+  processor_cpu_load_info_t cpuInfo = nullptr;
+  mach_msg_type_number_t cpuInfoCount = 0;
+  kern_return_t kr = host_processor_info(mach_host_self(),
+                                         PROCESSOR_CPU_LOAD_INFO,
+                                         &cpuCount,
+                                         reinterpret_cast<processor_info_array_t*>(&cpuInfo),
+                                         &cpuInfoCount);
+  if (kr == KERN_SUCCESS && cpuInfo && cpuCount > 0) {
+    for (natural_t i = 0; i < cpuCount; i++) {
+      uint64_t user = cpuInfo[i].cpu_ticks[CPU_STATE_USER] +
+                      cpuInfo[i].cpu_ticks[CPU_STATE_NICE];
+      uint64_t kernel = cpuInfo[i].cpu_ticks[CPU_STATE_SYSTEM];
+      uint64_t idle = cpuInfo[i].cpu_ticks[CPU_STATE_IDLE];
+      uint64_t total = user + kernel + idle;
+      [processors addObject:@{
+        @"usage" : @{
+          @"user" : MoriUInt64Number(user),
+          @"kernel" : MoriUInt64Number(kernel),
+          @"idle" : MoriUInt64Number(idle),
+          @"total" : MoriUInt64Number(total)
+        }
+      }];
+    }
+    vm_deallocate(mach_task_self(), reinterpret_cast<vm_address_t>(cpuInfo),
+                  cpuInfoCount * sizeof(integer_t));
+  }
+
+  NSUInteger processInfoCPUCount = NSProcessInfo.processInfo.activeProcessorCount;
+  if (processInfoCPUCount < 1) processInfoCPUCount = 1;
+  while (processors.count < processInfoCPUCount) {
+    [processors addObject:@{
+      @"usage" : @{@"user" : @0, @"kernel" : @0, @"idle" : @0, @"total" : @0}
+    }];
+  }
+
+  return @{
+    @"archName" : arch,
+    @"modelName" : model,
+    @"numOfProcessors" : @(processors.count),
+    @"features" : @[],
+    @"processors" : processors,
+    @"temperatures" : @[]
+  };
+}
+
+NSDictionary* MoriSystemMemoryInfo() {
+  uint64_t capacity = NSProcessInfo.processInfo.physicalMemory;
+  uint64_t available = 0;
+  mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+  vm_statistics64_data_t vmstat;
+  if (host_statistics64(mach_host_self(), HOST_VM_INFO64,
+                        reinterpret_cast<host_info64_t>(&vmstat),
+                        &count) == KERN_SUCCESS) {
+    vm_size_t pageSize = 0;
+    if (host_page_size(mach_host_self(), &pageSize) != KERN_SUCCESS ||
+        pageSize == 0) {
+      pageSize = vm_page_size;
+    }
+    available = (static_cast<uint64_t>(vmstat.free_count) +
+                 static_cast<uint64_t>(vmstat.inactive_count) +
+                 static_cast<uint64_t>(vmstat.speculative_count)) *
+                static_cast<uint64_t>(pageSize);
+    if (capacity > 0 && available > capacity) available = capacity;
+  }
+  return @{
+    @"capacity" : MoriUInt64Number(capacity),
+    @"availableCapacity" : MoriUInt64Number(available)
+  };
+}
+
+NSDictionary* MoriBoundsDictionary(NSRect rect) {
+  return @{
+    @"left" : @(llround(NSMinX(rect))),
+    @"top" : @(llround(NSMinY(rect))),
+    @"width" : @(llround(NSWidth(rect))),
+    @"height" : @(llround(NSHeight(rect)))
+  };
+}
+
+NSArray<NSDictionary*>* MoriSystemDisplayInfo() {
+  NSMutableArray<NSDictionary*>* displays = [NSMutableArray array];
+  NSScreen* primary = NSScreen.mainScreen ?: NSScreen.screens.firstObject;
+  for (NSScreen* screen in NSScreen.screens) {
+    NSNumber* screenNumber =
+        [screen.deviceDescription[@"NSScreenNumber"] isKindOfClass:NSNumber.class]
+            ? screen.deviceDescription[@"NSScreenNumber"]
+            : @(displays.count + 1);
+    CGFloat scale = screen.backingScaleFactor > 0 ? screen.backingScaleFactor : 1;
+    NSString* name = @"Display";
+    if ([screen respondsToSelector:@selector(localizedName)] &&
+        screen.localizedName.length > 0) {
+      name = screen.localizedName;
+    }
+    NSDictionary* emptyInsets = @{@"left" : @0, @"top" : @0,
+                                  @"right" : @0, @"bottom" : @0};
+    [displays addObject:@{
+      @"id" : screenNumber.stringValue,
+      @"name" : name,
+      @"isPrimary" : @(screen == primary),
+      @"isInternal" : @NO,
+      @"isEnabled" : @YES,
+      @"isUnified" : @NO,
+      @"activeState" : @"active",
+      @"bounds" : MoriBoundsDictionary(screen.frame),
+      @"workArea" : MoriBoundsDictionary(screen.visibleFrame),
+      @"overscan" : emptyInsets,
+      @"rotation" : @0,
+      @"dpiX" : @(72 * scale),
+      @"dpiY" : @(72 * scale),
+      @"hasTouchSupport" : @NO,
+      @"mirroringSourceId" : @"",
+      @"mirroringDestinationIds" : @[],
+      @"modes" : @[],
+      @"availableDisplayZoomFactors" : @[ @1 ],
+      @"displayZoomFactor" : @1
+    }];
+  }
+  if (displays.count == 0) {
+    [displays addObject:@{
+      @"id" : @"0",
+      @"name" : @"Display",
+      @"isPrimary" : @YES,
+      @"isInternal" : @NO,
+      @"isEnabled" : @YES,
+      @"isUnified" : @NO,
+      @"activeState" : @"active",
+      @"bounds" : @{@"left" : @0, @"top" : @0, @"width" : @1, @"height" : @1},
+      @"workArea" : @{@"left" : @0, @"top" : @0, @"width" : @1, @"height" : @1},
+      @"overscan" : @{@"left" : @0, @"top" : @0, @"right" : @0, @"bottom" : @0},
+      @"rotation" : @0,
+      @"dpiX" : @72,
+      @"dpiY" : @72,
+      @"hasTouchSupport" : @NO,
+      @"mirroringSourceId" : @"",
+      @"mirroringDestinationIds" : @[],
+      @"modes" : @[],
+      @"availableDisplayZoomFactors" : @[ @1 ],
+      @"displayZoomFactor" : @1
+    }];
+  }
+  return displays;
+}
+
+NSArray<NSDictionary*>* MoriSystemStorageInfo() {
+  NSArray<NSURLResourceKey>* keys = @[
+    NSURLVolumeNameKey,
+    NSURLVolumeIsRemovableKey,
+    NSURLVolumeTotalCapacityKey
+  ];
+  NSArray<NSURL*>* volumes =
+      [NSFileManager.defaultManager mountedVolumeURLsIncludingResourceValuesForKeys:keys
+                                                                            options:0] ?: @[];
+  NSMutableArray<NSDictionary*>* units = [NSMutableArray array];
+  for (NSURL* url in volumes) {
+    NSString* path = url.path;
+    if (path.length == 0) continue;
+    NSDictionary* attrs =
+        [NSFileManager.defaultManager attributesOfFileSystemForPath:path
+                                                              error:nil];
+    NSNumber* capacity = [attrs[NSFileSystemSize] isKindOfClass:NSNumber.class]
+        ? attrs[NSFileSystemSize]
+        : nil;
+    if (!capacity || capacity.unsignedLongLongValue == 0) continue;
+    NSNumber* removable = nil;
+    NSString* volumeName = nil;
+    [url getResourceValue:&volumeName forKey:NSURLVolumeNameKey error:nil];
+    [url getResourceValue:&removable forKey:NSURLVolumeIsRemovableKey error:nil];
+    [units addObject:@{
+      @"id" : path,
+      @"name" : volumeName.length ? volumeName : (path.lastPathComponent.length
+          ? path.lastPathComponent
+          : path),
+      @"type" : removable.boolValue ? @"removable" : @"fixed",
+      @"capacity" : capacity
+    }];
+  }
+  if (units.count == 0) {
+    NSString* path = NSHomeDirectory();
+    NSDictionary* attrs =
+        [NSFileManager.defaultManager attributesOfFileSystemForPath:path
+                                                              error:nil] ?: @{};
+    NSNumber* capacity = [attrs[NSFileSystemSize] isKindOfClass:NSNumber.class]
+        ? attrs[NSFileSystemSize]
+        : @0;
+    [units addObject:@{
+      @"id" : path,
+      @"name" : path.lastPathComponent.length ? path.lastPathComponent : @"Home",
+      @"type" : @"fixed",
+      @"capacity" : capacity
+    }];
+  }
+  return units;
+}
+
+NSDictionary* MoriStorageUnitForID(NSString* identifier) {
+  for (NSDictionary* unit in MoriSystemStorageInfo()) {
+    NSString* unitID = [unit[@"id"] isKindOfClass:NSString.class]
+        ? unit[@"id"]
+        : @"";
+    if ([unitID isEqualToString:identifier]) return unit;
+  }
+  return nil;
+}
+
+uint64_t MoriAvailableCapacityForStorageID(NSString* identifier) {
+  NSDictionary* unit = MoriStorageUnitForID(identifier);
+  if (!unit) return 0;
+  NSString* path = unit[@"id"];
+  NSDictionary* attrs =
+      [NSFileManager.defaultManager attributesOfFileSystemForPath:path
+                                                            error:nil] ?: @{};
+  NSNumber* freeSize = [attrs[NSFileSystemFreeSize] isKindOfClass:NSNumber.class]
+      ? attrs[NSFileSystemFreeSize]
+      : @0;
+  return freeSize.unsignedLongLongValue;
+}
+
+NSDictionary* HandleSystem(NSString* method, NSDictionary* args) {
+  if ([method isEqualToString:@"system.cpu.getInfo"]) {
+    return @{@"result" : MoriSystemCPUInfo()};
+  }
+  if ([method isEqualToString:@"system.memory.getInfo"]) {
+    return @{@"result" : MoriSystemMemoryInfo()};
+  }
+  if ([method isEqualToString:@"system.display.getInfo"]) {
+    return @{@"result" : MoriSystemDisplayInfo()};
+  }
+  if ([method isEqualToString:@"system.storage.getInfo"]) {
+    return @{@"result" : MoriSystemStorageInfo()};
+  }
+  if ([method isEqualToString:@"system.storage.getAvailableCapacity"]) {
+    NSString* identifier = [args[@"id"] isKindOfClass:NSString.class]
+        ? args[@"id"]
+        : @"";
+    if (!MoriStorageUnitForID(identifier)) {
+      return @{@"error" : @"No such storage device."};
+    }
+    return @{@"result" : @{
+      @"id" : identifier,
+      @"availableCapacity" : MoriUInt64Number(
+          MoriAvailableCapacityForStorageID(identifier))
+    }};
+  }
+  if ([method isEqualToString:@"system.storage.ejectDevice"]) {
+    NSString* identifier = [args[@"id"] isKindOfClass:NSString.class]
+        ? args[@"id"]
+        : @"";
+    NSDictionary* unit = MoriStorageUnitForID(identifier);
+    if (!unit) return @{@"result" : @"no_such_device"};
+    return @{@"result" : @"failure"};
+  }
+  return @{@"error" : [NSString stringWithFormat:@"Unsupported system method: %@", method]};
+}
+
 NSString* RewriteChromeExtensionURLForMori(NSString* raw) {
   if (raw.length == 0) return nil;
   NSURLComponents* components = [NSURLComponents componentsWithString:raw];
@@ -162,6 +535,43 @@ void BrowserClient::DetachDelegate() {
 
 void BrowserClient::SetExtensionTabID(int tab_id) {
   extension_tab_id_.store(tab_id);
+}
+
+int ExtensionFrameID(CefRefPtr<CefFrame> frame) {
+  if (!frame || frame->IsMain()) return 0;
+  std::string identifier = frame->GetIdentifier().ToString();
+  std::size_t raw = std::hash<std::string>{}(identifier);
+  int value = static_cast<int>(raw % std::numeric_limits<int>::max());
+  return value > 0 ? value : 1;
+}
+
+int ExtensionParentFrameID(CefRefPtr<CefFrame> frame) {
+  if (!frame || frame->IsMain()) return -1;
+  CefRefPtr<CefFrame> parent = frame->GetParent();
+  return parent ? ExtensionFrameID(parent) : 0;
+}
+
+uint64_t ExtensionStableHash64(const std::string& value) {
+  uint64_t hash = 1469598103934665603ULL;
+  for (unsigned char c : value) {
+    hash ^= c;
+    hash *= 1099511628211ULL;
+  }
+  return hash;
+}
+
+NSString* ExtensionDocumentID(CefRefPtr<CefFrame> frame) {
+  if (!frame) return @"";
+  std::string seed = frame->GetIdentifier().ToString() + "\n" +
+                     frame->GetURL().ToString();
+  uint64_t hi = ExtensionStableHash64(seed);
+  uint64_t lo = ExtensionStableHash64("document:" + seed);
+  return [NSString stringWithFormat:@"%08llx-%04llx-%04llx-%04llx-%012llx",
+                                    (unsigned long long)((hi >> 32) & 0xffffffffULL),
+                                    (unsigned long long)((hi >> 16) & 0xffffULL),
+                                    (unsigned long long)(hi & 0xffffULL),
+                                    (unsigned long long)((lo >> 48) & 0xffffULL),
+                                    (unsigned long long)(lo & 0xffffffffffffULL)];
 }
 
 // --- CefLifeSpanHandler -----------------------------------------------------
@@ -369,6 +779,156 @@ namespace {
 void DispatchExtensionEventOnMain(NSString* eventName,
                                   NSArray* args,
                                   NSString* extensionID);
+
+std::atomic<int>& MoriIdleDetectionIntervalSeconds() {
+  static std::atomic<int> interval{60};
+  return interval;
+}
+
+std::atomic<bool>& MoriIdleMonitorStarted() {
+  static std::atomic<bool> started{false};
+  return started;
+}
+
+NSMutableDictionary<NSString*, NSString*>* MoriIdleMonitorState() {
+  static NSMutableDictionary<NSString*, NSString*>* state =
+      [NSMutableDictionary dictionary];
+  return state;
+}
+
+BOOL MoriSessionIsLocked() {
+  NSDictionary* session =
+      CFBridgingRelease(CGSessionCopyCurrentDictionary());
+  id locked = session[@"CGSSessionScreenIsLocked"];
+  return [locked respondsToSelector:@selector(boolValue)] &&
+      [locked boolValue];
+}
+
+NSInteger MoriIdleIntervalFromValue(id value, NSInteger fallback) {
+  if ([value respondsToSelector:@selector(integerValue)]) {
+    NSInteger interval = [value integerValue];
+    if (interval > 0) return interval;
+  }
+  return fallback > 0 ? fallback : 60;
+}
+
+NSString* MoriCurrentIdleState(NSInteger detectionIntervalInSeconds) {
+  if (MoriSessionIsLocked()) return @"locked";
+  NSInteger interval = detectionIntervalInSeconds > 0
+      ? detectionIntervalInSeconds
+      : 60;
+  CFTimeInterval seconds =
+      CGEventSourceSecondsSinceLastEventType(
+          kCGEventSourceStateCombinedSessionState,
+          kCGAnyInputEventType);
+  if (!(seconds >= 0)) seconds = 0;
+  return seconds >= interval ? @"idle" : @"active";
+}
+
+void MoriIdleMonitorTick() {
+  NSString* state =
+      MoriCurrentIdleState(MoriIdleDetectionIntervalSeconds().load());
+  NSMutableDictionary<NSString*, NSString*>* monitorState =
+      MoriIdleMonitorState();
+  NSString* last = monitorState[@"lastState"];
+  if (!last) {
+    monitorState[@"lastState"] = state;
+    return;
+  }
+  if ([last isEqualToString:state]) return;
+  monitorState[@"lastState"] = state;
+  DispatchExtensionEventOnMain(@"idle.onStateChanged", @[ state ], nil);
+}
+
+void StartMoriIdleMonitor() {
+  if (MoriIdleMonitorStarted().exchange(true)) return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    MoriIdleMonitorState()[@"lastState"] =
+        MoriCurrentIdleState(MoriIdleDetectionIntervalSeconds().load());
+    static dispatch_source_t timer = nil;
+    timer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                   dispatch_get_main_queue());
+    dispatch_source_set_timer(timer,
+                              dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC),
+                              NSEC_PER_SEC,
+                              NSEC_PER_MSEC * 100);
+    dispatch_source_set_event_handler(timer, ^{
+      MoriIdleMonitorTick();
+    });
+    dispatch_resume(timer);
+  });
+}
+
+NSDictionary* HandleIdle(NSString* method, NSDictionary* args) {
+  if ([method isEqualToString:@"idle.queryState"]) {
+    NSInteger interval =
+        MoriIdleIntervalFromValue(args[@"detectionIntervalInSeconds"],
+                                  MoriIdleDetectionIntervalSeconds().load());
+    StartMoriIdleMonitor();
+    return @{@"result" : MoriCurrentIdleState(interval)};
+  }
+
+  if ([method isEqualToString:@"idle.setDetectionInterval"]) {
+    NSInteger interval =
+        MoriIdleIntervalFromValue(args[@"intervalInSeconds"], 60);
+    MoriIdleDetectionIntervalSeconds().store(static_cast<int>(interval));
+    StartMoriIdleMonitor();
+    MoriIdleMonitorTick();
+    return @{@"result" : [NSNull null]};
+  }
+
+  if ([method isEqualToString:@"idle.getAutoLockDelay"]) {
+    return @{@"result" : @0};
+  }
+
+  return @{@"error" : [NSString stringWithFormat:@"Unsupported idle method: %@", method]};
+}
+
+NSDictionary* HandleDNS(NSString* method, NSDictionary* args) {
+  if (![method isEqualToString:@"dns.resolve"]) {
+    return @{@"error" : [NSString stringWithFormat:@"Unsupported dns method: %@", method]};
+  }
+  NSString* hostname = [args[@"hostname"] isKindOfClass:NSString.class]
+      ? [(NSString*)args[@"hostname"] stringByTrimmingCharactersInSet:
+          NSCharacterSet.whitespaceAndNewlineCharacterSet]
+      : @"";
+  if (hostname.length == 0 ||
+      [hostname containsString:@"://"] ||
+      [hostname containsString:@"/"]) {
+    return @{@"result" : @{@"resultCode" : @(EAI_NONAME)}};
+  }
+
+  struct addrinfo hints;
+  memset(&hints, 0, sizeof(hints));
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_flags = AI_ADDRCONFIG;
+
+  struct addrinfo* resolved = nullptr;
+  int resultCode = getaddrinfo(hostname.UTF8String, nullptr, &hints, &resolved);
+  NSMutableDictionary* result =
+      [@{@"resultCode" : @(resultCode)} mutableCopy];
+  if (resultCode == 0 && resolved) {
+    char address[INET6_ADDRSTRLEN] = {0};
+    for (struct addrinfo* item = resolved; item; item = item->ai_next) {
+      void* rawAddress = nullptr;
+      if (item->ai_family == AF_INET) {
+        rawAddress = &reinterpret_cast<struct sockaddr_in*>(
+            item->ai_addr)->sin_addr;
+      } else if (item->ai_family == AF_INET6) {
+        rawAddress = &reinterpret_cast<struct sockaddr_in6*>(
+            item->ai_addr)->sin6_addr;
+      }
+      if (rawAddress &&
+          inet_ntop(item->ai_family, rawAddress, address, sizeof(address))) {
+        result[@"address"] = @(address);
+        break;
+      }
+    }
+  }
+  if (resolved) freeaddrinfo(resolved);
+  return @{@"result" : result};
+}
 
 std::map<uint32_t, CefRefPtr<CefDownloadItemCallback>>& DownloadCallbacks() {
   static std::map<uint32_t, CefRefPtr<CefDownloadItemCallback>> callbacks;
@@ -769,8 +1329,35 @@ bool MoriIsShortcutKeyDown(const CefKeyEvent& event) {
   return event.type == KEYEVENT_RAWKEYDOWN || event.type == KEYEVENT_KEYDOWN;
 }
 
+bool MoriIsShortcutKeyUp(const CefKeyEvent& event) {
+  return event.type == KEYEVENT_KEYUP;
+}
+
+void MoriReleaseCEFShortcutEvent(const CefKeyEvent& event,
+                                 CefEventHandle os_event) {
+  if (!MoriIsShortcutKeyUp(event)) {
+    return;
+  }
+
+  if (os_event) {
+    NSEvent* ns_event = (__bridge NSEvent*)os_event;
+    if (ns_event.type == NSEventTypeKeyUp) {
+      [MoriRoot releaseShortcutEvent:ns_event];
+      return;
+    }
+  }
+
+  [MoriRoot
+      releaseShortcutWithKeyCode:static_cast<uint16_t>(event.windows_key_code)
+     charactersIgnoringModifiers:MoriCharactersIgnoringModifiers(event)
+                    modifierMask:static_cast<NSUInteger>(
+                                     MoriModifierMaskForCEF(event.modifiers))];
+}
+
 bool MoriHandleCEFShortcutEvent(const CefKeyEvent& event,
                                 CefEventHandle os_event) {
+  MoriReleaseCEFShortcutEvent(event, os_event);
+
   if (!MoriIsShortcutKeyDown(event)) {
     return false;
   }
@@ -866,6 +1453,29 @@ NSString* MoriHostBrowserVersion() {
   NSString* version = [NSBundle.mainBundle
       objectForInfoDictionaryKey:@"CFBundleShortVersionString"];
   return version.length ? version : @"0.1.0";
+}
+
+NSDictionary* MoriRuntimePlatformInfo() {
+  NSString* arch = @"x86-64";
+  NSString* naclArch = @"x86-64";
+#if defined(__aarch64__) || defined(__arm64__)
+  arch = @"arm64";
+  naclArch = @"arm";
+#elif defined(__arm__) || defined(__arm)
+  arch = @"arm";
+  naclArch = @"arm";
+#elif defined(__i386__) || defined(_M_IX86)
+  arch = @"x86-32";
+  naclArch = @"x86-32";
+#elif defined(__riscv) && __riscv_xlen == 64
+  arch = @"riscv64";
+  naclArch = @"x86-64";
+#endif
+  return @{
+    @"os" : @"mac",
+    @"arch" : arch,
+    @"nacl_arch" : naclArch
+  };
 }
 
 void BroadcastExtensionPortConnect(NSString* extensionID,
@@ -1561,6 +2171,36 @@ BOOL ScriptMatchesURL(NSDictionary* script, NSURL* url) {
       return NO;
     }
   }
+
+  NSString* absolute = url.absoluteString ?: @"";
+  NSArray* includeGlobs = [script[@"include_globs"] isKindOfClass:[NSArray class]]
+      ? script[@"include_globs"]
+      : ([script[@"includeGlobs"] isKindOfClass:[NSArray class]]
+             ? script[@"includeGlobs"]
+             : nil);
+  if (includeGlobs.count > 0) {
+    BOOL globIncluded = NO;
+    for (id item in includeGlobs) {
+      if ([item isKindOfClass:[NSString class]] &&
+          WildcardMatch((NSString*)item, absolute)) {
+        globIncluded = YES;
+        break;
+      }
+    }
+    if (!globIncluded) return NO;
+  }
+
+  NSArray* excludeGlobs = [script[@"exclude_globs"] isKindOfClass:[NSArray class]]
+      ? script[@"exclude_globs"]
+      : ([script[@"excludeGlobs"] isKindOfClass:[NSArray class]]
+             ? script[@"excludeGlobs"]
+             : nil);
+  for (id item in excludeGlobs) {
+    if ([item isKindOfClass:[NSString class]] &&
+        WildcardMatch((NSString*)item, absolute)) {
+      return NO;
+    }
+  }
   return YES;
 }
 
@@ -1749,8 +2389,8 @@ NSDictionary* WebRequestDetails(CefRefPtr<CefFrame> frame,
   details[@"tabId"] = @(tabID);
   details[@"timeStamp"] = @([[NSDate date] timeIntervalSince1970] * 1000.0);
   if (frame && frame->IsValid()) {
-    details[@"frameId"] = frame->IsMain() ? @0 : @1;
-    details[@"parentFrameId"] = frame->IsMain() ? @-1 : @0;
+    details[@"frameId"] = @(ExtensionFrameID(frame));
+    details[@"parentFrameId"] = @(ExtensionParentFrameID(frame));
     std::string frameURL = frame->GetURL().ToString();
     if (!frameURL.empty()) {
       details[@"documentUrl"] = @(frameURL.c_str());
@@ -2564,7 +3204,8 @@ NSArray<NSDictionary*>* DNRModifyHeaderOperations(CefRefPtr<CefRequest> request,
   return operations;
 }
 
-void HeaderMapRemoveName(CefRequest::HeaderMap& headerMap, NSString* headerName) {
+void HeaderMapRemoveName(std::multimap<CefString, CefString>& headerMap,
+                         NSString* headerName) {
   if (headerName.length == 0) return;
   for (auto it = headerMap.begin(); it != headerMap.end();) {
     NSString* name = @(it->first.ToString().c_str());
@@ -2576,7 +3217,7 @@ void HeaderMapRemoveName(CefRequest::HeaderMap& headerMap, NSString* headerName)
   }
 }
 
-void ApplyDNRHeaderOperations(CefRequest::HeaderMap& headerMap,
+void ApplyDNRHeaderOperations(std::multimap<CefString, CefString>& headerMap,
                               NSArray<NSDictionary*>* operations) {
   for (NSDictionary* operation in operations) {
     NSString* header = [operation[@"header"] isKindOfClass:NSString.class]
@@ -2612,6 +3253,18 @@ void ApplyDNRRequestHeaderModifications(CefRefPtr<CefRequest> request) {
   request->GetHeaderMap(headerMap);
   ApplyDNRHeaderOperations(headerMap, operations);
   request->SetHeaderMap(headerMap);
+}
+
+BOOL DNRModifiedResponseHeaderMap(CefRefPtr<CefRequest> request,
+                                  CefRefPtr<CefResponse> response,
+                                  CefResponse::HeaderMap& headerMap) {
+  if (!response) return NO;
+  response->GetHeaderMap(headerMap);
+  NSArray<NSDictionary*>* operations =
+      DNRModifyHeaderOperations(request, @"responseHeaders");
+  if (operations.count == 0) return NO;
+  ApplyDNRHeaderOperations(headerMap, operations);
+  return YES;
 }
 
 NSDictionary* ExtensionRecordForFrame(CefRefPtr<CefFrame> frame) {
@@ -2815,7 +3468,12 @@ void ApplyExtensionCORSHeaders(CefRefPtr<CefFrame> frame,
   response->SetHeaderMap(headers);
 }
 
-NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
+NSString* ExtensionRuntimeShim(NSDictionary* ext,
+                               NSDictionary* manifest,
+                               NSInteger tabID = -1,
+                               NSInteger frameID = 0,
+                               NSInteger parentFrameID = -1,
+                               NSString* documentID = nil) {
   // Canonicalize to lowercase: the page's runtime.id comes from the URL host
   // (mori-extension://<host>/…), which the URL parser lowercases, while the
   // catalog id is an uppercase UUID. Extensions that compare sender.id against
@@ -2840,6 +3498,13 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
     @"version" : MoriHostBrowserVersion(),
     @"buildID" : @""
   };
+  NSDictionary* platformInfo = MoriRuntimePlatformInfo();
+  NSDictionary* extensionContext = @{
+    @"tabId" : @(tabID),
+    @"frameId" : @(frameID),
+    @"parentFrameId" : @(parentFrameID),
+    @"documentId" : documentID ?: @""
+  };
   return [NSString stringWithFormat:
       @"(function(){"
        "var extId=%@;"
@@ -2847,6 +3512,8 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
        "var i18nMessages=%@;"
        "var uiLanguage=%@;"
        "var hostBrowserInfo=%@;"
+       "var moriPlatformInfo=%@;"
+       "var moriRuntimeContext=%@;"
        "var __moriNativeConsoleInfo=window.__moriNativeConsoleInfo||"
        "(window.__moriNativeConsoleInfo=(function(){try{return Function.prototype.bind.call(console.info,console);}catch(e){return function(message){try{console.info(message);}catch(_){}};}})());"
 		       // Capture private aliases to our chrome/browser objects. Some
@@ -2856,19 +3523,52 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 		       // reference at import. Our runtime delivers responses and events
 		       // back into the page via these objects, so it must hold its own
 		       // reference rather than re-reading the (later-sealed) global.
-		       "var chrome=globalThis.chrome=globalThis.chrome||{};"
-		       "window.__moriExtensionID=extId;"
-		       "chrome.runtime=chrome.runtime||{};"
-		       "var runtime=chrome.runtime;"
-		       "runtime.id=runtime.id||extId;"
-			       "try{"
-			       "globalThis.browser=globalThis.browser||globalThis.chrome;"
-			       "globalThis.browser.runtime=globalThis.browser.runtime||runtime;"
-			       "globalThis.browser.runtime.id=globalThis.browser.runtime.id||extId;"
-			       "globalThis.browser.name=globalThis.browser.name||hostBrowserInfo.name;"
-			       "globalThis.browser.version=globalThis.browser.version||hostBrowserInfo.version;"
-			       "}catch(e){}"
-			       "var browser=globalThis.browser||chrome;"
+		       "function __moriInstallGlobal(name,value){"
+		       "var slot=name==='browser'?'__moriBrowser':'__moriChrome';"
+		       "try{globalThis[slot]=value;}catch(e){}"
+		       "function current(){try{return globalThis[slot]||value;}catch(e){return value;}}"
+		       "function accept(next){try{if(next&&typeof next==='object'&&next.runtime&&next.runtime.id)globalThis[slot]=next;}catch(e){}}"
+		       "try{Object.defineProperty(globalThis,name,{configurable:true,enumerable:true,get:current,set:accept});}"
+		       "catch(e){try{globalThis[name]=value;}catch(_e){}}"
+		       "try{if(window&&window!==globalThis)Object.defineProperty(window,name,{configurable:true,enumerable:true,get:current,set:accept});}"
+		       "catch(e){try{window[name]=value;}catch(_e){}}"
+		       "}"
+		       "var __moriChromeCandidate=globalThis.__moriChrome;"
+		       "if(!(__moriChromeCandidate&&typeof __moriChromeCandidate==='object')){try{__moriChromeCandidate=globalThis.chrome;}catch(e){}}"
+		       "var chrome=(__moriChromeCandidate&&typeof __moriChromeCandidate==='object')?__moriChromeCandidate:{};"
+		       "try{if(!(chrome.runtime&&typeof chrome.runtime==='object'))chrome={};}catch(e){chrome={};}"
+		       "globalThis.__moriChrome=chrome;"
+		       "__moriInstallGlobal('chrome',chrome);"
+			       "window.__moriExtensionID=extId;"
+			       "chrome.runtime=chrome.runtime||{};"
+			       "var runtime=chrome.runtime;"
+			       "runtime.id=runtime.id||extId;"
+				       "try{"
+				       "var moriBrowserCandidate=globalThis.__moriBrowser;"
+				       "if(!(moriBrowserCandidate&&typeof moriBrowserCandidate==='object')){try{moriBrowserCandidate=globalThis.browser;}catch(e){}}"
+				       "var moriBrowser=(moriBrowserCandidate&&typeof moriBrowserCandidate==='object')?moriBrowserCandidate:chrome;"
+				       "try{if(!(moriBrowser.runtime&&typeof moriBrowser.runtime==='object'))moriBrowser=chrome;}catch(e){moriBrowser=chrome;}"
+				       "globalThis.__moriBrowser=moriBrowser;"
+				       "__moriInstallGlobal('browser',moriBrowser);"
+				       "moriBrowser.runtime=moriBrowser.runtime||runtime;"
+				       "moriBrowser.runtime.id=moriBrowser.runtime.id||extId;"
+				       "moriBrowser.name=moriBrowser.name||hostBrowserInfo.name;"
+				       "moriBrowser.version=moriBrowser.version||hostBrowserInfo.version;"
+				       "}catch(e){}"
+				       "var browser=globalThis.__moriBrowser||globalThis.browser||chrome;"
+				       "function __moriRestoreExtensionGlobals(){"
+				       "try{if(!(globalThis.chrome&&globalThis.chrome.runtime&&globalThis.chrome.runtime.id))__moriInstallGlobal('chrome',globalThis.__moriChrome||chrome);}catch(e){}"
+				       "try{if(!(globalThis.browser&&globalThis.browser.runtime&&globalThis.browser.runtime.id))__moriInstallGlobal('browser',globalThis.__moriBrowser||browser||chrome);}catch(e){}"
+				       "}"
+				       "[0,1,10,50,250,1000].forEach(function(ms){try{setTimeout(__moriRestoreExtensionGlobals,ms);}catch(e){}});"
+				       "try{"
+				       "var __moriGlobalGuardTicks=0;"
+				       "var __moriGlobalGuard=setInterval(function(){"
+				       "try{__moriRestoreExtensionGlobals();}catch(e){}"
+				       "__moriGlobalGuardTicks+=1;"
+				       "if(__moriGlobalGuardTicks>1200)clearInterval(__moriGlobalGuard);"
+				       "},250);"
+				       "}catch(e){}"
        "function __moriEvent(){"
        "var listeners=[];"
        "return {addListener:function(fn){if(typeof fn==='function'&&listeners.indexOf(fn)<0)listeners.push(fn);},"
@@ -2877,20 +3577,98 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 	       "hasListeners:function(){return listeners.length>0;},"
 	       "_listeners:listeners,"
 	       "_fire:function(){var args=arguments;listeners.slice().forEach(function(fn){try{fn.apply(null,args);}catch(e){console.error(e);}});}};"
-	       "}"
-		       "function __moriCallbackLastError(message,cb){"
+		      "}"
+		      "function __moriWildcardMatches(pattern,value){"
+		      "var p=String(pattern||'*'),v=String(value||'');"
+		      "if(p==='*'||p==='')return true;"
+		      "var escaped=p.replace(/[.+?^${}()|[\\]\\\\]/g,'\\\\$&').replace(/\\*/g,'.*');"
+		      "return new RegExp('^'+escaped+'$').test(v);"
+		      "}"
+		      "function __moriWebRequestPatternMatches(pattern,url){"
+		      "try{"
+		      "var p=String(pattern||'<all_urls>'),raw=String(url||'');"
+		      "if(p==='*'||p==='<all_urls>')return true;"
+		      "if(p.indexOf('://')<0)return __moriWildcardMatches(p,raw);"
+		      "var u=new URL(raw),parts=p.split('://'),scheme=parts.shift(),rest=parts.join('://');"
+		      "if(scheme==='*'){if(['http:','https:'].indexOf(u.protocol)<0)return false;}"
+		      "else if(scheme&&scheme!==u.protocol.replace(':',''))return false;"
+		      "var slash=rest.indexOf('/'),hostPat=slash>=0?rest.slice(0,slash):rest,pathPat=slash>=0?rest.slice(slash):'/';"
+		      "var host=String(u.hostname||'').toLowerCase();"
+		      "if(hostPat&&hostPat!=='*'){"
+		      "hostPat=String(hostPat).toLowerCase();"
+		      "if(hostPat.indexOf('*.')===0){var suffix=hostPat.slice(2);if(host!==suffix&&!host.endsWith('.'+suffix))return false;}"
+		      "else if(!__moriWildcardMatches(hostPat,host))return false;"
+		      "}"
+		      "return __moriWildcardMatches(pathPat,String(u.pathname||'/')+String(u.search||'')+String(u.hash||''));"
+		      "}catch(e){return __moriWildcardMatches(pattern,url);}"
+		      "}"
+		      "function __moriWebRequestFilterMatches(details,filter){"
+		      "details=details||{};filter=filter||{};"
+		      "if(Array.isArray(filter.urls)&&filter.urls.length){"
+		      "var ok=false;for(var i=0;i<filter.urls.length;i++){if(__moriWebRequestPatternMatches(filter.urls[i],details.url)){ok=true;break;}}"
+		      "if(!ok)return false;"
+		      "}"
+		      "if(Array.isArray(filter.types)&&filter.types.length&&filter.types.indexOf(details.type)<0)return false;"
+		      "if(filter.tabId!==undefined&&Number(filter.tabId)!==Number(details.tabId))return false;"
+		      "if(filter.windowId!==undefined&&Number(filter.windowId)!==Number(details.windowId))return false;"
+		      "return true;"
+		      "}"
+		      "function __moriWebRequestDetailsForListener(eventName,details,extraInfoSpec){"
+		      "var copy=Object.assign({},details||{});"
+		      "var spec=Array.isArray(extraInfoSpec)?extraInfoSpec:[];"
+		      "var wantsRequestHeaders=spec.indexOf('requestHeaders')>=0||spec.indexOf('extraHeaders')>=0;"
+		      "var wantsResponseHeaders=spec.indexOf('responseHeaders')>=0||spec.indexOf('extraHeaders')>=0;"
+		      "if(eventName==='onBeforeSendHeaders'||eventName==='onSendHeaders'){if(!wantsRequestHeaders)delete copy.requestHeaders;}"
+		      "if(eventName==='onHeadersReceived'||eventName==='onResponseStarted'||eventName==='onBeforeRedirect'){if(!wantsResponseHeaders)delete copy.responseHeaders;}"
+		      "return copy;"
+		      "}"
+		      "function __moriWebRequestEvent(eventName){"
+		      "var listeners=[];"
+		      "function find(fn){for(var i=0;i<listeners.length;i++){if(listeners[i].fn===fn)return i;}return -1;}"
+		      "return {"
+		      "addListener:function(fn,filter,extraInfoSpec){if(typeof fn==='function'&&find(fn)<0)listeners.push({fn:fn,filter:filter||{},extraInfoSpec:Array.isArray(extraInfoSpec)?extraInfoSpec.slice():[]});},"
+		      "removeListener:function(fn){var i=find(fn);if(i>=0)listeners.splice(i,1);},"
+		      "hasListener:function(fn){return find(fn)>=0;},"
+		      "hasListeners:function(){return listeners.length>0;},"
+		      "_listeners:listeners,"
+		      "_fire:function(details){listeners.slice().forEach(function(item){try{if(__moriWebRequestFilterMatches(details,item.filter))item.fn(__moriWebRequestDetailsForListener(eventName,details,item.extraInfoSpec));}catch(e){console.error(e);}});}"
+		      "};"
+		      "}"
+			      "function __moriFrameId(){"
+			      "var value=Number(globalThis.__moriNativeFrameId);"
+			      "if(isFinite(value)&&value>=0)return value;"
+			      "value=Number(moriRuntimeContext&&moriRuntimeContext.frameId);"
+			      "return isFinite(value)&&value>=0?value:0;"
+			      "}"
+			      "function __moriDocumentId(){"
+			      "var value='';"
+			      "try{value=String(globalThis.__moriNativeDocumentId||'');}catch(e){}"
+			      "if(value)return value;"
+			      "try{value=String(moriRuntimeContext&&moriRuntimeContext.documentId||'');}catch(e){}"
+			      "return value;"
+			      "}"
+			      "function __moriTabId(){"
+			      "var value=Number(moriRuntimeContext&&moriRuntimeContext.tabId);"
+			      "return isFinite(value)&&value>=0?value:null;"
+			      "}"
+			      "function __moriCallbackLastError(message,cb){"
 			      "runtime.lastError={message:String(message||'Extension API error')};"
 			      "try{if(typeof cb==='function')cb();}finally{setTimeout(function(){delete runtime.lastError;},0);}"
 		      "}"
-	       "function __moriSourceInfo(){"
-	       "var origin='';"
-	       "try{origin=String(location.origin&&location.origin!=='null'?location.origin:(new URL(String(location.href))).origin||'');if(origin==='null')origin='';}catch(e){}"
-	       "return {sourceUrl:String(location.href),sourceOrigin:origin,frameId:0};"
-	       "}"
+		       "function __moriSourceInfo(){"
+		       "var origin='';"
+		       "try{origin=String(location.origin&&location.origin!=='null'?location.origin:(new URL(String(location.href))).origin||'');if(origin==='null')origin='';}catch(e){}"
+		       "var info={sourceUrl:String(location.href),sourceOrigin:origin,frameId:__moriFrameId()};"
+		       "var documentId=__moriDocumentId();if(documentId)info.documentId=documentId;"
+		       "var tabId=__moriTabId();if(tabId!==null)info.tabId=tabId;"
+		       "return info;"
+		       "}"
        "runtime.onMessage=runtime.onMessage||__moriEvent();"
        "runtime.onMessageExternal=runtime.onMessageExternal||__moriEvent();"
        "runtime.onConnect=runtime.onConnect||__moriEvent();"
        "runtime.onConnectExternal=runtime.onConnectExternal||__moriEvent();"
+       "runtime.onUserScriptMessage=runtime.onUserScriptMessage||__moriEvent();"
+       "runtime.onUserScriptConnect=runtime.onUserScriptConnect||__moriEvent();"
        "runtime.onInstalled=runtime.onInstalled||__moriEvent();"
        "runtime.onStartup=runtime.onStartup||__moriEvent();"
        "runtime.onSuspend=runtime.onSuspend||__moriEvent();"
@@ -2902,14 +3680,24 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 	       "if(!browser.runtime[name])browser.runtime[name]=runtime[name];"
 	       "});"
 	       "}catch(e){}"
-	       "runtime.getURL=runtime.getURL||function(path){"
+       "try{globalThis.__moriRuntimeContext=Object.assign({},moriRuntimeContext||{});globalThis.__moriRuntimeContext.frameId=__moriFrameId();var __moriDoc=__moriDocumentId();if(__moriDoc)globalThis.__moriRuntimeContext.documentId=__moriDoc;}catch(e){}"
+       "runtime.getURL=runtime.getURL||function(path){"
        "var clean=String(path||'').replace(/^\\/+/, '');"
        "return 'mori-extension://'+extId+'/'+encodeURI(clean).replace(/#/g,'%%23');"
        "};"
-       "runtime.getManifest=runtime.getManifest||function(){"
-       "return JSON.parse(JSON.stringify(manifest));"
-       "};"
-       "chrome.i18n=chrome.i18n||{};"
+	       "runtime.getManifest=runtime.getManifest||function(){"
+	       "return JSON.parse(JSON.stringify(manifest));"
+	       "};"
+	       "runtime.getFrameId=runtime.getFrameId||function(){return __moriFrameId();};"
+	       "runtime.getExtensionContext=runtime.getExtensionContext||function(){"
+	       "var ctx=Object.assign({},moriRuntimeContext||{});"
+	       "ctx.frameId=__moriFrameId();"
+	       "var documentId=__moriDocumentId();if(documentId)ctx.documentId=documentId;"
+	       "ctx.url=String(location.href);"
+	       "try{ctx.origin=String(location.origin||'');}catch(e){}"
+	       "return ctx;"
+	       "};"
+	       "chrome.i18n=chrome.i18n||{};"
        "chrome.i18n.getUILanguage=chrome.i18n.getUILanguage||function(){return uiLanguage;};"
        "function __moriI18nExpand(raw,substitutions,placeholders){"
        "var subs=Array.isArray(substitutions)?substitutions:"
@@ -2954,11 +3742,14 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
        "if(typeof cb==='function')p.then(cb);"
        "return p;"
        "};"
-	       "runtime.getPlatformInfo=runtime.getPlatformInfo||function(cb){"
-       "var result={os:'mac',arch:'arm',nacl_arch:'arm'};"
-       "if(typeof cb==='function')cb(result);"
-       "return Promise.resolve(result);"
-       "};"
+		       "runtime.getVersion=runtime.getVersion||function(){"
+		       "return String((manifest&&manifest.version)||'');"
+		       "};"
+		       "runtime.getPlatformInfo=runtime.getPlatformInfo||function(cb){"
+	       "var result=Object.assign({},moriPlatformInfo||{os:'mac',arch:'x86-64',nacl_arch:'x86-64'});"
+	       "if(typeof cb==='function')cb(result);"
+	       "return Promise.resolve(result);"
+	       "};"
 	       "runtime.getBrowserInfo=runtime.getBrowserInfo||function(cb){"
 	       "var result={name:hostBrowserInfo.name,vendor:hostBrowserInfo.vendor,version:hostBrowserInfo.version,buildID:hostBrowserInfo.buildID};"
 	       "if(typeof cb==='function')cb(result);"
@@ -2974,15 +3765,56 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 		       "runtime.setUninstallURL=runtime.setUninstallURL||function(url,cb){"
 	       "var p=__moriExtCall('runtime.setUninstallURL',{url:String(url||'')});"
 	       "if(typeof cb==='function'){p.then(function(){cb();},function(error){runtime.lastError={message:error&&error.message?error.message:String(error)};try{cb();}finally{setTimeout(function(){delete runtime.lastError;},0);}});}"
-	       "return p;"
-	       "};"
-	       "runtime.requestUpdateCheck=runtime.requestUpdateCheck||function(cb){"
-	       "var result='no_update';if(typeof cb==='function')cb(result);return Promise.resolve(result);"
-	       "};"
-	       "runtime.reload=runtime.reload||function(){location.reload();};"
-	       "runtime.getBackgroundPage=runtime.getBackgroundPage||function(cb){"
-	       "var result=null;if(typeof cb==='function')cb(result);return Promise.resolve(result);"
-	       "};"
+		       "return p;"
+		       "};"
+		       "runtime.requestUpdateCheck=runtime.requestUpdateCheck||function(cb){"
+		       "var result={status:'no_update'};"
+		       "if(typeof cb==='function')cb(result.status);"
+		       "return Promise.resolve(result);"
+		       "};"
+		       "runtime.reload=runtime.reload||function(){__moriExtCall('runtime.reload',{}).catch(function(){});};"
+		       "runtime.restart=runtime.restart||function(){};"
+		       "runtime.restartAfterDelay=runtime.restartAfterDelay||function(seconds,cb){"
+		       "var p=Promise.resolve();if(typeof cb==='function')p.then(function(){cb();});return p;"
+		       "};"
+		       "function __moriExtensionPath(){"
+		       "var path=(location.pathname||'').replace(/^\\/+/, '');"
+		       "try{return decodeURIComponent(path);}catch(e){return path;}"
+		       "}"
+		       "function __moriExtensionDefaultPopupPath(){"
+		       "var a=(manifest&&(manifest.action||manifest.browser_action||manifest.page_action))||{};"
+		       "var path=String(a.default_popup||'').replace(/^\\/+/, '');"
+		       "try{return decodeURIComponent(path);}catch(e){return path;}"
+		       "}"
+		       "function __moriCurrentExtensionViewType(){"
+		       "var path=__moriExtensionPath();"
+		       "if(document.documentElement&&document.documentElement.dataset.moriExtensionBackground==='true')return 'background';"
+		       "if(path==='offscreen.html')return 'offscreen';"
+		       "if(location.protocol==='mori-extension:'&&__moriExtensionDefaultPopupPath()&&path===__moriExtensionDefaultPopupPath())return 'popup';"
+		       "return 'tab';"
+		       "}"
+		       "function __moriExtensionWindowMatches(fetchProperties,type){"
+		       "fetchProperties=fetchProperties||{};"
+		       "if(fetchProperties.incognito===true)return false;"
+		       "if(fetchProperties.type!==undefined){var wanted=String(fetchProperties.type).toLowerCase();"
+		       "if(wanted!=='tab'&&wanted!=='popup')return false;"
+		       "if(wanted!==String(type).toLowerCase())return false;}"
+		       "if(fetchProperties.tabId!==undefined){var tabId=__moriTabId();if(tabId===null||Number(fetchProperties.tabId)!==Number(tabId))return false;}"
+		       "if(fetchProperties.windowId!==undefined&&Number(fetchProperties.windowId)!==-2)return false;"
+		       "return true;"
+		       "}"
+		       "function __moriLocalExtensionViews(fetchProperties){"
+		       "if(String(location.protocol)!=='mori-extension:')return [];"
+		       "var type=__moriCurrentExtensionViewType();"
+		       "if(type==='offscreen'&&fetchProperties&&fetchProperties.type!==undefined)return [];"
+		       "return __moriExtensionWindowMatches(fetchProperties,type)?[window]:[];"
+		       "}"
+		       "function __moriBackgroundPageWindow(){"
+		       "return __moriCurrentExtensionViewType()==='background'?window:null;"
+		       "}"
+		       "runtime.getBackgroundPage=runtime.getBackgroundPage||function(cb){"
+		       "var result=__moriBackgroundPageWindow();if(typeof cb==='function')cb(result);return Promise.resolve(result);"
+		       "};"
 	       "runtime.sendNativeMessage=runtime.sendNativeMessage||function(hostName,message,cb){"
 	       "var p=__moriExtCall('runtime.sendNativeMessage',{hostName:String(hostName||''),message:message===undefined?null:message});"
 	       "if(typeof cb==='function'){p.then(cb,function(error){runtime.lastError={message:error&&error.message?error.message:String(error)};try{cb();}finally{setTimeout(function(){delete runtime.lastError;},0);}});}"
@@ -3016,6 +3848,16 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 	       "return p;"
 	       "};"
 	       "chrome.extension=chrome.extension||{};"
+	       "chrome.extension.inIncognitoContext=false;"
+	       "chrome.extension.getBackgroundPage=chrome.extension.getBackgroundPage||function(){"
+	       "return __moriBackgroundPageWindow();"
+	       "};"
+	       "chrome.extension.getViews=chrome.extension.getViews||function(fetchProperties){"
+	       "return __moriLocalExtensionViews(fetchProperties||{});"
+	       "};"
+	       "chrome.extension.getExtensionTabs=chrome.extension.getExtensionTabs||function(windowId){"
+	       "var filter={type:'tab'};if(arguments.length>0)filter.windowId=windowId;return __moriLocalExtensionViews(filter);"
+	       "};"
 	       "chrome.extension.getURL=chrome.extension.getURL||runtime.getURL;"
 	       "chrome.extension.isAllowedFileSchemeAccess=chrome.extension.isAllowedFileSchemeAccess||function(cb){"
 	       "if(typeof cb==='function')cb(false);return Promise.resolve(false);"
@@ -3106,6 +3948,11 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
        "if(typeof cb==='function')p.then(function(){cb();});"
        "return p;"
        "};"
+       "if(extId==='mori-smoke-extension'){"
+       "chrome.contextMenus.__moriSmokeClick=function(details){"
+       "return __moriExtCall('contextMenus.__moriSmokeClick',details||{});"
+       "};"
+       "}"
        "chrome.menus=chrome.menus||chrome.contextMenus;"
        "chrome.storage=chrome.storage||{};"
        "chrome.storage.onChanged=chrome.storage.onChanged||__moriEvent();"
@@ -3114,12 +3961,20 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 	       "chrome.storage.session=chrome.storage.session||{};"
 	       "chrome.storage.managed=chrome.storage.managed||{};"
 	       "chrome.tabs=chrome.tabs||{};"
+	       "chrome.tabs.TAB_ID_NONE=-1;"
+	       "chrome.tabs.TAB_INDEX_NONE=-1;"
        "chrome.tabs.onCreated=chrome.tabs.onCreated||__moriEvent();"
        "chrome.tabs.onUpdated=chrome.tabs.onUpdated||__moriEvent();"
        "chrome.tabs.onActivated=chrome.tabs.onActivated||__moriEvent();"
        "chrome.tabs.onHighlighted=chrome.tabs.onHighlighted||__moriEvent();"
        "chrome.tabs.onRemoved=chrome.tabs.onRemoved||__moriEvent();"
        "chrome.tabs.onMoved=chrome.tabs.onMoved||__moriEvent();"
+	       "chrome.tabGroups=chrome.tabGroups||{};"
+	       "chrome.tabGroups.TAB_GROUP_ID_NONE=-1;"
+	       "chrome.tabGroups.onCreated=chrome.tabGroups.onCreated||__moriEvent();"
+	       "chrome.tabGroups.onUpdated=chrome.tabGroups.onUpdated||__moriEvent();"
+	       "chrome.tabGroups.onMoved=chrome.tabGroups.onMoved||__moriEvent();"
+	       "chrome.tabGroups.onRemoved=chrome.tabGroups.onRemoved||__moriEvent();"
        "chrome.windows=chrome.windows||{};"
        "chrome.windows.WINDOW_ID_NONE=-1;"
        "chrome.windows.WINDOW_ID_CURRENT=-2;"
@@ -3130,9 +3985,66 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 	       "chrome.idle.IdleState=chrome.idle.IdleState||{ACTIVE:'active',IDLE:'idle',LOCKED:'locked'};"
 	       "chrome.idle.onStateChanged=chrome.idle.onStateChanged||__moriEvent();"
 	       "chrome.idle.queryState=chrome.idle.queryState||function(detectionIntervalInSeconds,cb){"
-	       "var result='active';if(typeof cb==='function')cb(result);return Promise.resolve(result);"
+	       "if(typeof detectionIntervalInSeconds==='function'){cb=detectionIntervalInSeconds;detectionIntervalInSeconds=0;}"
+	       "var p=__moriExtCall('idle.queryState',{detectionIntervalInSeconds:Number(detectionIntervalInSeconds)||0});"
+	       "if(typeof cb==='function')p.then(function(state){cb(state);});"
+	       "return p;"
 	       "};"
-	       "chrome.idle.setDetectionInterval=chrome.idle.setDetectionInterval||function(){return Promise.resolve();};"
+	       "chrome.idle.setDetectionInterval=chrome.idle.setDetectionInterval||function(intervalInSeconds){"
+	       "return __moriExtCall('idle.setDetectionInterval',{intervalInSeconds:Number(intervalInSeconds)||0});"
+	       "};"
+	       "chrome.idle.getAutoLockDelay=chrome.idle.getAutoLockDelay||function(cb){"
+	       "var p=__moriExtCall('idle.getAutoLockDelay',{});"
+	       "if(typeof cb==='function')p.then(function(delay){cb(delay);});"
+	       "return p;"
+	       "};"
+	       "chrome.power=chrome.power||{};"
+	       "chrome.power.Level=chrome.power.Level||{SYSTEM:'system',DISPLAY:'display'};"
+	       "chrome.power.requestKeepAwake=chrome.power.requestKeepAwake||function(level){"
+	       "return __moriExtCall('power.requestKeepAwake',{level:String(level||'')});"
+	       "};"
+	       "chrome.power.releaseKeepAwake=chrome.power.releaseKeepAwake||function(){"
+	       "return __moriExtCall('power.releaseKeepAwake',{});"
+	       "};"
+	       "if(extId==='mori-smoke-extension'){"
+	       "chrome.power.__moriSmokeState=function(cb){"
+	       "var p=__moriExtCall('power.__moriSmokeState',{});"
+	       "if(typeof cb==='function')p.then(cb);"
+	       "return p;"
+	       "};"
+	       "}"
+	       "chrome.system=chrome.system||{};"
+	       "chrome.system.cpu=chrome.system.cpu||{};"
+	       "chrome.system.cpu.getInfo=chrome.system.cpu.getInfo||function(cb){"
+	       "var p=__moriExtCall('system.cpu.getInfo',{});"
+	       "if(typeof cb==='function')p.then(cb);return p;"
+	       "};"
+	       "chrome.system.memory=chrome.system.memory||{};"
+	       "chrome.system.memory.getInfo=chrome.system.memory.getInfo||function(cb){"
+	       "var p=__moriExtCall('system.memory.getInfo',{});"
+	       "if(typeof cb==='function')p.then(cb);return p;"
+	       "};"
+	       "chrome.system.display=chrome.system.display||{};"
+	       "chrome.system.display.getInfo=chrome.system.display.getInfo||function(flags,cb){"
+	       "if(typeof flags==='function'){cb=flags;flags={};}"
+	       "var p=__moriExtCall('system.display.getInfo',{flags:flags||{}});"
+	       "if(typeof cb==='function')p.then(cb);return p;"
+	       "};"
+	       "chrome.system.storage=chrome.system.storage||{};"
+	       "chrome.system.storage.onAttached=chrome.system.storage.onAttached||__moriEvent();"
+	       "chrome.system.storage.onDetached=chrome.system.storage.onDetached||__moriEvent();"
+	       "chrome.system.storage.getInfo=chrome.system.storage.getInfo||function(cb){"
+	       "var p=__moriExtCall('system.storage.getInfo',{});"
+	       "if(typeof cb==='function')p.then(cb);return p;"
+	       "};"
+	       "chrome.system.storage.getAvailableCapacity=chrome.system.storage.getAvailableCapacity||function(id,cb){"
+	       "var p=__moriExtCall('system.storage.getAvailableCapacity',{id:String(id||'')});"
+	       "if(typeof cb==='function')p.then(cb);return p;"
+	       "};"
+	       "chrome.system.storage.ejectDevice=chrome.system.storage.ejectDevice||function(id,cb){"
+	       "var p=__moriExtCall('system.storage.ejectDevice',{id:String(id||'')});"
+	       "if(typeof cb==='function')p.then(cb);return p;"
+	       "};"
 	       "chrome.management=chrome.management||{};"
 	       "chrome.management.getSelf=chrome.management.getSelf||function(cb){var p=__moriExtCall('management.getSelf',{});if(typeof cb==='function')p.then(cb);return p;};"
 		       "chrome.management.get=chrome.management.get||function(id,cb){var p=__moriExtCall('management.get',{id:id});if(typeof cb==='function')p.then(cb);return p;};"
@@ -3155,8 +4067,20 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 	       "chrome.notifications.clear=chrome.notifications.clear||function(id,cb){var p=__moriExtCall('notifications.clear',{id:id});if(typeof cb==='function')p.then(cb);return p;};"
 	       "chrome.notifications.getAll=chrome.notifications.getAll||function(cb){var p=__moriExtCall('notifications.getAll',{});if(typeof cb==='function')p.then(cb);return p;};"
 	       "chrome.notifications.getPermissionLevel=chrome.notifications.getPermissionLevel||function(cb){var p=__moriExtCall('notifications.getPermissionLevel',{});if(typeof cb==='function')p.then(cb);return p;};"
-	       "chrome.topSites=chrome.topSites||{};"
-	       "chrome.topSites.get=chrome.topSites.get||function(cb){var p=__moriExtCall('topSites.get',{});if(typeof cb==='function')p.then(cb);return p;};"
+	       "chrome.search=chrome.search||{};"
+	       "chrome.search.Disposition=chrome.search.Disposition||{CURRENT_TAB:'CURRENT_TAB',NEW_TAB:'NEW_TAB',NEW_WINDOW:'NEW_WINDOW'};"
+		      "chrome.search.query=chrome.search.query||function(queryInfo,cb){"
+		      "var p=__moriExtCall('search.query',{queryInfo:queryInfo||{}});"
+		      "if(typeof cb==='function')p.then(function(){cb();},function(error){runtime.lastError={message:error&&error.message?error.message:String(error)};try{cb();}finally{setTimeout(function(){delete runtime.lastError;},0);}});"
+		      "return p;"
+		      "};"
+		      "chrome.dns=chrome.dns||{};"
+		      "chrome.dns.resolve=chrome.dns.resolve||function(hostname,cb){"
+		      "var p=__moriExtCall('dns.resolve',{hostname:String(hostname||'')});"
+		      "if(typeof cb==='function')p.then(cb);return p;"
+		      "};"
+		      "chrome.topSites=chrome.topSites||{};"
+		      "chrome.topSites.get=chrome.topSites.get||function(cb){var p=__moriExtCall('topSites.get',{});if(typeof cb==='function')p.then(cb);return p;};"
 	       "chrome.history=chrome.history||{};"
 	       "chrome.history.onVisited=chrome.history.onVisited||__moriEvent();"
 	       "chrome.history.onVisitRemoved=chrome.history.onVisitRemoved||__moriEvent();"
@@ -3202,23 +4126,22 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 	       "chrome.webNavigation.onErrorOccurred=chrome.webNavigation.onErrorOccurred||__moriEvent();"
 	       "chrome.webNavigation.getFrame=chrome.webNavigation.getFrame||function(details,cb){"
 	       "details=details||{};"
-	       "var p=__moriExtCall('tabs.get',{tabId:details.tabId}).then(function(tab){return {"
-	       "errorOccurred:false,tabId:Number(details.tabId)||0,frameId:Number(details.frameId)||0,parentFrameId:-1,url:(tab&&tab.url)||''};});"
+	       "var p=__moriExtCall('webNavigation.getFrame',{details:details});"
 	       "if(typeof cb==='function')p.then(cb);return p;"
 	       "};"
 	       "chrome.webNavigation.getAllFrames=chrome.webNavigation.getAllFrames||function(details,cb){"
 	       "details=details||{};"
-	       "var p=chrome.webNavigation.getFrame({tabId:details.tabId,frameId:0}).then(function(frame){return [frame];});"
+	       "var p=__moriExtCall('webNavigation.getAllFrames',{details:details});"
 	       "if(typeof cb==='function')p.then(cb);return p;"
 	       "};"
 	       "chrome.webRequest=chrome.webRequest||{};"
-	       "chrome.webRequest.onBeforeRequest=chrome.webRequest.onBeforeRequest||__moriEvent();"
-	       "chrome.webRequest.onBeforeSendHeaders=chrome.webRequest.onBeforeSendHeaders||__moriEvent();"
-	       "chrome.webRequest.onHeadersReceived=chrome.webRequest.onHeadersReceived||__moriEvent();"
-	       "chrome.webRequest.onBeforeRedirect=chrome.webRequest.onBeforeRedirect||__moriEvent();"
-	       "chrome.webRequest.onAuthRequired=chrome.webRequest.onAuthRequired||__moriEvent();"
-	       "chrome.webRequest.onCompleted=chrome.webRequest.onCompleted||__moriEvent();"
-       "chrome.webRequest.onErrorOccurred=chrome.webRequest.onErrorOccurred||__moriEvent();"
+	       "chrome.webRequest.onBeforeRequest=chrome.webRequest.onBeforeRequest||__moriWebRequestEvent('onBeforeRequest');"
+	       "chrome.webRequest.onBeforeSendHeaders=chrome.webRequest.onBeforeSendHeaders||__moriWebRequestEvent('onBeforeSendHeaders');"
+	       "chrome.webRequest.onHeadersReceived=chrome.webRequest.onHeadersReceived||__moriWebRequestEvent('onHeadersReceived');"
+	       "chrome.webRequest.onBeforeRedirect=chrome.webRequest.onBeforeRedirect||__moriWebRequestEvent('onBeforeRedirect');"
+	       "chrome.webRequest.onAuthRequired=chrome.webRequest.onAuthRequired||__moriWebRequestEvent('onAuthRequired');"
+	       "chrome.webRequest.onCompleted=chrome.webRequest.onCompleted||__moriWebRequestEvent('onCompleted');"
+       "chrome.webRequest.onErrorOccurred=chrome.webRequest.onErrorOccurred||__moriWebRequestEvent('onErrorOccurred');"
        "chrome.webRequest.handlerBehaviorChanged=chrome.webRequest.handlerBehaviorChanged||function(cb){"
        "if(typeof cb==='function')cb();return Promise.resolve();"
        "};"
@@ -3241,6 +4164,16 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 	       "if(typeof cb==='function')cb(result);"
 	       "return Promise.resolve(result);"
 	       "};"
+	       "chrome.contentSettings=chrome.contentSettings||{};"
+	       "function __moriContentSetting(name){return {"
+	       "get:function(details,cb){var p=__moriExtCall('contentSettings.'+name+'.get',{details:details||{}});if(typeof cb==='function')p.then(cb);return p;},"
+	       "set:function(details,cb){var p=__moriExtCall('contentSettings.'+name+'.set',{details:details||{}});if(typeof cb==='function')p.then(function(){cb();});return p;},"
+	       "clear:function(details,cb){var p=__moriExtCall('contentSettings.'+name+'.clear',{details:details||{}});if(typeof cb==='function')p.then(function(){cb();});return p;},"
+	       "getResourceIdentifiers:function(cb){var p=__moriExtCall('contentSettings.'+name+'.getResourceIdentifiers',{});if(typeof cb==='function')p.then(cb);return p;}"
+	       "};}"
+	       "['automaticDownloads','autoVerify','camera','clipboard','cookies','fullscreen','images','javascript','location','microphone','mouselock','notifications','plugins','popups','sound','unsandboxedPlugins'].forEach(function(name){"
+	       "chrome.contentSettings[name]=chrome.contentSettings[name]||__moriContentSetting(name);"
+	       "});"
 	       "chrome.permissions=chrome.permissions||{};"
 	       "chrome.permissions.onAdded=chrome.permissions.onAdded||__moriEvent();"
 	       "chrome.permissions.onRemoved=chrome.permissions.onRemoved||__moriEvent();"
@@ -3260,20 +4193,38 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 	       "var p=__moriExtCall('permissions.remove',{permissions:permissions||{}});"
 	       "if(typeof cb==='function')p.then(cb);return p;"
 	       "};"
-	       "function __moriPrivacySetting(value){return {"
-	       "get:function(details,cb){var result={levelOfControl:'not_controllable',value:value};if(typeof cb==='function')cb(result);return Promise.resolve(result);},"
-	       "set:function(details,cb){if(typeof cb==='function')cb();return Promise.resolve();},"
-	       "clear:function(details,cb){if(typeof cb==='function')cb();return Promise.resolve();}"
-	       "};}"
-	       "chrome.privacy=chrome.privacy||{};"
-	       "chrome.privacy.network=chrome.privacy.network||{};"
-	       "chrome.privacy.network.networkPredictionEnabled=chrome.privacy.network.networkPredictionEnabled||__moriPrivacySetting(false);"
-	       "chrome.privacy.services=chrome.privacy.services||{};"
-	       "chrome.privacy.services.passwordSavingEnabled=chrome.privacy.services.passwordSavingEnabled||__moriPrivacySetting(false);"
-	       "chrome.privacy.services.autofillEnabled=chrome.privacy.services.autofillEnabled||__moriPrivacySetting(false);"
-	       "chrome.privacy.websites=chrome.privacy.websites||{};"
-	       "chrome.privacy.websites.thirdPartyCookiesAllowed=chrome.privacy.websites.thirdPartyCookiesAllowed||__moriPrivacySetting(true);"
-	       "chrome.privacy.websites.hyperlinkAuditingEnabled=chrome.privacy.websites.hyperlinkAuditingEnabled||__moriPrivacySetting(false);"
+		      "chrome.privacy=chrome.privacy||{};"
+		      "chrome.privacy.IPHandlingPolicy=chrome.privacy.IPHandlingPolicy||{DEFAULT:'default',DEFAULT_PUBLIC_AND_PRIVATE_INTERFACES:'default_public_and_private_interfaces',DEFAULT_PUBLIC_INTERFACE_ONLY:'default_public_interface_only',DISABLE_NON_PROXIED_UDP:'disable_non_proxied_udp'};"
+		      "function __moriPrivacySetting(path){return {"
+		      "onChange:__moriEvent(),"
+		      "get:function(details,cb){if(typeof details==='function'){cb=details;details={};}var p=__moriExtCall('privacy.'+path+'.get',{details:details||{}});if(typeof cb==='function')p.then(cb);return p;},"
+		      "set:function(details,cb){var p=__moriExtCall('privacy.'+path+'.set',{details:details||{}});if(typeof cb==='function')p.then(function(){cb();});return p;},"
+		      "clear:function(details,cb){if(typeof details==='function'){cb=details;details={};}var p=__moriExtCall('privacy.'+path+'.clear',{details:details||{}});if(typeof cb==='function')p.then(function(){cb();});return p;}"
+		      "};}"
+		      "chrome.privacy.network=chrome.privacy.network||{};"
+		      "chrome.privacy.network.networkPredictionEnabled=chrome.privacy.network.networkPredictionEnabled||__moriPrivacySetting('network.networkPredictionEnabled');"
+		      "chrome.privacy.network.webRTCIPHandlingPolicy=chrome.privacy.network.webRTCIPHandlingPolicy||__moriPrivacySetting('network.webRTCIPHandlingPolicy');"
+		      "chrome.privacy.services=chrome.privacy.services||{};"
+		      "chrome.privacy.services.alternateErrorPagesEnabled=chrome.privacy.services.alternateErrorPagesEnabled||__moriPrivacySetting('services.alternateErrorPagesEnabled');"
+		      "chrome.privacy.services.autofillAddressEnabled=chrome.privacy.services.autofillAddressEnabled||__moriPrivacySetting('services.autofillAddressEnabled');"
+		      "chrome.privacy.services.autofillCreditCardEnabled=chrome.privacy.services.autofillCreditCardEnabled||__moriPrivacySetting('services.autofillCreditCardEnabled');"
+		      "chrome.privacy.services.autofillEnabled=chrome.privacy.services.autofillEnabled||__moriPrivacySetting('services.autofillEnabled');"
+		      "chrome.privacy.services.passwordSavingEnabled=chrome.privacy.services.passwordSavingEnabled||__moriPrivacySetting('services.passwordSavingEnabled');"
+		      "chrome.privacy.services.safeBrowsingEnabled=chrome.privacy.services.safeBrowsingEnabled||__moriPrivacySetting('services.safeBrowsingEnabled');"
+		      "chrome.privacy.services.safeBrowsingExtendedReportingEnabled=chrome.privacy.services.safeBrowsingExtendedReportingEnabled||__moriPrivacySetting('services.safeBrowsingExtendedReportingEnabled');"
+		      "chrome.privacy.services.searchSuggestEnabled=chrome.privacy.services.searchSuggestEnabled||__moriPrivacySetting('services.searchSuggestEnabled');"
+		      "chrome.privacy.services.spellingServiceEnabled=chrome.privacy.services.spellingServiceEnabled||__moriPrivacySetting('services.spellingServiceEnabled');"
+		      "chrome.privacy.services.translationServiceEnabled=chrome.privacy.services.translationServiceEnabled||__moriPrivacySetting('services.translationServiceEnabled');"
+		      "chrome.privacy.websites=chrome.privacy.websites||{};"
+		      "chrome.privacy.websites.adMeasurementEnabled=chrome.privacy.websites.adMeasurementEnabled||__moriPrivacySetting('websites.adMeasurementEnabled');"
+		      "chrome.privacy.websites.doNotTrackEnabled=chrome.privacy.websites.doNotTrackEnabled||__moriPrivacySetting('websites.doNotTrackEnabled');"
+		      "chrome.privacy.websites.fledgeEnabled=chrome.privacy.websites.fledgeEnabled||__moriPrivacySetting('websites.fledgeEnabled');"
+		      "chrome.privacy.websites.hyperlinkAuditingEnabled=chrome.privacy.websites.hyperlinkAuditingEnabled||__moriPrivacySetting('websites.hyperlinkAuditingEnabled');"
+		      "chrome.privacy.websites.protectedContentEnabled=chrome.privacy.websites.protectedContentEnabled||__moriPrivacySetting('websites.protectedContentEnabled');"
+		      "chrome.privacy.websites.referrersEnabled=chrome.privacy.websites.referrersEnabled||__moriPrivacySetting('websites.referrersEnabled');"
+		      "chrome.privacy.websites.relatedWebsiteSetsEnabled=chrome.privacy.websites.relatedWebsiteSetsEnabled||__moriPrivacySetting('websites.relatedWebsiteSetsEnabled');"
+		      "chrome.privacy.websites.thirdPartyCookiesAllowed=chrome.privacy.websites.thirdPartyCookiesAllowed||__moriPrivacySetting('websites.thirdPartyCookiesAllowed');"
+		      "chrome.privacy.websites.topicsEnabled=chrome.privacy.websites.topicsEnabled||__moriPrivacySetting('websites.topicsEnabled');"
 	       "chrome.proxy=chrome.proxy||{};"
 	       "chrome.proxy.settings=chrome.proxy.settings||{"
 	       "onChange:__moriEvent(),"
@@ -3706,7 +4657,7 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
        "});"
        "};"
        "}"
-	       "window.__moriExtDispatchMessage=window.__moriExtDispatchMessage||function(extensionId,message,requestId,sourceUrl,sourceOrigin,toContentScript,external,sourceTabId){"
+		       "window.__moriExtDispatchMessage=window.__moriExtDispatchMessage||function(extensionId,message,requestId,sourceUrl,sourceOrigin,toContentScript,external,sourceTabId,sourceFrameId,sourceDocumentId){"
 	       "if(extensionId!==extId)return;"
 	       // chrome.runtime.sendMessage never echoes back to the sending document;
 	       // the bridge broadcasts to every view, so skip the originator here. Else
@@ -3728,12 +4679,15 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 	       // external (sender.id !== runtime.id). Internal messages fire onMessage
 	       // with sender.id set to the extension id.
 	       "var listeners=(external?(runtime.onMessageExternal&&runtime.onMessageExternal._listeners):(runtime.onMessage&&runtime.onMessage._listeners))||[];"
-	       "var tabId=Number(sourceTabId);"
-	       "var sourceTab=isFinite(tabId)&&tabId>=0?{id:tabId,windowId:1,index:-1,active:true,highlighted:true,selected:true,pinned:false,incognito:false,status:'complete',url:sourceUrl?String(sourceUrl):''}:undefined;"
-	       "var sender=external?{url:sourceUrl?String(sourceUrl):'',origin:sourceOrigin?String(sourceOrigin):undefined}:{id:extId,url:sourceUrl?String(sourceUrl):String(location.href)};"
-	       "if(sourceTab)sender.tab=sourceTab;"
-	       "if(!external&&sourceOrigin)sender.origin=String(sourceOrigin);"
-	       "var responded=false,pending=false;"
+		       "var tabId=Number(sourceTabId);"
+		       "var sourceTab=isFinite(tabId)&&tabId>=0?{id:tabId,windowId:1,index:-1,active:true,highlighted:true,selected:true,pinned:false,incognito:false,status:'complete',url:sourceUrl?String(sourceUrl):''}:undefined;"
+		       "var sender=external?{url:sourceUrl?String(sourceUrl):'',origin:sourceOrigin?String(sourceOrigin):undefined}:{id:extId,url:sourceUrl?String(sourceUrl):String(location.href)};"
+		       "if(sourceTab)sender.tab=sourceTab;"
+		       "if(!external&&sourceOrigin)sender.origin=String(sourceOrigin);"
+		       "var frameId=Number(sourceFrameId);"
+		       "if(isFinite(frameId)&&frameId>=0)sender.frameId=frameId;"
+		       "if(sourceDocumentId)sender.documentId=String(sourceDocumentId);"
+		       "var responded=false,pending=false;"
 	       "listeners.slice().forEach(function(fn){"
 	       "function sendResponse(value){"
 	       "if(responded||!requestId)return;"
@@ -3934,6 +4888,16 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
        "if(typeof cb==='function')p.then(cb);"
        "return p;"
        "};"
+       "chrome.tabs.group=chrome.tabs.group||function(options,cb){"
+       "var p=__moriExtCall('tabs.group',{options:options||{}});"
+       "if(typeof cb==='function')p.then(cb);"
+       "return p;"
+       "};"
+       "chrome.tabs.ungroup=chrome.tabs.ungroup||function(tabIds,cb){"
+       "var p=__moriExtCall('tabs.ungroup',{tabIds:tabIds});"
+       "if(typeof cb==='function')p.then(function(){cb();});"
+       "return p;"
+       "};"
        "chrome.tabs.update=chrome.tabs.update||function(tabId,updateProperties,cb){"
        "if(typeof tabId==='object'){cb=updateProperties;updateProperties=tabId;tabId=null;}"
        "var p=__moriExtCall('tabs.update',{tabId:tabId,updateProperties:updateProperties||{}});"
@@ -3948,6 +4912,26 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
        "chrome.tabs.sendMessage=chrome.tabs.sendMessage||function(tabId,message,options,cb){"
        "if(typeof options==='function'){cb=options;options={};}"
        "var p=__moriExtCall('tabs.sendMessage',Object.assign({tabId:tabId,message:message,options:options||{}},__moriSourceInfo()));"
+       "if(typeof cb==='function')p.then(cb);"
+       "return p;"
+       "};"
+       "chrome.tabGroups.get=chrome.tabGroups.get||function(groupId,cb){"
+       "var p=__moriExtCall('tabGroups.get',{groupId:groupId});"
+       "if(typeof cb==='function')p.then(cb);"
+       "return p;"
+       "};"
+       "chrome.tabGroups.query=chrome.tabGroups.query||function(queryInfo,cb){"
+       "var p=__moriExtCall('tabGroups.query',{queryInfo:queryInfo||{}});"
+       "if(typeof cb==='function')p.then(cb);"
+       "return p;"
+       "};"
+       "chrome.tabGroups.update=chrome.tabGroups.update||function(groupId,updateProperties,cb){"
+       "var p=__moriExtCall('tabGroups.update',{groupId:groupId,updateProperties:updateProperties||{}});"
+       "if(typeof cb==='function')p.then(cb);"
+       "return p;"
+       "};"
+       "chrome.tabGroups.move=chrome.tabGroups.move||function(groupId,moveProperties,cb){"
+       "var p=__moriExtCall('tabGroups.move',{groupId:groupId,moveProperties:moveProperties||{}});"
        "if(typeof cb==='function')p.then(cb);"
        "return p;"
        "};"
@@ -4101,7 +5085,7 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
        "};"
        "chrome.scripting.executeScript=chrome.scripting.executeScript||function(details,cb){"
        "details=details||{};"
-       "var payload={target:details.target||{},files:details.files||null,args:details.args||[],code:details.code||null};"
+       "var payload={target:details.target||{},files:details.files||null,args:details.args||[],code:details.code||null,world:details.world||null};"
        "var fn=details.func||details.function;"
        "if(typeof fn==='function')payload.funcSource=String(fn);"
        "var p=__moriExtCall('scripting.executeScript',{details:payload});"
@@ -4146,10 +5130,53 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
 	       "if(typeof cb==='function')p.then(function(){cb();});"
 	       "return p;"
 	       "};"
+	       "chrome.userScripts=chrome.userScripts||{};"
+	       "chrome.userScripts.ExecutionWorld=chrome.userScripts.ExecutionWorld||{MAIN:'MAIN',USER_SCRIPT:'USER_SCRIPT'};"
+	       "chrome.userScripts.register=chrome.userScripts.register||function(scripts,cb){"
+	       "var p=__moriExtCall('userScripts.register',{scripts:scripts||[]});"
+	       "if(typeof cb==='function')p.then(function(){cb();});return p;"
+	       "};"
+	       "chrome.userScripts.getScripts=chrome.userScripts.getScripts||function(filter,cb){"
+	       "if(typeof filter==='function'){cb=filter;filter={};}"
+	       "var p=__moriExtCall('userScripts.getScripts',{filter:filter||{}});"
+	       "if(typeof cb==='function')p.then(cb);return p;"
+	       "};"
+	       "chrome.userScripts.update=chrome.userScripts.update||function(scripts,cb){"
+	       "var p=__moriExtCall('userScripts.update',{scripts:scripts||[]});"
+	       "if(typeof cb==='function')p.then(function(){cb();});return p;"
+	       "};"
+	       "chrome.userScripts.unregister=chrome.userScripts.unregister||function(filter,cb){"
+	       "if(typeof filter==='function'){cb=filter;filter={};}"
+	       "var p=__moriExtCall('userScripts.unregister',{filter:filter||{}});"
+	       "if(typeof cb==='function')p.then(function(){cb();});return p;"
+	       "};"
+	       "chrome.userScripts.configureWorld=chrome.userScripts.configureWorld||function(properties,cb){"
+	       "var p=__moriExtCall('userScripts.configureWorld',{properties:properties||{}});"
+	       "if(typeof cb==='function')p.then(function(){cb();});return p;"
+	       "};"
+	       "chrome.userScripts.getWorldConfigurations=chrome.userScripts.getWorldConfigurations||function(cb){"
+	       "var p=__moriExtCall('userScripts.getWorldConfigurations',{});"
+	       "if(typeof cb==='function')p.then(cb);return p;"
+	       "};"
+	       "chrome.userScripts.resetWorldConfiguration=chrome.userScripts.resetWorldConfiguration||function(worldId,cb){"
+	       "if(typeof worldId==='function'){cb=worldId;worldId='';}"
+	       "var p=__moriExtCall('userScripts.resetWorldConfiguration',{worldId:worldId||''});"
+	       "if(typeof cb==='function')p.then(function(){cb();});return p;"
+	       "};"
+	       "chrome.userScripts.execute=chrome.userScripts.execute||function(injection,cb){"
+	       "injection=injection||{};var sources=Array.isArray(injection.js)?injection.js:[];"
+	       "var files=[],code=[];"
+	       "sources.forEach(function(source){source=source||{};if(typeof source.file==='string')files.push(source.file);else if(typeof source.code==='string')code.push(source.code);});"
+	       "if(files.length&&code.length){var mixed=Promise.reject(new Error('Mori userScripts.execute supports file-only or code-only sources.'));if(typeof cb==='function')mixed.catch(function(){cb([]);});return mixed;}"
+	       "var details={target:injection.target||{},world:injection.world==='MAIN'?'MAIN':null};"
+	       "if(files.length)details.files=files;else details.code=code.join('\\n;\\n');"
+	       "var p=chrome.scripting.executeScript(details);"
+	       "if(typeof cb==='function')p.then(cb);return p;"
+	       "};"
 	       "function __moriMirrorBrowserAPI(){"
 	       "try{"
 	       "var b=globalThis.browser=globalThis.browser||chrome;"
-	       "['runtime','i18n','storage','tabs','scripting','declarativeNetRequest','sidePanel','action','browserAction','pageAction','notifications','alarms','offscreen','commands','permissions','history','topSites','cookies','browsingData','downloads','sessions','management','bookmarks','contextMenus','menus','windows','identity','webNavigation','webRequest','idle','privacy','proxy','extension'].forEach(function(name){"
+	      "['runtime','i18n','storage','tabs','tabGroups','scripting','userScripts','declarativeNetRequest','sidePanel','action','browserAction','pageAction','notifications','alarms','offscreen','commands','contentSettings','permissions','history','search','dns','topSites','cookies','browsingData','downloads','sessions','management','bookmarks','contextMenus','menus','windows','identity','webNavigation','webRequest','idle','power','system','privacy','proxy','extension'].forEach(function(name){"
 	       "var src=chrome[name];if(!src)return;"
 	       "if(!b[name]){b[name]=src;return;}"
 	       "if((typeof src==='object'||typeof src==='function')&&(typeof b[name]==='object'||typeof b[name]==='function')){"
@@ -4190,10 +5217,11 @@ NSString* ExtensionRuntimeShim(NSDictionary* ext, NSDictionary* manifest) {
        "runtime.onStartup._fire();"
        "},0);"
        "}"
-      "})();",
-      JSStringLiteral(identifier), JSONStringLiteral(localizedManifest),
-      JSONStringLiteral(messages ?: @{}), JSStringLiteral(uiLanguage),
-      JSONStringLiteral(browserInfo)];
+	      "})();",
+	      JSStringLiteral(identifier), JSONStringLiteral(localizedManifest),
+	      JSONStringLiteral(messages ?: @{}), JSStringLiteral(uiLanguage),
+	      JSONStringLiteral(browserInfo), JSONStringLiteral(platformInfo),
+	      JSONStringLiteral(extensionContext)];
 }
 
 void InjectExtensionPageRuntime(CefRefPtr<CefFrame> frame) {
@@ -4201,13 +5229,22 @@ void InjectExtensionPageRuntime(CefRefPtr<CefFrame> frame) {
   if (!ext) return;
   NSDictionary* manifest = ManifestForExtension(ext);
   NSMutableString* js = [NSMutableString stringWithString:@"(function(){try{"];
-  [js appendString:ExtensionRuntimeShim(ext, manifest)];
+  [js appendString:ExtensionRuntimeShim(ext, manifest, -1, 0, -1,
+                                        ExtensionDocumentID(frame))];
   [js appendString:@"}catch(e){console.error('[Mori extension runtime]',e);}})();"];
   frame->ExecuteJavaScript(CefString(js.UTF8String), frame->GetURL(), 0);
 }
 
 NSString* DynamicContentScriptsDefaultsKey(NSString* extensionId) {
   return [@"mori.dynamicContentScripts." stringByAppendingString:extensionId ?: @""];
+}
+
+NSString* UserScriptsDefaultsKey(NSString* extensionId) {
+  return [@"mori.userScripts." stringByAppendingString:extensionId ?: @""];
+}
+
+NSString* UserScriptWorldsDefaultsKey(NSString* extensionId) {
+  return [@"mori.userScriptWorlds." stringByAppendingString:extensionId ?: @""];
 }
 
 NSArray<NSDictionary*>* RegisteredContentScripts(NSString* extensionID) {
@@ -4236,6 +5273,13 @@ NSString* ContentScriptRunAt(NSDictionary* script) {
       ? script[@"run_at"]
       : ([script[@"runAt"] isKindOfClass:NSString.class] ? script[@"runAt"] : nil);
   return runAt.length > 0 ? runAt : @"document_idle";
+}
+
+BOOL ContentScriptWorldIsMain(NSDictionary* script) {
+  NSString* world = [script[@"world"] isKindOfClass:NSString.class]
+      ? script[@"world"]
+      : nil;
+  return world != nil && [world caseInsensitiveCompare:@"MAIN"] == NSOrderedSame;
 }
 
 NSDictionary* APIContentScriptRecord(NSDictionary* script) {
@@ -4391,7 +5435,309 @@ NSDictionary* HandleRegisteredContentScripts(NSString* method,
   return @{@"result" : [NSNull null]};
 }
 
-void InjectExtensionContentScripts(CefRefPtr<CefFrame> frame, NSString* phase) {
+NSArray<NSDictionary*>* RegisteredUserScripts(NSString* extensionID) {
+  NSArray* stored = [[NSUserDefaults standardUserDefaults]
+      arrayForKey:UserScriptsDefaultsKey(extensionID)];
+  NSMutableArray<NSDictionary*>* out = [NSMutableArray array];
+  for (id item in stored) {
+    if ([item isKindOfClass:NSDictionary.class]) [out addObject:item];
+  }
+  return out;
+}
+
+void PersistRegisteredUserScripts(NSString* extensionID,
+                                  NSArray<NSDictionary*>* scripts) {
+  [[NSUserDefaults standardUserDefaults] setObject:scripts ?: @[]
+                                            forKey:UserScriptsDefaultsKey(extensionID)];
+}
+
+NSArray<NSDictionary*>* UserScriptWorldConfigurations(NSString* extensionID) {
+  NSArray* stored = [[NSUserDefaults standardUserDefaults]
+      arrayForKey:UserScriptWorldsDefaultsKey(extensionID)];
+  NSMutableArray<NSDictionary*>* out = [NSMutableArray array];
+  for (id item in stored) {
+    if ([item isKindOfClass:NSDictionary.class]) [out addObject:item];
+  }
+  return out;
+}
+
+void PersistUserScriptWorldConfigurations(NSString* extensionID,
+                                          NSArray<NSDictionary*>* worlds) {
+  [[NSUserDefaults standardUserDefaults] setObject:worlds ?: @[]
+                                            forKey:UserScriptWorldsDefaultsKey(extensionID)];
+}
+
+NSArray<NSString*>* UserScriptIDsFromFilter(NSDictionary* filter) {
+  NSArray* ids = [filter[@"ids"] isKindOfClass:NSArray.class] ? filter[@"ids"] : nil;
+  NSMutableArray<NSString*>* out = [NSMutableArray array];
+  for (id item in ids) {
+    if ([item isKindOfClass:NSString.class]) [out addObject:item];
+  }
+  return out;
+}
+
+NSArray<NSDictionary*>* NormalizeUserScriptSources(id rawSources,
+                                                   BOOL requireSources,
+                                                   NSString** error) {
+  if (![rawSources isKindOfClass:NSArray.class]) {
+    if (requireSources && error) *error = @"User script is missing js sources.";
+    return requireSources ? nil : nil;
+  }
+  NSMutableArray<NSDictionary*>* out = [NSMutableArray array];
+  for (id item in (NSArray*)rawSources) {
+    if (![item isKindOfClass:NSDictionary.class]) {
+      if (error) *error = @"User script source must be an object.";
+      return nil;
+    }
+    NSDictionary* source = item;
+    NSString* code = [source[@"code"] isKindOfClass:NSString.class] ? source[@"code"] : @"";
+    NSString* file = [source[@"file"] isKindOfClass:NSString.class] ? source[@"file"] : @"";
+    if ((code.length > 0 && file.length > 0) ||
+        (code.length == 0 && file.length == 0)) {
+      if (error) *error = @"User script source requires exactly one of code or file.";
+      return nil;
+    }
+    if (code.length > 0) {
+      [out addObject:@{@"code" : code}];
+    } else {
+      [out addObject:@{@"file" : file}];
+    }
+  }
+  if (requireSources && out.count == 0) {
+    if (error) *error = @"User script is missing js sources.";
+    return nil;
+  }
+  return out;
+}
+
+NSDictionary* NormalizeUserScript(NSDictionary* raw,
+                                  NSDictionary* existing,
+                                  BOOL requireFields,
+                                  NSString** error) {
+  if (![raw isKindOfClass:NSDictionary.class]) {
+    if (error) *error = @"User script must be an object.";
+    return nil;
+  }
+
+  NSMutableDictionary* out =
+      existing ? [existing mutableCopy] : [NSMutableDictionary dictionary];
+  NSString* identifier = [raw[@"id"] isKindOfClass:NSString.class]
+      ? raw[@"id"]
+      : ([existing[@"id"] isKindOfClass:NSString.class] ? existing[@"id"] : nil);
+  if (identifier.length == 0 || [identifier hasPrefix:@"_"]) {
+    if (error) *error = @"User script is missing a valid id.";
+    return nil;
+  }
+  out[@"id"] = identifier;
+
+  NSArray* matches = [raw[@"matches"] isKindOfClass:NSArray.class] ? raw[@"matches"] : nil;
+  if (matches) out[@"matches"] = matches;
+  if (requireFields && ![out[@"matches"] isKindOfClass:NSArray.class]) {
+    if (error) *error = @"User script is missing matches.";
+    return nil;
+  }
+
+  NSString* sourceError = nil;
+  NSArray* jsSources = NormalizeUserScriptSources(raw[@"js"],
+                                                  requireFields && !existing,
+                                                  &sourceError);
+  if (sourceError.length > 0) {
+    if (error) *error = sourceError;
+    return nil;
+  }
+  if (jsSources) out[@"js_sources"] = jsSources;
+  if (requireFields && ![out[@"js_sources"] isKindOfClass:NSArray.class]) {
+    if (error) *error = @"User script is missing js sources.";
+    return nil;
+  }
+
+  NSArray* excludes = [raw[@"excludeMatches"] isKindOfClass:NSArray.class]
+      ? raw[@"excludeMatches"]
+      : ([raw[@"exclude_matches"] isKindOfClass:NSArray.class] ? raw[@"exclude_matches"] : nil);
+  if (excludes) out[@"exclude_matches"] = excludes;
+  NSArray* includeGlobs = [raw[@"includeGlobs"] isKindOfClass:NSArray.class]
+      ? raw[@"includeGlobs"]
+      : ([raw[@"include_globs"] isKindOfClass:NSArray.class] ? raw[@"include_globs"] : nil);
+  if (includeGlobs) out[@"include_globs"] = includeGlobs;
+  NSArray* excludeGlobs = [raw[@"excludeGlobs"] isKindOfClass:NSArray.class]
+      ? raw[@"excludeGlobs"]
+      : ([raw[@"exclude_globs"] isKindOfClass:NSArray.class] ? raw[@"exclude_globs"] : nil);
+  if (excludeGlobs) out[@"exclude_globs"] = excludeGlobs;
+
+  id allFrames = raw[@"allFrames"] ?: raw[@"all_frames"];
+  if ([allFrames respondsToSelector:@selector(boolValue)]) out[@"all_frames"] = @([allFrames boolValue]);
+  NSString* runAt = [raw[@"runAt"] isKindOfClass:NSString.class]
+      ? raw[@"runAt"]
+      : ([raw[@"run_at"] isKindOfClass:NSString.class] ? raw[@"run_at"] : nil);
+  if (runAt.length > 0) out[@"run_at"] = runAt;
+  if (![out[@"run_at"] isKindOfClass:NSString.class]) out[@"run_at"] = @"document_idle";
+  NSString* world = [raw[@"world"] isKindOfClass:NSString.class] ? raw[@"world"] : nil;
+  if (world.length > 0) out[@"world"] = world;
+  if (![out[@"world"] isKindOfClass:NSString.class]) out[@"world"] = @"USER_SCRIPT";
+  NSString* worldID = [raw[@"worldId"] isKindOfClass:NSString.class] ? raw[@"worldId"] : nil;
+  if (worldID.length > 0) out[@"worldId"] = worldID;
+  out[@"mori_user_script"] = @YES;
+  return out;
+}
+
+NSDictionary* APIUserScriptRecord(NSDictionary* script) {
+  NSMutableDictionary* out = [NSMutableDictionary dictionary];
+  NSString* identifier = [script[@"id"] isKindOfClass:NSString.class] ? script[@"id"] : @"";
+  if (identifier.length > 0) out[@"id"] = identifier;
+  if ([script[@"matches"] isKindOfClass:NSArray.class]) out[@"matches"] = script[@"matches"];
+  NSArray* excludes = [script[@"exclude_matches"] isKindOfClass:NSArray.class]
+      ? script[@"exclude_matches"]
+      : nil;
+  if (excludes) out[@"excludeMatches"] = excludes;
+  NSArray* includeGlobs = [script[@"include_globs"] isKindOfClass:NSArray.class]
+      ? script[@"include_globs"]
+      : nil;
+  if (includeGlobs) out[@"includeGlobs"] = includeGlobs;
+  NSArray* excludeGlobs = [script[@"exclude_globs"] isKindOfClass:NSArray.class]
+      ? script[@"exclude_globs"]
+      : nil;
+  if (excludeGlobs) out[@"excludeGlobs"] = excludeGlobs;
+  if ([script[@"js_sources"] isKindOfClass:NSArray.class]) out[@"js"] = script[@"js_sources"];
+  out[@"allFrames"] = @(ContentScriptAllFrames(script));
+  out[@"runAt"] = ContentScriptRunAt(script);
+  if ([script[@"world"] isKindOfClass:NSString.class]) out[@"world"] = script[@"world"];
+  if ([script[@"worldId"] isKindOfClass:NSString.class]) out[@"worldId"] = script[@"worldId"];
+  return out;
+}
+
+NSArray<NSDictionary*>* RegisteredUserScriptsAsContentScripts(NSString* extensionID) {
+  return RegisteredUserScripts(extensionID);
+}
+
+NSDictionary* HandleUserScripts(NSString* method,
+                                NSDictionary* args,
+                                NSString* extensionID) {
+  NSMutableArray<NSDictionary*>* scripts =
+      [RegisteredUserScripts(extensionID) mutableCopy] ?: [NSMutableArray array];
+  NSArray* rawScripts = [args[@"scripts"] isKindOfClass:NSArray.class] ? args[@"scripts"] : @[];
+  NSDictionary* filter = [args[@"filter"] isKindOfClass:NSDictionary.class]
+      ? args[@"filter"]
+      : @{};
+
+  if ([method isEqualToString:@"userScripts.getScripts"]) {
+    NSArray<NSString*>* ids = UserScriptIDsFromFilter(filter);
+    NSMutableArray<NSDictionary*>* result = [NSMutableArray array];
+    for (NSDictionary* script in scripts) {
+      NSString* identifier = [script[@"id"] isKindOfClass:NSString.class] ? script[@"id"] : @"";
+      if (ids.count > 0 && ![ids containsObject:identifier]) continue;
+      [result addObject:APIUserScriptRecord(script)];
+    }
+    return @{@"result" : result};
+  }
+
+  if ([method isEqualToString:@"userScripts.unregister"]) {
+    NSArray<NSString*>* ids = UserScriptIDsFromFilter(filter);
+    if (ids.count == 0) {
+      [scripts removeAllObjects];
+    } else {
+      [scripts filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(
+          NSDictionary* script, NSDictionary* bindings) {
+        NSString* identifier = [script[@"id"] isKindOfClass:NSString.class] ? script[@"id"] : @"";
+        return ![ids containsObject:identifier];
+      }]];
+    }
+    PersistRegisteredUserScripts(extensionID, scripts);
+    return @{@"result" : [NSNull null]};
+  }
+
+  if ([method isEqualToString:@"userScripts.configureWorld"]) {
+    NSDictionary* properties = [args[@"properties"] isKindOfClass:NSDictionary.class]
+        ? args[@"properties"]
+        : @{};
+    NSString* worldID = [properties[@"worldId"] isKindOfClass:NSString.class]
+        ? properties[@"worldId"]
+        : @"";
+    if ([worldID hasPrefix:@"_"]) {
+      return @{@"error" : @"User script worldId cannot start with '_'."};
+    }
+    NSMutableDictionary* record = [NSMutableDictionary dictionary];
+    if (worldID.length > 0) record[@"worldId"] = worldID;
+    if ([properties[@"csp"] isKindOfClass:NSString.class]) record[@"csp"] = properties[@"csp"];
+    if ([properties[@"messaging"] respondsToSelector:@selector(boolValue)]) {
+      record[@"messaging"] = @([properties[@"messaging"] boolValue]);
+    }
+    NSMutableArray<NSDictionary*>* worlds =
+        [UserScriptWorldConfigurations(extensionID) mutableCopy] ?: [NSMutableArray array];
+    NSUInteger existingIndex = [worlds indexOfObjectPassingTest:^BOOL(
+        NSDictionary* item, NSUInteger idx, BOOL* stop) {
+      NSString* existingID = [item[@"worldId"] isKindOfClass:NSString.class]
+          ? item[@"worldId"]
+          : @"";
+      return [existingID isEqualToString:worldID];
+    }];
+    if (existingIndex == NSNotFound) {
+      [worlds addObject:record];
+    } else {
+      worlds[existingIndex] = record;
+    }
+    PersistUserScriptWorldConfigurations(extensionID, worlds);
+    return @{@"result" : [NSNull null]};
+  }
+
+  if ([method isEqualToString:@"userScripts.getWorldConfigurations"]) {
+    return @{@"result" : UserScriptWorldConfigurations(extensionID)};
+  }
+
+  if ([method isEqualToString:@"userScripts.resetWorldConfiguration"]) {
+    NSString* worldID = [args[@"worldId"] isKindOfClass:NSString.class]
+        ? args[@"worldId"]
+        : @"";
+    NSMutableArray<NSDictionary*>* worlds =
+        [UserScriptWorldConfigurations(extensionID) mutableCopy] ?: [NSMutableArray array];
+    [worlds filterUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(
+        NSDictionary* item, NSDictionary* bindings) {
+      NSString* existingID = [item[@"worldId"] isKindOfClass:NSString.class]
+          ? item[@"worldId"]
+          : @"";
+      return worldID.length > 0 ? ![existingID isEqualToString:worldID]
+                                : existingID.length > 0;
+    }]];
+    PersistUserScriptWorldConfigurations(extensionID, worlds);
+    return @{@"result" : [NSNull null]};
+  }
+
+  BOOL updating = [method isEqualToString:@"userScripts.update"];
+  if (![method isEqualToString:@"userScripts.register"] && !updating) {
+    return @{@"error" : [NSString stringWithFormat:@"Unsupported userScripts method: %@", method]};
+  }
+
+  for (id item in rawScripts) {
+    if (![item isKindOfClass:NSDictionary.class]) {
+      return @{@"error" : @"User script must be an object."};
+    }
+    NSDictionary* raw = (NSDictionary*)item;
+    NSString* identifier = [raw[@"id"] isKindOfClass:NSString.class] ? raw[@"id"] : @"";
+    NSUInteger existingIndex = [scripts indexOfObjectPassingTest:^BOOL(
+        NSDictionary* script, NSUInteger idx, BOOL* stop) {
+      NSString* existingID = [script[@"id"] isKindOfClass:NSString.class] ? script[@"id"] : @"";
+      return [existingID isEqualToString:identifier];
+    }];
+    NSDictionary* existing = existingIndex == NSNotFound ? nil : scripts[existingIndex];
+    if (updating && !existing) {
+      return @{@"error" : [NSString stringWithFormat:@"No registered user script with id %@.", identifier]};
+    }
+    NSString* error = nil;
+    NSDictionary* normalized = NormalizeUserScript(raw, existing, !updating, &error);
+    if (!normalized) return @{@"error" : error ?: @"Invalid user script."};
+    if (existingIndex == NSNotFound) {
+      [scripts addObject:normalized];
+    } else {
+      scripts[existingIndex] = normalized;
+    }
+  }
+
+  PersistRegisteredUserScripts(extensionID, scripts);
+  return @{@"result" : [NSNull null]};
+}
+
+void InjectExtensionContentScripts(CefRefPtr<CefFrame> frame,
+                                   NSString* phase,
+                                   int tabID) {
   if (!frame) return;
   NSString* urlString = @(frame->GetURL().ToString().c_str());
   NSURL* url = [NSURL URLWithString:urlString];
@@ -4405,6 +5751,7 @@ void InjectExtensionContentScripts(CefRefPtr<CefFrame> frame, NSString* phase) {
     }
     NSString* extensionID = [ext[@"id"] isKindOfClass:NSString.class] ? ext[@"id"] : @"";
     [scripts addObjectsFromArray:RegisteredContentScripts(extensionID)];
+    [scripts addObjectsFromArray:RegisteredUserScriptsAsContentScripts(extensionID)];
     for (id item in scripts) {
       if (![item isKindOfClass:[NSDictionary class]]) continue;
       NSDictionary* script = (NSDictionary*)item;
@@ -4413,10 +5760,20 @@ void InjectExtensionContentScripts(CefRefPtr<CefFrame> frame, NSString* phase) {
 	      NSString* runAt = ContentScriptRunAt(script);
 	      if (![runAt isEqualToString:phase] || !ScriptMatchesURL(script, url)) {
 	        continue;
-	      }
+      }
 
+      BOOL mainWorld = ContentScriptWorldIsMain(script);
+      BOOL userScript = [script[@"mori_user_script"] respondsToSelector:@selector(boolValue)] &&
+          [script[@"mori_user_script"] boolValue];
       NSMutableString* js = [NSMutableString stringWithString:@"(function(){try{"];
-      [js appendString:ExtensionRuntimeShim(ext, manifest)];
+      if (!mainWorld && !userScript) {
+        [js appendString:ExtensionRuntimeShim(ext,
+                                              manifest,
+                                              tabID,
+                                              ExtensionFrameID(frame),
+                                              ExtensionParentFrameID(frame),
+                                              ExtensionDocumentID(frame))];
+      }
 
       NSArray* cssFiles = [script[@"css"] isKindOfClass:[NSArray class]]
           ? script[@"css"]
@@ -4436,12 +5793,32 @@ void InjectExtensionContentScripts(CefRefPtr<CefFrame> frame, NSString* phase) {
       NSArray* jsFiles = [script[@"js"] isKindOfClass:[NSArray class]]
           ? script[@"js"]
           : nil;
-      for (id jsPath in jsFiles) {
-        if (![jsPath isKindOfClass:[NSString class]]) continue;
-        NSString* source = ExtensionFileText(ext, jsPath);
-        if (source.length == 0) continue;
-        [js appendString:source];
-        [js appendString:@"\n"];
+      NSArray* jsSources = [script[@"js_sources"] isKindOfClass:[NSArray class]]
+          ? script[@"js_sources"]
+          : nil;
+      if (jsSources.count > 0) {
+        for (id item in jsSources) {
+          if (![item isKindOfClass:[NSDictionary class]]) continue;
+          NSDictionary* sourceRecord = item;
+          NSString* source = [sourceRecord[@"code"] isKindOfClass:NSString.class]
+              ? sourceRecord[@"code"]
+              : @"";
+          if (source.length == 0 &&
+              [sourceRecord[@"file"] isKindOfClass:NSString.class]) {
+            source = ExtensionFileText(ext, sourceRecord[@"file"]);
+          }
+          if (source.length == 0) continue;
+          [js appendString:source];
+          [js appendString:@"\n"];
+        }
+      } else {
+        for (id jsPath in jsFiles) {
+          if (![jsPath isKindOfClass:[NSString class]]) continue;
+          NSString* source = ExtensionFileText(ext, jsPath);
+          if (source.length == 0) continue;
+          [js appendString:source];
+          [js appendString:@"\n"];
+        }
       }
       [js appendString:@"}catch(e){console.error('[Mori extension]',e);}})();"];
 
@@ -4481,6 +5858,10 @@ NSString* PermissionsDefaultsKey(NSString* extensionId) {
 
 NSString* ProxySettingsDefaultsKey() {
   return @"mori.proxySettings";
+}
+
+NSString* ContentSettingsDefaultsKey(NSString* extensionId) {
+  return [@"mori.contentSettings." stringByAppendingString:extensionId ?: @""];
 }
 
 NSArray<NSString*>* PermissionStringArray(id raw) {
@@ -4812,6 +6193,390 @@ NSDictionary* HandlePermissions(NSString* method,
   return @{@"error" : [NSString stringWithFormat:@"Unsupported permissions method: %@", method]};
 }
 
+NSArray<NSString*>* ContentSettingNames() {
+  return @[
+    @"automaticDownloads", @"autoVerify", @"camera", @"clipboard",
+    @"cookies", @"fullscreen", @"images", @"javascript", @"location",
+    @"microphone", @"mouselock", @"notifications", @"plugins", @"popups",
+    @"sound", @"unsandboxedPlugins"
+  ];
+}
+
+NSDictionary<NSString*, NSString*>* ContentSettingDefaultValues() {
+  return @{
+    @"automaticDownloads" : @"ask",
+    @"autoVerify" : @"allow",
+    @"camera" : @"ask",
+    @"clipboard" : @"ask",
+    @"cookies" : @"allow",
+    @"fullscreen" : @"allow",
+    @"images" : @"allow",
+    @"javascript" : @"allow",
+    @"location" : @"ask",
+    @"microphone" : @"ask",
+    @"mouselock" : @"allow",
+    @"notifications" : @"ask",
+    @"plugins" : @"block",
+    @"popups" : @"block",
+    @"sound" : @"allow",
+    @"unsandboxedPlugins" : @"block"
+  };
+}
+
+NSDictionary<NSString*, NSArray<NSString*>*>* ContentSettingAllowedValues() {
+  return @{
+    @"automaticDownloads" : @[ @"allow", @"block", @"ask" ],
+    @"autoVerify" : @[ @"allow", @"block" ],
+    @"camera" : @[ @"allow", @"block", @"ask" ],
+    @"clipboard" : @[ @"allow", @"block", @"ask" ],
+    @"cookies" : @[ @"allow", @"block", @"session_only" ],
+    @"fullscreen" : @[ @"allow" ],
+    @"images" : @[ @"allow", @"block" ],
+    @"javascript" : @[ @"allow", @"block" ],
+    @"location" : @[ @"allow", @"block", @"ask" ],
+    @"microphone" : @[ @"allow", @"block", @"ask" ],
+    @"mouselock" : @[ @"allow" ],
+    @"notifications" : @[ @"allow", @"block", @"ask" ],
+    @"plugins" : @[ @"block" ],
+    @"popups" : @[ @"allow", @"block" ],
+    @"sound" : @[ @"allow", @"block" ],
+    @"unsandboxedPlugins" : @[ @"block" ]
+  };
+}
+
+BOOL ContentSettingIsFixed(NSString* settingName) {
+  return [@[
+    @"fullscreen", @"mouselock", @"plugins", @"unsandboxedPlugins"
+  ] containsObject:settingName ?: @""];
+}
+
+NSMutableDictionary* StoredContentSettings(NSString* extensionID) {
+  id raw = [[NSUserDefaults standardUserDefaults]
+      objectForKey:ContentSettingsDefaultsKey(extensionID)];
+  if ([raw isKindOfClass:NSData.class]) {
+    id json = [NSJSONSerialization JSONObjectWithData:raw options:0 error:nil];
+    return [json isKindOfClass:NSDictionary.class]
+        ? [(NSDictionary*)json mutableCopy]
+        : [NSMutableDictionary dictionary];
+  }
+  return [raw isKindOfClass:NSDictionary.class]
+      ? [(NSDictionary*)raw mutableCopy]
+      : [NSMutableDictionary dictionary];
+}
+
+void StoreContentSettings(NSString* extensionID, NSDictionary* value) {
+  NSData* data = [NSJSONSerialization dataWithJSONObject:value ?: @{}
+                                                 options:0
+                                                   error:nil];
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  if (data) {
+    [defaults setObject:data forKey:ContentSettingsDefaultsKey(extensionID)];
+  } else {
+    [defaults setObject:value ?: @{} forKey:ContentSettingsDefaultsKey(extensionID)];
+  }
+  [defaults synchronize];
+}
+
+NSString* ContentSettingString(NSDictionary* details, NSString* key) {
+  return [details[key] isKindOfClass:NSString.class] ? details[key] : @"";
+}
+
+NSString* ContentSettingScope(NSDictionary* details) {
+  NSString* scope = ContentSettingString(details, @"scope");
+  if (scope.length == 0) return @"regular";
+  return scope;
+}
+
+NSString* ContentSettingResourceID(id raw) {
+  if ([raw isKindOfClass:NSDictionary.class]) {
+    NSString* value = ((NSDictionary*)raw)[@"id"];
+    return [value isKindOfClass:NSString.class] ? value : @"";
+  }
+  return [raw isKindOfClass:NSString.class] ? raw : @"";
+}
+
+NSDictionary* MoriParseContentSettingPattern(NSString* pattern) {
+  if (![pattern isKindOfClass:NSString.class] || pattern.length == 0) return nil;
+  if ([pattern isEqualToString:@"<all_urls>"]) {
+    return @{@"all" : @YES,
+             @"scheme" : @"*",
+             @"host" : @"*",
+             @"port" : @"*",
+             @"path" : @"/*"};
+  }
+  NSRange sep = [pattern rangeOfString:@"://"];
+  if (sep.location == NSNotFound) return nil;
+  NSString* scheme = [[pattern substringToIndex:sep.location] lowercaseString];
+  NSString* rest = [pattern substringFromIndex:NSMaxRange(sep)];
+  NSRange slash = [rest rangeOfString:@"/"];
+  NSString* authority = slash.location == NSNotFound
+      ? rest
+      : [rest substringToIndex:slash.location];
+  NSString* path = slash.location == NSNotFound
+      ? @"/*"
+      : [rest substringFromIndex:slash.location];
+  NSString* host = authority;
+  NSString* port = @"*";
+  NSRange colon = [authority rangeOfString:@":"
+                                   options:NSBackwardsSearch];
+  if (colon.location != NSNotFound &&
+      [authority rangeOfString:@"]"].location == NSNotFound) {
+    host = [authority substringToIndex:colon.location];
+    port = [authority substringFromIndex:NSMaxRange(colon)];
+    if (port.length == 0) port = @"*";
+  }
+  if (host.length == 0 && ![scheme isEqualToString:@"file"]) return nil;
+  return @{@"all" : @NO,
+           @"scheme" : scheme ?: @"",
+           @"host" : [host lowercaseString] ?: @"",
+           @"port" : port ?: @"*",
+           @"path" : path.length > 0 ? path : @"/*"};
+}
+
+BOOL MoriContentSettingPatternMatchesURL(NSString* pattern, NSString* rawURL) {
+  NSDictionary* parsed = MoriParseContentSettingPattern(pattern);
+  if (!parsed) return NO;
+  if ([parsed[@"all"] boolValue]) return YES;
+  NSURLComponents* url = [NSURLComponents componentsWithString:rawURL ?: @""];
+  NSString* urlScheme = [url.scheme.lowercaseString length] > 0
+      ? url.scheme.lowercaseString
+      : @"";
+  NSString* urlHost = [url.host.lowercaseString length] > 0
+      ? url.host.lowercaseString
+      : @"";
+  NSString* urlPath = url.path.length > 0 ? url.path : @"/";
+  NSString* patternScheme = parsed[@"scheme"];
+  if ([patternScheme isEqualToString:@"*"]) {
+    if (![@[ @"http", @"https", @"ftp", @"ws", @"wss" ] containsObject:urlScheme]) {
+      return NO;
+    }
+  } else if (![patternScheme isEqualToString:urlScheme]) {
+    return NO;
+  }
+
+  NSString* patternHost = parsed[@"host"];
+  if (![urlScheme isEqualToString:@"file"]) {
+    if ([patternHost isEqualToString:@"*"]) {
+      // Matches any host.
+    } else if ([patternHost hasPrefix:@"*."]) {
+      NSString* base = [patternHost substringFromIndex:2];
+      if (![urlHost isEqualToString:base] &&
+          ![urlHost hasSuffix:[@"." stringByAppendingString:base]]) {
+        return NO;
+      }
+    } else if (![patternHost isEqualToString:urlHost]) {
+      return NO;
+    }
+  }
+
+  NSString* patternPort = parsed[@"port"];
+  if (patternPort.length > 0 && ![patternPort isEqualToString:@"*"]) {
+    NSString* urlPort = url.port ? url.port.stringValue : @"";
+    if (![patternPort isEqualToString:urlPort]) return NO;
+  }
+
+  return MoriGlobCovers(parsed[@"path"], urlPath);
+}
+
+NSInteger MoriContentSettingPatternSpecificity(NSString* pattern) {
+  NSDictionary* parsed = MoriParseContentSettingPattern(pattern);
+  if (!parsed) return -1;
+  if ([parsed[@"all"] boolValue]) return 0;
+  NSInteger score = 0;
+  NSString* host = parsed[@"host"];
+  if ([host isEqualToString:@"*"]) {
+    score += 0;
+  } else if ([host hasPrefix:@"*."]) {
+    score += 2000 + (NSInteger)host.length;
+  } else {
+    score += 3000 + (NSInteger)host.length;
+  }
+  NSString* scheme = parsed[@"scheme"];
+  if (![scheme isEqualToString:@"*"]) score += 300;
+  NSString* port = parsed[@"port"];
+  if (port.length > 0 && ![port isEqualToString:@"*"]) score += 30;
+  NSString* path = parsed[@"path"];
+  if (![path isEqualToString:@"/*"]) score += MIN((NSInteger)path.length, 25);
+  return score;
+}
+
+NSMutableArray* ContentSettingRules(NSMutableDictionary* store, NSString* name) {
+  id raw = store[name];
+  NSMutableArray* rules = [raw isKindOfClass:NSArray.class]
+      ? [(NSArray*)raw mutableCopy]
+      : [NSMutableArray array];
+  store[name] = rules;
+  return rules;
+}
+
+NSDictionary* HandleContentSettings(NSString* method,
+                                    NSDictionary* args,
+                                    NSString* extensionID) {
+  NSArray<NSString*>* parts = [method componentsSeparatedByString:@"."];
+  if (parts.count != 3 ||
+      ![parts[0] isEqualToString:@"contentSettings"]) {
+    return @{@"error" : [NSString stringWithFormat:@"Unsupported contentSettings method: %@", method]};
+  }
+  NSString* settingName = parts[1];
+  NSString* operation = parts[2];
+  if (![ContentSettingNames() containsObject:settingName]) {
+    return @{@"error" : [NSString stringWithFormat:@"Unsupported content setting: %@", settingName]};
+  }
+
+  NSString* defaultValue = ContentSettingDefaultValues()[settingName] ?: @"allow";
+  NSDictionary* details = [args[@"details"] isKindOfClass:NSDictionary.class]
+      ? args[@"details"]
+      : @{};
+
+  if ([operation isEqualToString:@"getResourceIdentifiers"]) {
+    return @{@"result" : @[]};
+  }
+
+  if ([operation isEqualToString:@"get"]) {
+    NSString* primaryURL = ContentSettingString(details, @"primaryUrl");
+    if (primaryURL.length == 0) {
+      return @{@"error" : @"contentSettings.get requires primaryUrl."};
+    }
+    if (ContentSettingIsFixed(settingName)) {
+      return @{@"result" : @{@"setting" : defaultValue}};
+    }
+    NSString* secondaryURL = ContentSettingString(details, @"secondaryUrl");
+    if (secondaryURL.length == 0) secondaryURL = primaryURL;
+    BOOL incognito = [details[@"incognito"] respondsToSelector:@selector(boolValue)] &&
+        [details[@"incognito"] boolValue];
+    NSString* requestedResource = ContentSettingResourceID(details[@"resourceIdentifier"]);
+    NSMutableDictionary* store = StoredContentSettings(extensionID);
+    NSArray* rules = [store[settingName] isKindOfClass:NSArray.class]
+        ? store[settingName]
+        : @[];
+    NSDictionary* best = nil;
+    NSInteger bestScore = -1;
+    for (id rawRule in rules) {
+      if (![rawRule isKindOfClass:NSDictionary.class]) continue;
+      NSDictionary* rule = rawRule;
+      NSString* ruleScope = ContentSettingScope(rule);
+      if (incognito) {
+        if (![ruleScope isEqualToString:@"regular"] &&
+            ![ruleScope isEqualToString:@"incognito_session_only"]) {
+          continue;
+        }
+      } else if (![ruleScope isEqualToString:@"regular"]) {
+        continue;
+      }
+      NSString* ruleResource = ContentSettingResourceID(rule[@"resourceIdentifier"]);
+      if (ruleResource.length > 0 &&
+          ![ruleResource isEqualToString:requestedResource]) {
+        continue;
+      }
+      NSString* primaryPattern = ContentSettingString(rule, @"primaryPattern");
+      NSString* secondaryPattern = ContentSettingString(rule, @"secondaryPattern");
+      if (primaryPattern.length == 0) primaryPattern = @"<all_urls>";
+      if (secondaryPattern.length == 0) secondaryPattern = @"<all_urls>";
+      if (!MoriContentSettingPatternMatchesURL(primaryPattern, primaryURL) ||
+          !MoriContentSettingPatternMatchesURL(secondaryPattern, secondaryURL)) {
+        continue;
+      }
+      NSInteger primaryScore = MoriContentSettingPatternSpecificity(primaryPattern);
+      NSInteger secondaryScore = MoriContentSettingPatternSpecificity(secondaryPattern);
+      NSInteger scopeScore =
+          incognito && [ruleScope isEqualToString:@"incognito_session_only"] ? 1 : 0;
+      NSInteger score = ((primaryScore * 100000) + secondaryScore) * 10 + scopeScore;
+      if (score >= bestScore) {
+        bestScore = score;
+        best = rule;
+      }
+    }
+    NSString* setting = [best[@"setting"] isKindOfClass:NSString.class]
+        ? best[@"setting"]
+        : defaultValue;
+    return @{@"result" : @{@"setting" : setting}};
+  }
+
+  if ([operation isEqualToString:@"set"]) {
+    if (ContentSettingIsFixed(settingName)) {
+      return @{@"result" : [NSNull null]};
+    }
+    NSString* primaryPattern = ContentSettingString(details, @"primaryPattern");
+    if (primaryPattern.length == 0 ||
+        MoriContentSettingPatternSpecificity(primaryPattern) < 0) {
+      return @{@"error" : @"contentSettings.set requires a valid primaryPattern."};
+    }
+    NSString* secondaryPattern = ContentSettingString(details, @"secondaryPattern");
+    if (secondaryPattern.length == 0) secondaryPattern = @"<all_urls>";
+    if (MoriContentSettingPatternSpecificity(secondaryPattern) < 0) {
+      return @{@"error" : @"contentSettings.set requires a valid secondaryPattern."};
+    }
+    NSString* setting = ContentSettingString(details, @"setting");
+    NSArray<NSString*>* allowed = ContentSettingAllowedValues()[settingName] ?: @[];
+    if (![allowed containsObject:setting]) {
+      return @{@"error" : [NSString stringWithFormat:@"Invalid %@ content setting.", settingName]};
+    }
+    NSString* scope = ContentSettingScope(details);
+    if (![scope isEqualToString:@"regular"] &&
+        ![scope isEqualToString:@"incognito_session_only"]) {
+      return @{@"error" : @"Invalid contentSettings scope."};
+    }
+
+    NSMutableDictionary* store = StoredContentSettings(extensionID);
+    NSMutableArray* rules = ContentSettingRules(store, settingName);
+    NSString* resourceID = ContentSettingResourceID(details[@"resourceIdentifier"]);
+    NSMutableDictionary* nextRule = [@{
+      @"primaryPattern" : primaryPattern,
+      @"secondaryPattern" : secondaryPattern,
+      @"setting" : setting,
+      @"scope" : scope
+    } mutableCopy];
+    if ([details[@"resourceIdentifier"] isKindOfClass:NSDictionary.class]) {
+      nextRule[@"resourceIdentifier"] = details[@"resourceIdentifier"];
+    }
+
+    NSUInteger replaceIndex = NSNotFound;
+    for (NSUInteger idx = 0; idx < rules.count; idx++) {
+      id rawRule = rules[idx];
+      if (![rawRule isKindOfClass:NSDictionary.class]) continue;
+      NSDictionary* rule = rawRule;
+      NSString* existingResource = ContentSettingResourceID(rule[@"resourceIdentifier"]);
+      if ([ContentSettingString(rule, @"primaryPattern") isEqualToString:primaryPattern] &&
+          [ContentSettingString(rule, @"secondaryPattern") isEqualToString:secondaryPattern] &&
+          [ContentSettingScope(rule) isEqualToString:scope] &&
+          [existingResource isEqualToString:resourceID]) {
+        replaceIndex = idx;
+        break;
+      }
+    }
+    if (replaceIndex == NSNotFound) {
+      [rules addObject:nextRule];
+    } else {
+      [rules replaceObjectAtIndex:replaceIndex withObject:nextRule];
+    }
+    StoreContentSettings(extensionID, store);
+    return @{@"result" : [NSNull null]};
+  }
+
+  if ([operation isEqualToString:@"clear"]) {
+    if (ContentSettingIsFixed(settingName)) {
+      return @{@"result" : [NSNull null]};
+    }
+    NSString* scope = ContentSettingScope(details);
+    if (![scope isEqualToString:@"regular"] &&
+        ![scope isEqualToString:@"incognito_session_only"]) {
+      return @{@"error" : @"Invalid contentSettings scope."};
+    }
+    NSMutableDictionary* store = StoredContentSettings(extensionID);
+    NSMutableArray* rules = ContentSettingRules(store, settingName);
+    NSIndexSet* removals = [rules indexesOfObjectsPassingTest:
+        ^BOOL(id obj, NSUInteger idx, BOOL* stop) {
+          if (![obj isKindOfClass:NSDictionary.class]) return YES;
+          return [ContentSettingScope(obj) isEqualToString:scope];
+        }];
+    [rules removeObjectsAtIndexes:removals];
+    StoreContentSettings(extensionID, store);
+    return @{@"result" : [NSNull null]};
+  }
+
+  return @{@"error" : [NSString stringWithFormat:@"Unsupported contentSettings method: %@", method]};
+}
+
 NSDictionary* ProxyDefaultValue() {
   return @{@"mode" : @"system"};
 }
@@ -4896,6 +6661,294 @@ NSString* ProxyBypassListString(id bypassList) {
     }
   }
   return [out componentsJoinedByString:@";"];
+}
+
+NSString* PrivacySettingsDefaultsKey() {
+  return @"mori.privacySettings";
+}
+
+NSDictionary<NSString*, id>* PrivacyDefaultValues() {
+  static NSDictionary<NSString*, id>* defaults = @{
+    @"network.networkPredictionEnabled" : @YES,
+    @"network.webRTCIPHandlingPolicy" : @"default",
+    @"services.alternateErrorPagesEnabled" : @YES,
+    @"services.autofillAddressEnabled" : @YES,
+    @"services.autofillCreditCardEnabled" : @YES,
+    @"services.autofillEnabled" : @YES,
+    @"services.passwordSavingEnabled" : @YES,
+    @"services.safeBrowsingEnabled" : @YES,
+    @"services.safeBrowsingExtendedReportingEnabled" : @NO,
+    @"services.searchSuggestEnabled" : @YES,
+    @"services.spellingServiceEnabled" : @NO,
+    @"services.translationServiceEnabled" : @YES,
+    @"websites.adMeasurementEnabled" : @YES,
+    @"websites.doNotTrackEnabled" : @NO,
+    @"websites.fledgeEnabled" : @YES,
+    @"websites.hyperlinkAuditingEnabled" : @YES,
+    @"websites.protectedContentEnabled" : @YES,
+    @"websites.referrersEnabled" : @YES,
+    @"websites.relatedWebsiteSetsEnabled" : @YES,
+    @"websites.thirdPartyCookiesAllowed" : @YES,
+    @"websites.topicsEnabled" : @YES
+  };
+  return defaults;
+}
+
+NSSet<NSString*>* PrivacyFalseOnlySettings() {
+  static NSSet<NSString*>* settings = [NSSet setWithArray:@[
+    @"websites.adMeasurementEnabled",
+    @"websites.fledgeEnabled",
+    @"websites.relatedWebsiteSetsEnabled",
+    @"websites.topicsEnabled"
+  ]];
+  return settings;
+}
+
+NSSet<NSString*>* PrivacyWebRTCPolicies() {
+  static NSSet<NSString*>* policies = [NSSet setWithArray:@[
+    @"default",
+    @"default_public_and_private_interfaces",
+    @"default_public_interface_only",
+    @"disable_non_proxied_udp"
+  ]];
+  return policies;
+}
+
+NSMutableDictionary* StoredPrivacySettings() {
+  id raw = [[NSUserDefaults standardUserDefaults]
+      objectForKey:PrivacySettingsDefaultsKey()];
+  NSMutableDictionary* settings = [raw isKindOfClass:NSDictionary.class]
+      ? [raw mutableCopy]
+      : [NSMutableDictionary dictionary];
+  for (NSString* key in [settings allKeys]) {
+    id value = settings[key];
+    settings[key] = [value isKindOfClass:NSDictionary.class]
+        ? [value mutableCopy]
+        : [NSMutableDictionary dictionary];
+  }
+  return settings;
+}
+
+void PersistPrivacySettings(NSDictionary* settings) {
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+  if (settings.count == 0) {
+    [defaults removeObjectForKey:PrivacySettingsDefaultsKey()];
+  } else {
+    [defaults setObject:settings forKey:PrivacySettingsDefaultsKey()];
+  }
+  [defaults synchronize];
+}
+
+NSString* PrivacyScopeFromDetails(NSDictionary* details, NSString* fallback) {
+  NSString* scope = [details[@"scope"] isKindOfClass:NSString.class]
+      ? [(NSString*)details[@"scope"] lowercaseString]
+      : fallback;
+  if ([scope isEqualToString:@"regular"] ||
+      [scope isEqualToString:@"regular_only"] ||
+      [scope isEqualToString:@"incognito_persistent"] ||
+      [scope isEqualToString:@"incognito_session_only"]) {
+    return scope;
+  }
+  return fallback;
+}
+
+NSArray<NSString*>* PrivacyEffectiveScopes(BOOL incognito) {
+  return incognito
+      ? @[ @"incognito_session_only", @"incognito_persistent", @"regular" ]
+      : @[ @"regular_only", @"regular" ];
+}
+
+NSDictionary* PrivacyEffectiveRecord(NSDictionary* settings,
+                                     NSString* path,
+                                     BOOL incognito,
+                                     NSString** effectiveScope) {
+  NSDictionary* scoped = [settings[path] isKindOfClass:NSDictionary.class]
+      ? settings[path]
+      : @{};
+  for (NSString* scope in PrivacyEffectiveScopes(incognito)) {
+    NSDictionary* record = [scoped[scope] isKindOfClass:NSDictionary.class]
+        ? scoped[scope]
+        : nil;
+    if (record) {
+      if (effectiveScope) *effectiveScope = scope;
+      return record;
+    }
+  }
+  if (effectiveScope) *effectiveScope = @"";
+  return nil;
+}
+
+NSString* PrivacyLevelOfControl(NSDictionary* record, NSString* extensionID) {
+  NSString* owner = [record[@"extensionId"] isKindOfClass:NSString.class]
+      ? record[@"extensionId"]
+      : @"";
+  if (owner.length == 0) return @"controllable_by_this_extension";
+  return [owner caseInsensitiveCompare:extensionID ?: @""] == NSOrderedSame
+      ? @"controlled_by_this_extension"
+      : @"controlled_by_other_extensions";
+}
+
+NSDictionary* PrivacySettingResult(NSString* path,
+                                   NSDictionary* details,
+                                   NSString* extensionID) {
+  BOOL incognito = [details[@"incognito"] respondsToSelector:@selector(boolValue)] &&
+      [details[@"incognito"] boolValue];
+  NSDictionary* defaults = PrivacyDefaultValues();
+  id defaultValue = defaults[path];
+  if (!defaultValue) return nil;
+  NSString* effectiveScope = nil;
+  NSDictionary* record =
+      PrivacyEffectiveRecord(StoredPrivacySettings(), path, incognito,
+                             &effectiveScope);
+  id value = record[@"value"] ?: defaultValue;
+  return @{
+    @"levelOfControl" : PrivacyLevelOfControl(record ?: @{}, extensionID),
+    @"value" : value,
+    @"incognitoSpecific" : @([effectiveScope hasPrefix:@"incognito"])
+  };
+}
+
+BOOL PrivacyValidateValue(NSString* path, id value, NSString** error) {
+  id defaultValue = PrivacyDefaultValues()[path];
+  if (!defaultValue) {
+    if (error) *error = @"Unsupported privacy setting.";
+    return NO;
+  }
+  if ([path isEqualToString:@"network.webRTCIPHandlingPolicy"]) {
+    if (![value isKindOfClass:NSString.class] ||
+        ![PrivacyWebRTCPolicies() containsObject:value]) {
+      if (error) *error = @"privacy.network.webRTCIPHandlingPolicy requires a valid IP handling policy.";
+      return NO;
+    }
+    return YES;
+  }
+  if (![value isKindOfClass:NSNumber.class]) {
+    if (error) *error = @"Privacy setting value must be a boolean.";
+    return NO;
+  }
+  if ([PrivacyFalseOnlySettings() containsObject:path] && [value boolValue]) {
+    if (error) *error = @"This privacy setting can only be disabled by extensions.";
+    return NO;
+  }
+  return YES;
+}
+
+NSArray<NSString*>* PrivacyMethodParts(NSString* method) {
+  if (![method hasPrefix:@"privacy."]) return @[];
+  NSString* rest = [method substringFromIndex:@"privacy.".length];
+  NSArray<NSString*>* components = [rest componentsSeparatedByString:@"."];
+  return components.count == 3 ? components : @[];
+}
+
+void DispatchPrivacyChange(NSString* path,
+                           NSString* scope,
+                           NSString* extensionID) {
+  BOOL incognito = [scope hasPrefix:@"incognito"];
+  NSDictionary* details = PrivacySettingResult(
+      path, @{@"incognito" : @(incognito)}, extensionID);
+  if (!details) return;
+  NSString* eventName =
+      [NSString stringWithFormat:@"privacy.%@.onChange", path];
+  [MoriBrowserView dispatchExtensionEvent:eventName
+                                     args:@[ details ]
+                           forExtensionID:extensionID];
+}
+
+void ClearPrivacySettingsForExtension(NSString* extensionID) {
+  if (extensionID.length == 0) return;
+  NSMutableDictionary* settings = StoredPrivacySettings();
+  BOOL changed = NO;
+  for (NSString* path in [settings.allKeys copy]) {
+    NSMutableDictionary* scoped = [settings[path] isKindOfClass:NSDictionary.class]
+        ? [settings[path] mutableCopy]
+        : [NSMutableDictionary dictionary];
+    for (NSString* scope in [scoped.allKeys copy]) {
+      NSDictionary* record = [scoped[scope] isKindOfClass:NSDictionary.class]
+          ? scoped[scope]
+          : nil;
+      NSString* owner = [record[@"extensionId"] isKindOfClass:NSString.class]
+          ? record[@"extensionId"]
+          : @"";
+      if ([owner caseInsensitiveCompare:extensionID] == NSOrderedSame) {
+        [scoped removeObjectForKey:scope];
+        changed = YES;
+      }
+    }
+    if (scoped.count == 0) {
+      [settings removeObjectForKey:path];
+    } else {
+      settings[path] = scoped;
+    }
+  }
+  if (changed) PersistPrivacySettings(settings);
+}
+
+NSDictionary* HandlePrivacy(NSString* method,
+                            NSDictionary* args,
+                            NSString* extensionID) {
+  NSArray<NSString*>* parts = PrivacyMethodParts(method);
+  if (parts.count != 3) {
+    return @{@"error" : [NSString stringWithFormat:@"Unsupported privacy method: %@", method]};
+  }
+  NSString* path = [NSString stringWithFormat:@"%@.%@", parts[0], parts[1]];
+  NSString* operation = parts[2];
+  if (!PrivacyDefaultValues()[path]) {
+    return @{@"error" : @"Unsupported privacy setting."};
+  }
+
+  NSDictionary* details = [args[@"details"] isKindOfClass:NSDictionary.class]
+      ? args[@"details"]
+      : @{};
+
+  if ([operation isEqualToString:@"get"]) {
+    return @{@"result" : PrivacySettingResult(path, details, extensionID)};
+  }
+
+  NSString* scope = PrivacyScopeFromDetails(details, @"regular");
+  NSMutableDictionary* settings = StoredPrivacySettings();
+  NSMutableDictionary* scoped = [settings[path] isKindOfClass:NSDictionary.class]
+      ? [settings[path] mutableCopy]
+      : [NSMutableDictionary dictionary];
+  NSDictionary* currentRecord = [scoped[scope] isKindOfClass:NSDictionary.class]
+      ? scoped[scope]
+      : nil;
+  NSString* owner = [currentRecord[@"extensionId"] isKindOfClass:NSString.class]
+      ? currentRecord[@"extensionId"]
+      : @"";
+  BOOL controlledByThis =
+      owner.length == 0 ||
+      [owner caseInsensitiveCompare:extensionID ?: @""] == NSOrderedSame;
+  if (!controlledByThis) {
+    return @{@"error" : @"Privacy setting is controlled by another extension."};
+  }
+
+  if ([operation isEqualToString:@"set"]) {
+    id value = details[@"value"];
+    NSString* validationError = nil;
+    if (!PrivacyValidateValue(path, value, &validationError)) {
+      return @{@"error" : validationError ?: @"Invalid privacy setting value."};
+    }
+    scoped[scope] = @{@"extensionId" : extensionID ?: @"",
+                      @"value" : value};
+    settings[path] = scoped;
+    PersistPrivacySettings(settings);
+    DispatchPrivacyChange(path, scope, extensionID);
+    return @{@"result" : [NSNull null]};
+  }
+
+  if ([operation isEqualToString:@"clear"]) {
+    [scoped removeObjectForKey:scope];
+    if (scoped.count == 0) {
+      [settings removeObjectForKey:path];
+    } else {
+      settings[path] = scoped;
+    }
+    PersistPrivacySettings(settings);
+    DispatchPrivacyChange(path, scope, extensionID);
+    return @{@"result" : [NSNull null]};
+  }
+
+  return @{@"error" : [NSString stringWithFormat:@"Unsupported privacy method: %@", method]};
 }
 
 CefRefPtr<CefValue> CefProxyPreferenceValue(NSDictionary* value) {
@@ -5268,8 +7321,80 @@ NSString* ContextMenuMediaType(CefRefPtr<CefContextMenuParams> params) {
   }
 }
 
+BOOL ContextMenuItemIsCheckable(NSDictionary* item) {
+  NSString* type = [item[@"type"] isKindOfClass:NSString.class]
+      ? ((NSString*)item[@"type"]).lowercaseString
+      : @"";
+  return [type isEqualToString:@"checkbox"] || [type isEqualToString:@"radio"];
+}
+
+BOOL ContextMenuParentIDMatches(id lhs, id rhs) {
+  NSString* left = ContextMenuItemID(lhs);
+  NSString* right = ContextMenuItemID(rhs);
+  if (left.length == 0 && right.length == 0) return YES;
+  return [left isEqualToString:right];
+}
+
+NSDictionary* UpdateContextMenuItemAfterClick(NSString* extensionID,
+                                              NSDictionary* clickedItem,
+                                              BOOL* wasCheckedOut) {
+  if (wasCheckedOut) *wasCheckedOut = NO;
+  NSString* clickedID = ContextMenuItemID(clickedItem[@"id"]);
+  if (extensionID.length == 0 || clickedID.length == 0 ||
+      !ContextMenuItemIsCheckable(clickedItem)) {
+    return clickedItem ?: @{};
+  }
+
+  NSMutableArray<NSDictionary*>* items =
+      [ContextMenuItems(extensionID) mutableCopy] ?: [NSMutableArray array];
+  NSMutableDictionary* updated = nil;
+  NSString* clickedType = [clickedItem[@"type"] isKindOfClass:NSString.class]
+      ? ((NSString*)clickedItem[@"type"]).lowercaseString
+      : @"";
+  id clickedParentID = clickedItem[@"parentId"];
+
+  for (NSUInteger i = 0; i < items.count; i++) {
+    NSDictionary* item = items[i];
+    if (![ContextMenuItemID(item[@"id"]) isEqualToString:clickedID]) continue;
+    NSMutableDictionary* next = [item mutableCopy];
+    BOOL wasChecked = [next[@"checked"] respondsToSelector:@selector(boolValue)] &&
+        [next[@"checked"] boolValue];
+    if (wasCheckedOut) *wasCheckedOut = wasChecked;
+    if ([clickedType isEqualToString:@"checkbox"]) {
+      next[@"checked"] = @(!wasChecked);
+    } else {
+      next[@"checked"] = @YES;
+    }
+    updated = next;
+    items[i] = next;
+    break;
+  }
+
+  if (!updated) return clickedItem ?: @{};
+
+  if ([clickedType isEqualToString:@"radio"]) {
+    for (NSUInteger i = 0; i < items.count; i++) {
+      NSDictionary* item = items[i];
+      if ([ContextMenuItemID(item[@"id"]) isEqualToString:clickedID]) continue;
+      NSString* type = [item[@"type"] isKindOfClass:NSString.class]
+          ? ((NSString*)item[@"type"]).lowercaseString
+          : @"";
+      if (![type isEqualToString:@"radio"]) continue;
+      if (!ContextMenuParentIDMatches(item[@"parentId"], clickedParentID)) continue;
+      NSMutableDictionary* next = [item mutableCopy];
+      next[@"checked"] = @NO;
+      items[i] = next;
+    }
+  }
+
+  PersistContextMenuItems(extensionID, items);
+  return updated;
+}
+
 NSDictionary* ContextMenuClickInfo(CefRefPtr<CefContextMenuParams> params,
-                                   NSDictionary* item) {
+                                   CefRefPtr<CefFrame> frame,
+                                   NSDictionary* item,
+                                   NSNumber* wasChecked) {
   NSMutableDictionary* info = [NSMutableDictionary dictionary];
   info[@"menuItemId"] = item[@"id"] ?: @"";
   if (item[@"parentId"]) info[@"parentMenuItemId"] = item[@"parentId"];
@@ -5288,10 +7413,40 @@ NSDictionary* ContextMenuClickInfo(CefRefPtr<CefContextMenuParams> params,
     if (mediaType.length > 0) info[@"mediaType"] = mediaType;
     info[@"editable"] = @(params->IsEditable());
   }
-  if ([item[@"checked"] respondsToSelector:@selector(boolValue)]) {
-    info[@"checked"] = @([item[@"checked"] boolValue]);
+  if (frame && frame->IsValid()) {
+    info[@"frameId"] = @(ExtensionFrameID(frame));
+    info[@"parentFrameId"] = @(ExtensionParentFrameID(frame));
+  }
+  if (ContextMenuItemIsCheckable(item)) {
+    info[@"checked"] =
+        @([item[@"checked"] respondsToSelector:@selector(boolValue)] &&
+          [item[@"checked"] boolValue]);
+    if (wasChecked) info[@"wasChecked"] = wasChecked;
   }
   return info;
+}
+
+NSDictionary* ContextMenuTabInfo(CefRefPtr<CefBrowser> browser,
+                                 CefRefPtr<CefContextMenuParams> params,
+                                 int tabID) {
+  if (tabID < 0) return @{};
+  NSString* pageURL = params ? ContextMenuParamString(params->GetPageUrl()) : @"";
+  if (pageURL.length == 0 && browser && browser->GetMainFrame()) {
+    pageURL = @(browser->GetMainFrame()->GetURL().ToString().c_str());
+  }
+  return @{
+    @"id" : @(tabID),
+    @"index" : @-1,
+    @"windowId" : @1,
+    @"active" : @YES,
+    @"highlighted" : @YES,
+    @"selected" : @YES,
+    @"pinned" : @NO,
+    @"incognito" : @NO,
+    @"status" : @"complete",
+    @"url" : pageURL ?: @"",
+    @"title" : @""
+  };
 }
 
 BOOL ContextMenuArrayContains(NSArray* values, NSString* value) {
@@ -5357,11 +7512,119 @@ NSArray<NSDictionary*>* MatchingContextMenuItems(CefRefPtr<CefContextMenuParams>
   return out;
 }
 
+BOOL ExtensionScriptingWorldIsMain(NSDictionary* details) {
+  NSString* world = [details[@"world"] isKindOfClass:NSString.class]
+      ? details[@"world"]
+      : nil;
+  return world != nil && [world caseInsensitiveCompare:@"MAIN"] == NSOrderedSame;
+}
+
+NSInteger ExtensionScriptingTargetTabID(NSDictionary* details) {
+  NSDictionary* target = [details[@"target"] isKindOfClass:NSDictionary.class]
+      ? details[@"target"]
+      : @{};
+  id tabId = target[@"tabId"];
+  return [tabId respondsToSelector:@selector(integerValue)]
+      ? [tabId integerValue]
+      : -1;
+}
+
+NSArray<NSNumber*>* ExtensionScriptingTargetFrameIDs(NSDictionary* details) {
+  NSDictionary* target = [details[@"target"] isKindOfClass:NSDictionary.class]
+      ? details[@"target"]
+      : @{};
+  NSArray* rawFrameIds = [target[@"frameIds"] isKindOfClass:NSArray.class]
+      ? target[@"frameIds"]
+      : nil;
+  NSMutableArray<NSNumber*>* frameIds = [NSMutableArray array];
+  for (id raw in rawFrameIds) {
+    if ([raw respondsToSelector:@selector(integerValue)]) {
+      [frameIds addObject:@([raw integerValue])];
+    }
+  }
+  return frameIds;
+}
+
+NSArray<NSString*>* ExtensionScriptingTargetDocumentIDs(NSDictionary* details) {
+  NSDictionary* target = [details[@"target"] isKindOfClass:NSDictionary.class]
+      ? details[@"target"]
+      : @{};
+  NSArray* rawDocumentIds = [target[@"documentIds"] isKindOfClass:NSArray.class]
+      ? target[@"documentIds"]
+      : nil;
+  NSMutableArray<NSString*>* documentIds = [NSMutableArray array];
+  for (id raw in rawDocumentIds) {
+    if ([raw isKindOfClass:NSString.class] && [raw length] > 0) {
+      [documentIds addObject:raw];
+    }
+  }
+  return documentIds;
+}
+
+NSInteger ExtensionScriptingTargetFrameID(NSDictionary* details) {
+  NSArray<NSNumber*>* frameIds = ExtensionScriptingTargetFrameIDs(details);
+  id firstFrameId = frameIds.firstObject;
+  return [firstFrameId respondsToSelector:@selector(integerValue)]
+      ? [firstFrameId integerValue]
+      : 0;
+}
+
+NSString* ExtensionScriptingFrameIDFunctionSource() {
+  return @"function __moriScriptingFrameId(){"
+          "var value=Number(globalThis.__moriNativeFrameId);"
+          "if(isFinite(value)&&value>=0)return value;"
+          "try{value=Number(globalThis.__moriRuntimeContext&&globalThis.__moriRuntimeContext.frameId);}catch(e){}"
+          "return isFinite(value)&&value>=0?value:0;"
+          "}\n"
+          "function __moriScriptingDocumentId(){"
+          "var value='';"
+          "try{value=String(globalThis.__moriNativeDocumentId||'');}catch(e){}"
+          "if(value)return value;"
+          "try{value=String(globalThis.__moriRuntimeContext&&globalThis.__moriRuntimeContext.documentId||'');}catch(e){}"
+          "return value;"
+          "}\n";
+}
+
+NSString* ExtensionScriptingFrameGuardOpen(NSDictionary* details) {
+  NSArray<NSNumber*>* frameIds = ExtensionScriptingTargetFrameIDs(details);
+  NSArray<NSString*>* documentIds = ExtensionScriptingTargetDocumentIDs(details);
+  if (frameIds.count == 0 && documentIds.count == 0) return @"";
+  return [NSString stringWithFormat:
+      @"(function(){"
+       "var __moriTargetFrameIds=%@;"
+       "var __moriTargetDocumentIds=%@;"
+       "var __moriFrameId=__moriScriptingFrameId();"
+       "var __moriDocumentId=__moriScriptingDocumentId();"
+       "if(__moriTargetFrameIds.length&&__moriTargetFrameIds.indexOf(__moriFrameId)<0)return;"
+       "if(__moriTargetDocumentIds.length&&__moriTargetDocumentIds.indexOf(__moriDocumentId)<0)return;\n",
+      JSONStringLiteral(frameIds), JSONStringLiteral(documentIds)];
+}
+
+NSString* ExtensionScriptingFrameGuardClose(NSDictionary* details) {
+  return (ExtensionScriptingTargetFrameIDs(details).count > 0 ||
+          ExtensionScriptingTargetDocumentIDs(details).count > 0)
+             ? @"\n})();"
+             : @"";
+}
+
 NSString* ExtensionExecuteScriptSource(NSDictionary* ext,
                                        NSDictionary* details,
                                        NSString* requestId,
                                        NSString* extensionId) {
-  NSMutableString* source = [NSMutableString string];
+  NSMutableString* body = [NSMutableString string];
+  NSDictionary* target = [details[@"target"] isKindOfClass:[NSDictionary class]]
+      ? details[@"target"]
+      : @{};
+  NSArray<NSNumber*>* frameIds = ExtensionScriptingTargetFrameIDs(details);
+  NSArray<NSString*>* documentIds = ExtensionScriptingTargetDocumentIDs(details);
+  BOOL targetAllFrames =
+      frameIds.count == 0 &&
+      documentIds.count == 0 &&
+      [target[@"allFrames"] respondsToSelector:@selector(boolValue)] &&
+      [target[@"allFrames"] boolValue];
+  NSString* targetAllFramesLiteral = targetAllFrames ? @"true" : @"false";
+  NSString* targetFrameIdsLiteral = JSONStringLiteral(frameIds);
+  NSString* targetDocumentIdsLiteral = JSONStringLiteral(documentIds);
 
   NSArray* files = [details[@"files"] isKindOfClass:[NSArray class]]
       ? details[@"files"]
@@ -5370,16 +7633,16 @@ NSString* ExtensionExecuteScriptSource(NSDictionary* ext,
     if (![file isKindOfClass:[NSString class]]) continue;
     NSString* fileSource = ExtensionFileText(ext, file);
     if (fileSource.length == 0) continue;
-    [source appendString:fileSource];
-    [source appendString:@"\n"];
+    [body appendString:fileSource];
+    [body appendString:@"\n"];
   }
 
   NSString* inlineCode = [details[@"code"] isKindOfClass:[NSString class]]
       ? details[@"code"]
       : nil;
   if (inlineCode.length > 0) {
-    [source appendString:inlineCode];
-    [source appendString:@"\n"];
+    [body appendString:inlineCode];
+    [body appendString:@"\n"];
   }
 
   NSString* funcSource = [details[@"funcSource"] isKindOfClass:[NSString class]]
@@ -5389,7 +7652,7 @@ NSString* ExtensionExecuteScriptSource(NSDictionary* ext,
       ? details[@"args"]
       : @[];
   if (funcSource.length > 0) {
-    [source appendFormat:
+    [body appendFormat:
         @"\n(function(){"
          "function __moriResolve(__moriValue){"
          "var __moriResult=__moriValue===undefined?null:__moriValue;"
@@ -5397,7 +7660,8 @@ NSString* ExtensionExecuteScriptSource(NSDictionary* ext,
          "catch(__moriJSONError){__moriResult=String(__moriResult);}"
          "console.info('__MORI_SCRIPTING_RESULT__'+JSON.stringify({"
          "requestId:%@,extensionId:%@,"
-         "result:[{frameId:0,result:__moriResult}]"
+         "targetAllFrames:%@,targetFrameIds:%@,targetDocumentIds:%@,"
+         "result:[{frameId:__moriScriptingFrameId(),documentId:__moriScriptingDocumentId(),result:__moriResult}]"
          "}));"
          "}"
          "function __moriReject(__moriError){"
@@ -5414,17 +7678,43 @@ NSString* ExtensionExecuteScriptSource(NSDictionary* ext,
          "}catch(__moriError){__moriReject(__moriError);}"
          "})();\n",
         JSStringLiteral(requestId), JSStringLiteral(extensionId),
+        targetAllFramesLiteral, targetFrameIdsLiteral,
+        targetDocumentIdsLiteral,
         JSStringLiteral(requestId), JSStringLiteral(extensionId),
         funcSource, JSONStringLiteral(funcArgs)];
   } else if (requestId.length > 0 && extensionId.length > 0) {
-    [source appendFormat:
+    [body appendFormat:
         @"\nconsole.info('__MORI_SCRIPTING_RESULT__'+JSON.stringify({"
-         "requestId:%@,extensionId:%@,result:[{frameId:0,result:null}]"
+         "requestId:%@,extensionId:%@,targetAllFrames:%@,targetFrameIds:%@,targetDocumentIds:%@,"
+         "result:[{frameId:__moriScriptingFrameId(),documentId:__moriScriptingDocumentId(),result:null}]"
          "}));\n",
-        JSStringLiteral(requestId), JSStringLiteral(extensionId)];
+        JSStringLiteral(requestId), JSStringLiteral(extensionId),
+        targetAllFramesLiteral, targetFrameIdsLiteral,
+        targetDocumentIdsLiteral];
   }
 
-  return source.length > 0 ? source : nil;
+  if (body.length == 0) return nil;
+
+  NSMutableString* source = [NSMutableString string];
+  BOOL mainWorld = ExtensionScriptingWorldIsMain(details);
+  if (!mainWorld) {
+    NSDictionary* manifest = ManifestForExtension(ext);
+    [source appendString:ExtensionRuntimeShim(
+                             ext, manifest,
+                             ExtensionScriptingTargetTabID(details),
+                             ExtensionScriptingTargetFrameID(details), -1)];
+    [source appendString:@"\n(function(chrome,browser){\n"];
+  }
+  [source appendString:ExtensionScriptingFrameIDFunctionSource()];
+  [source appendString:ExtensionScriptingFrameGuardOpen(details)];
+  [source appendString:body];
+  [source appendString:ExtensionScriptingFrameGuardClose(details)];
+  if (!mainWorld) {
+    [source appendString:
+        @"\n})(globalThis.__moriChrome||globalThis.chrome,"
+         "globalThis.__moriBrowser||globalThis.browser);"];
+  }
+  return source;
 }
 
 NSString* ExtensionInsertCSSSource(NSDictionary* ext, NSDictionary* details) {
@@ -5453,12 +7743,15 @@ NSString* ExtensionInsertCSSSource(NSDictionary* ext, NSDictionary* details) {
   NSString* extensionID =
       [ext[@"id"] isKindOfClass:[NSString class]] ? ext[@"id"] : @"";
   return [NSString stringWithFormat:
-      @"(function(){var s=document.createElement('style');"
+      @"(function(){%@%@var s=document.createElement('style');"
        "s.dataset.moriScripting=%@;"
        "s.dataset.moriScriptingCss=%@;"
        "s.textContent=%@;"
-       "(document.head||document.documentElement).appendChild(s);})();",
-      JSStringLiteral(extensionID), JSStringLiteral(css), JSStringLiteral(css)];
+       "(document.head||document.documentElement).appendChild(s);%@})();",
+      ExtensionScriptingFrameIDFunctionSource(),
+      ExtensionScriptingFrameGuardOpen(details),
+      JSStringLiteral(extensionID), JSStringLiteral(css), JSStringLiteral(css),
+      ExtensionScriptingFrameGuardClose(details)];
 }
 
 NSString* ExtensionRemoveCSSSource(NSDictionary* ext, NSDictionary* details) {
@@ -5488,15 +7781,18 @@ NSString* ExtensionRemoveCSSSource(NSDictionary* ext, NSDictionary* details) {
   NSString* extensionID =
       [ext[@"id"] isKindOfClass:[NSString class]] ? ext[@"id"] : @"";
   return [NSString stringWithFormat:
-      @"(function(){"
+      @"(function(){%@%@"
        "var ext=%@,css=%@;"
        "document.querySelectorAll('style[data-mori-scripting]').forEach(function(s){"
        "if(s.dataset.moriScripting===ext&&s.dataset.moriScriptingCss===css){"
        "s.remove();"
        "}"
        "});"
-       "})();",
-      JSStringLiteral(extensionID), JSStringLiteral(css)];
+       "%@})();",
+      ExtensionScriptingFrameIDFunctionSource(),
+      ExtensionScriptingFrameGuardOpen(details),
+      JSStringLiteral(extensionID), JSStringLiteral(css),
+      ExtensionScriptingFrameGuardClose(details)];
 }
 
 NSDictionary* BuildScriptingBridgePayload(NSString* method,
@@ -5703,6 +7999,171 @@ void ResolveExtensionBridge(NSString* requestId,
     response[@"result"] = result ?: [NSNull null];
   }
   [MoriBrowserView dispatchExtensionBridgeResponse:response];
+}
+
+NSMutableDictionary<NSString*, NSMutableDictionary*>*
+ScriptingResultAggregations() {
+  static NSMutableDictionary<NSString*, NSMutableDictionary*>* aggregations = nil;
+  static dispatch_once_t onceToken;
+  dispatch_once(&onceToken, ^{
+    aggregations = [NSMutableDictionary dictionary];
+  });
+  return aggregations;
+}
+
+NSString* ScriptingResultAggregationKey(NSString* requestId,
+                                        NSString* extensionId) {
+  return [NSString stringWithFormat:@"%@:%@", extensionId ?: @"",
+                                    requestId ?: @""];
+}
+
+NSInteger ExpectedScriptingResultCount(NSDictionary* response,
+                                       CefRefPtr<CefBrowser> browser) {
+  NSArray* rawFrameIds = [response[@"targetFrameIds"] isKindOfClass:NSArray.class]
+      ? response[@"targetFrameIds"]
+      : @[];
+  NSMutableSet<NSNumber*>* requestedFrameIds = [NSMutableSet set];
+  for (id raw in rawFrameIds) {
+    if ([raw respondsToSelector:@selector(integerValue)]) {
+      [requestedFrameIds addObject:@([raw integerValue])];
+    }
+  }
+  NSArray* rawDocumentIds =
+      [response[@"targetDocumentIds"] isKindOfClass:NSArray.class]
+          ? response[@"targetDocumentIds"]
+          : @[];
+  NSMutableSet<NSString*>* requestedDocumentIds = [NSMutableSet set];
+  for (id raw in rawDocumentIds) {
+    if ([raw isKindOfClass:NSString.class] && [raw length] > 0) {
+      [requestedDocumentIds addObject:raw];
+    }
+  }
+
+  BOOL targetAllFrames =
+      [response[@"targetAllFrames"] respondsToSelector:@selector(boolValue)] &&
+      [response[@"targetAllFrames"] boolValue];
+  if (!browser || (!targetAllFrames && requestedFrameIds.count == 0 &&
+                   requestedDocumentIds.count == 0)) {
+    return 1;
+  }
+
+  NSInteger count = 0;
+  std::vector<CefString> ids;
+  browser->GetFrameIdentifiers(ids);
+  for (const auto& id : ids) {
+    CefRefPtr<CefFrame> frame = browser->GetFrameByIdentifier(id);
+    if (!frame || !frame->IsValid()) continue;
+    int frameID = ExtensionFrameID(frame);
+    NSString* documentID = ExtensionDocumentID(frame);
+    BOOL frameMatches =
+        requestedFrameIds.count == 0 || [requestedFrameIds containsObject:@(frameID)];
+    BOOL documentMatches =
+        requestedDocumentIds.count == 0 || [requestedDocumentIds containsObject:documentID];
+    if (targetAllFrames || (frameMatches && documentMatches)) {
+      count += 1;
+    }
+  }
+
+  if (count > 0) return count;
+  if (requestedFrameIds.count > 0) return (NSInteger)requestedFrameIds.count;
+  return requestedDocumentIds.count > 0 ? (NSInteger)requestedDocumentIds.count : 1;
+}
+
+NSArray* SortedScriptingResults(NSDictionary<NSString*, NSDictionary*>* byFrame) {
+  NSArray<NSString*>* keys = [byFrame.allKeys sortedArrayUsingComparator:^NSComparisonResult(
+      NSString* a, NSString* b) {
+    NSInteger left = a.integerValue;
+    NSInteger right = b.integerValue;
+    if (left == right) return NSOrderedSame;
+    if (left == 0) return NSOrderedAscending;
+    if (right == 0) return NSOrderedDescending;
+    return left < right ? NSOrderedAscending : NSOrderedDescending;
+  }];
+  NSMutableArray* results = [NSMutableArray array];
+  for (NSString* key in keys) {
+    NSDictionary* item = byFrame[key];
+    if (item) [results addObject:item];
+  }
+  return results;
+}
+
+void ResolveScriptingResultAggregation(NSString* key) {
+  NSMutableDictionary* state = ScriptingResultAggregations()[key];
+  if (![state isKindOfClass:NSDictionary.class]) return;
+  [ScriptingResultAggregations() removeObjectForKey:key];
+
+  NSString* requestId = [state[@"requestId"] isKindOfClass:NSString.class]
+      ? state[@"requestId"]
+      : @"";
+  NSString* extensionId = [state[@"extensionId"] isKindOfClass:NSString.class]
+      ? state[@"extensionId"]
+      : @"";
+  NSDictionary* byFrame = [state[@"byFrame"] isKindOfClass:NSDictionary.class]
+      ? state[@"byFrame"]
+      : @{};
+  ResolveExtensionBridge(requestId, extensionId, SortedScriptingResults(byFrame),
+                         nil);
+}
+
+void HandleScriptingResultBridgeResponse(NSDictionary* response,
+                                         CefRefPtr<CefBrowser> browser) {
+  NSString* requestId = [response[@"requestId"] isKindOfClass:NSString.class]
+      ? response[@"requestId"]
+      : @"";
+  NSString* extensionId = [response[@"extensionId"] isKindOfClass:NSString.class]
+      ? response[@"extensionId"]
+      : @"";
+  if (requestId.length == 0 || extensionId.length == 0) return;
+
+  NSString* error = [response[@"error"] isKindOfClass:NSString.class]
+      ? response[@"error"]
+      : nil;
+  if (error.length > 0) {
+    ResolveExtensionBridge(requestId, extensionId, [NSNull null], error);
+    return;
+  }
+
+  NSString* key = ScriptingResultAggregationKey(requestId, extensionId);
+  NSMutableDictionary* state = ScriptingResultAggregations()[key];
+  if (![state isKindOfClass:NSMutableDictionary.class]) {
+    state = [@{
+      @"requestId" : requestId,
+      @"extensionId" : extensionId,
+      @"expected" : @(ExpectedScriptingResultCount(response, browser)),
+      @"byFrame" : [NSMutableDictionary dictionary]
+    } mutableCopy];
+    ScriptingResultAggregations()[key] = state;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                 (int64_t)(2.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+      ResolveScriptingResultAggregation(key);
+    });
+  }
+
+  NSMutableDictionary* byFrame =
+      [state[@"byFrame"] isKindOfClass:NSMutableDictionary.class]
+          ? state[@"byFrame"]
+          : [NSMutableDictionary dictionary];
+  state[@"byFrame"] = byFrame;
+
+  NSArray* items = [response[@"result"] isKindOfClass:NSArray.class]
+      ? response[@"result"]
+      : @[];
+  for (id rawItem in items) {
+    if (![rawItem isKindOfClass:NSDictionary.class]) continue;
+    NSDictionary* item = (NSDictionary*)rawItem;
+    NSInteger frameID = [item[@"frameId"] respondsToSelector:@selector(integerValue)]
+        ? [item[@"frameId"] integerValue]
+        : 0;
+    byFrame[[NSString stringWithFormat:@"%ld", (long)frameID]] = item;
+  }
+
+  NSInteger expected = [state[@"expected"] respondsToSelector:@selector(integerValue)]
+      ? [state[@"expected"] integerValue]
+      : 1;
+  if ((NSInteger)byFrame.count >= MAX((NSInteger)1, expected)) {
+    ResolveScriptingResultAggregation(key);
+  }
 }
 
 void DispatchCookieChanged(NSDictionary* cookie, BOOL removed, NSString* cause) {
@@ -6109,6 +8570,72 @@ NSDictionary* HandleRuntimeFetch(NSString* extensionId,
   return @{@"deferred" : @YES, @"result" : [NSNull null]};
 }
 
+BOOL ExtensionSmokeInternalsEnabled() {
+  NSString* resultPath =
+      [NSProcessInfo.processInfo.environment[@"MORI_EXTENSION_SMOKE_RESULT_PATH"]
+          description];
+  return resultPath.length > 0;
+}
+
+NSDictionary* HandleContextMenuSmokeClick(NSString* extensionID,
+                                          NSDictionary* args,
+                                          int sourceTabID) {
+  if (!ExtensionSmokeInternalsEnabled()) {
+    return @{@"error" : @"Internal smoke method is disabled."};
+  }
+  NSString* itemID = ContextMenuItemID(args[@"id"]);
+  if (itemID.length == 0) return @{@"error" : @"Missing context menu id."};
+
+  NSDictionary* item = nil;
+  for (NSDictionary* candidate in ContextMenuItems(extensionID)) {
+    if ([ContextMenuItemID(candidate[@"id"]) isEqualToString:itemID]) {
+      item = candidate;
+      break;
+    }
+  }
+  if (!item) return @{@"error" : @"No context menu item with that id."};
+
+  BOOL wasChecked = NO;
+  NSDictionary* clickedItem =
+      UpdateContextMenuItemAfterClick(extensionID, item, &wasChecked);
+  NSMutableDictionary* info =
+      [ContextMenuClickInfo(nullptr, nullptr, clickedItem,
+                            ContextMenuItemIsCheckable(clickedItem) ? @(wasChecked) : nil)
+          mutableCopy];
+  for (NSString* key in @[
+         @"pageUrl", @"frameUrl", @"linkUrl", @"srcUrl", @"selectionText",
+         @"mediaType"
+       ]) {
+    id value = args[key];
+    if ([value isKindOfClass:NSString.class] && [value length] > 0) {
+      info[key] = value;
+    }
+  }
+  if ([args[@"editable"] respondsToSelector:@selector(boolValue)]) {
+    info[@"editable"] = @([args[@"editable"] boolValue]);
+  }
+  if ([args[@"frameId"] respondsToSelector:@selector(integerValue)]) {
+    info[@"frameId"] = @([args[@"frameId"] integerValue]);
+  }
+  if ([args[@"parentFrameId"] respondsToSelector:@selector(integerValue)]) {
+    info[@"parentFrameId"] = @([args[@"parentFrameId"] integerValue]);
+  }
+
+  NSInteger tabID = [args[@"tabId"] respondsToSelector:@selector(integerValue)]
+      ? [args[@"tabId"] integerValue]
+      : sourceTabID;
+  NSString* pageURL = [info[@"pageUrl"] isKindOfClass:NSString.class]
+      ? info[@"pageUrl"]
+      : @"";
+  NSDictionary* tab = [args[@"tab"] isKindOfClass:NSDictionary.class]
+      ? args[@"tab"]
+      : (ExtensionSenderTab((int)tabID, pageURL) ?: @{});
+  [MoriBrowserView dispatchExtensionEvent:@"contextMenus.onClicked"
+                                     args:@[ info, tab ]
+                           forExtensionID:extensionID];
+  return @{@"result" : [NSNull null]};
+}
+
 NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON,
                                            int sourceTabID) {
   NSData* data = [requestJSON dataUsingEncoding:NSUTF8StringEncoding];
@@ -6261,9 +8788,18 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON,
       // background worker reading storage, say) should win the race, and
       // dispatchExtensionBridgeResponse is a no-op once a real reply has already
       // settled the request. The noResponse flag makes the sender see undefined.
+      //
+      // Keep this short. It sits on hot init paths: Proton Pass's orchestrator
+      // does `await runtime.sendMessage(UNLOAD_CONTENT_SCRIPT)` before loading
+      // its autofill client, and the background relays that as a
+      // tabs.sendMessage to a (often nonexistent) prior content script — when
+      // nobody answers, the autofill icon can't appear until this fires. A long
+      // grace (it was briefly 30s) stalled the in-field icon for ~30s on every
+      // page. A real async reply that genuinely needs longer still wins because
+      // its messageResponse settles + clears the request the instant it lands.
       NSString* targetExtensionId = extensionId;
       dispatch_after(
-          dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)),
+          dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
           dispatch_get_main_queue(), ^{
             [MoriBrowserView dispatchExtensionBridgeResponse:@{
               @"requestId" : targetRequestId,
@@ -6335,11 +8871,19 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON,
     NSString* sourceURL = [args[@"sourceUrl"] isKindOfClass:NSString.class]
         ? args[@"sourceUrl"]
         : nil;
-    NSString* sourceOrigin =
-        [args[@"sourceOrigin"] isKindOfClass:NSString.class]
-            ? args[@"sourceOrigin"]
-            : nil;
-    id message = args[@"message"] ?: [NSNull null];
+	    NSString* sourceOrigin =
+	        [args[@"sourceOrigin"] isKindOfClass:NSString.class]
+	            ? args[@"sourceOrigin"]
+	            : nil;
+	    NSInteger sourceFrameID =
+	        [args[@"frameId"] respondsToSelector:@selector(integerValue)]
+	            ? [args[@"frameId"] integerValue]
+	            : -1;
+	    NSString* sourceDocumentID =
+	        [args[@"documentId"] isKindOfClass:NSString.class]
+	            ? args[@"documentId"]
+	            : nil;
+	    id message = args[@"message"] ?: [NSNull null];
     BOOL selfTarget =
         [targetExtensionId caseInsensitiveCompare:extensionId] == NSOrderedSame;
     BOOL allowsExternal =
@@ -6348,13 +8892,15 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON,
         selfTarget && allowsExternal &&
         ExtensionMessageIsExternallyConnectableAccountType(message);
     BOOL external = (!selfTarget && allowsExternal) || selfExternalAccountMessage;
-    [MoriBrowserView dispatchExtensionMessage:message
-                                 forExtensionID:targetExtensionId
-                                      requestID:requestId
-                                      sourceURL:sourceURL
-                                   sourceOrigin:sourceOrigin
-                                    sourceTabID:sourceTabID
-                                       external:external];
+	    [MoriBrowserView dispatchExtensionMessage:message
+	                                 forExtensionID:targetExtensionId
+	                                      requestID:requestId
+	                                      sourceURL:sourceURL
+	                                   sourceOrigin:sourceOrigin
+	                                    sourceTabID:sourceTabID
+	                                  sourceFrameID:sourceFrameID
+	                               sourceDocumentID:sourceDocumentID
+	                                       external:external];
     response[@"deferred"] = @YES;
     response[@"result"] = [NSNull null];
   } else if ([method isEqualToString:@"runtime.connect"]) {
@@ -6392,6 +8938,10 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON,
     if ([args[@"frameId"] respondsToSelector:@selector(integerValue)]) {
       sender[@"frameId"] = @([args[@"frameId"] integerValue]);
     }
+    if ([args[@"documentId"] isKindOfClass:NSString.class] &&
+        [args[@"documentId"] length] > 0) {
+      sender[@"documentId"] = args[@"documentId"];
+    }
     BroadcastExtensionPortConnect(targetExtensionId, portID, name, sender,
                                   sourceURL, external);
     response[@"result"] = @{};
@@ -6418,6 +8968,7 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON,
   } else if ([method isEqualToString:@"runtime.openOptionsPage"] ||
              [method isEqualToString:@"runtime.getContexts"] ||
              [method isEqualToString:@"runtime.setUninstallURL"] ||
+             [method isEqualToString:@"runtime.reload"] ||
              [method isEqualToString:@"identity.launchWebAuthFlow"] ||
              [method hasPrefix:@"sidePanel."]) {
     NSMutableDictionary* runtimeArgs = [args mutableCopy];
@@ -6435,6 +8986,9 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON,
       response[@"deferred"] = @YES;
       response[@"result"] = runtimeResponse[@"result"] ?: [NSNull null];
     } else {
+      if ([method isEqualToString:@"runtime.reload"]) {
+        ReleaseExtensionPowerAssertion(extensionId);
+      }
       response[@"result"] = runtimeResponse[@"result"] ?: [NSNull null];
     }
   } else if ([method hasPrefix:@"bookmarks."]) {
@@ -6482,8 +9036,23 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON,
     } else {
       response[@"result"] = sessionsResponse[@"result"] ?: [NSNull null];
     }
+  } else if ([method isEqualToString:@"webNavigation.getFrame"] ||
+             [method isEqualToString:@"webNavigation.getAllFrames"]) {
+    NSDictionary* navigationResponse =
+        [MoriRoot handleExtensionWebNavigation:method args:args];
+    NSString* error = [navigationResponse[@"error"] isKindOfClass:[NSString class]]
+        ? navigationResponse[@"error"]
+        : nil;
+    if (error.length > 0) {
+      response[@"error"] = error;
+    } else {
+      response[@"result"] = navigationResponse[@"result"] ?: [NSNull null];
+    }
   } else if ([method hasPrefix:@"contextMenus."]) {
-    NSDictionary* menuResponse = HandleContextMenus(method, args, extensionId);
+    NSDictionary* menuResponse =
+        [method isEqualToString:@"contextMenus.__moriSmokeClick"]
+            ? HandleContextMenuSmokeClick(extensionId, args, sourceTabID)
+            : HandleContextMenus(method, args, extensionId);
     NSString* error = [menuResponse[@"error"] isKindOfClass:[NSString class]]
         ? menuResponse[@"error"]
         : nil;
@@ -6503,6 +9072,24 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON,
     if (error.length > 0) {
       response[@"error"] = error;
     } else {
+      if ([method isEqualToString:@"management.setEnabled"] &&
+          [args[@"enabled"] respondsToSelector:@selector(boolValue)] &&
+          ![args[@"enabled"] boolValue]) {
+	        NSString* targetExtensionID = [args[@"id"] isKindOfClass:NSString.class]
+	            ? args[@"id"]
+	            : @"";
+	        ReleaseExtensionPowerAssertion(targetExtensionID);
+	        ClearPrivacySettingsForExtension(targetExtensionID);
+	      } else if ([method isEqualToString:@"management.uninstall"]) {
+	        NSString* targetExtensionID = [args[@"id"] isKindOfClass:NSString.class]
+	            ? args[@"id"]
+	            : @"";
+	        ReleaseExtensionPowerAssertion(targetExtensionID);
+	        ClearPrivacySettingsForExtension(targetExtensionID);
+	      } else if ([method isEqualToString:@"management.uninstallSelf"]) {
+	        ReleaseExtensionPowerAssertion(extensionId);
+	        ClearPrivacySettingsForExtension(extensionId);
+	      }
       response[@"result"] = managementResponse[@"result"] ?: [NSNull null];
     }
   } else if ([method hasPrefix:@"notifications."]) {
@@ -6526,18 +9113,70 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON,
     } else {
       response[@"result"] = clipboardResponse[@"result"] ?: [NSNull null];
     }
-  } else if ([method hasPrefix:@"permissions."]) {
-    NSDictionary* permissionsResponse = HandlePermissions(method, args, extensionId);
-    NSString* error = [permissionsResponse[@"error"] isKindOfClass:[NSString class]]
-        ? permissionsResponse[@"error"]
+  } else if ([method hasPrefix:@"idle."]) {
+    NSDictionary* idleResponse = HandleIdle(method, args);
+    NSString* error = [idleResponse[@"error"] isKindOfClass:[NSString class]]
+        ? idleResponse[@"error"]
         : nil;
     if (error.length > 0) {
       response[@"error"] = error;
     } else {
-      response[@"result"] = permissionsResponse[@"result"] ?: [NSNull null];
+      response[@"result"] = idleResponse[@"result"] ?: [NSNull null];
     }
-  } else if ([method hasPrefix:@"proxy.settings."]) {
-    NSDictionary* proxyResponse = HandleProxySettings(method, args, extensionId);
+  } else if ([method hasPrefix:@"power."]) {
+    NSDictionary* powerResponse = HandlePower(method, args, extensionId);
+    NSString* error = [powerResponse[@"error"] isKindOfClass:[NSString class]]
+        ? powerResponse[@"error"]
+        : nil;
+    if (error.length > 0) {
+      response[@"error"] = error;
+    } else {
+      response[@"result"] = powerResponse[@"result"] ?: [NSNull null];
+    }
+  } else if ([method hasPrefix:@"system."]) {
+    NSDictionary* systemResponse = HandleSystem(method, args);
+    NSString* error = [systemResponse[@"error"] isKindOfClass:[NSString class]]
+        ? systemResponse[@"error"]
+        : nil;
+    if (error.length > 0) {
+      response[@"error"] = error;
+    } else {
+      response[@"result"] = systemResponse[@"result"] ?: [NSNull null];
+    }
+  } else if ([method hasPrefix:@"contentSettings."]) {
+    NSDictionary* contentSettingsResponse =
+        HandleContentSettings(method, args, extensionId);
+    NSString* error =
+        [contentSettingsResponse[@"error"] isKindOfClass:[NSString class]]
+            ? contentSettingsResponse[@"error"]
+            : nil;
+    if (error.length > 0) {
+      response[@"error"] = error;
+    } else {
+      response[@"result"] = contentSettingsResponse[@"result"] ?: [NSNull null];
+    }
+	  } else if ([method hasPrefix:@"permissions."]) {
+	    NSDictionary* permissionsResponse = HandlePermissions(method, args, extensionId);
+	    NSString* error = [permissionsResponse[@"error"] isKindOfClass:[NSString class]]
+	        ? permissionsResponse[@"error"]
+	        : nil;
+    if (error.length > 0) {
+      response[@"error"] = error;
+	    } else {
+	      response[@"result"] = permissionsResponse[@"result"] ?: [NSNull null];
+	    }
+	  } else if ([method hasPrefix:@"privacy."]) {
+	    NSDictionary* privacyResponse = HandlePrivacy(method, args, extensionId);
+	    NSString* error = [privacyResponse[@"error"] isKindOfClass:[NSString class]]
+	        ? privacyResponse[@"error"]
+	        : nil;
+	    if (error.length > 0) {
+	      response[@"error"] = error;
+	    } else {
+	      response[@"result"] = privacyResponse[@"result"] ?: [NSNull null];
+	    }
+	  } else if ([method hasPrefix:@"proxy.settings."]) {
+	    NSDictionary* proxyResponse = HandleProxySettings(method, args, extensionId);
     NSString* error = [proxyResponse[@"error"] isKindOfClass:[NSString class]]
         ? proxyResponse[@"error"]
         : nil;
@@ -6592,13 +9231,38 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON,
     if ([args[@"frameId"] respondsToSelector:@selector(integerValue)]) {
       sender[@"frameId"] = @([args[@"frameId"] integerValue]);
     }
+    if ([args[@"documentId"] isKindOfClass:NSString.class] &&
+        [args[@"documentId"] length] > 0) {
+      sender[@"documentId"] = args[@"documentId"];
+    }
     if ([args[@"tabId"] respondsToSelector:@selector(integerValue)]) {
       sender[@"tab"] = @{@"id" : @([args[@"tabId"] integerValue])};
     }
     BroadcastExtensionPortConnect(extensionId, portID, name, sender, sourceURL, NO);
     response[@"result"] = @{};
-  } else if ([method hasPrefix:@"tabs."]) {
-    NSMutableDictionary* tabArgs = [args mutableCopy];
+	  } else if ([method isEqualToString:@"search.query"]) {
+	    NSDictionary* searchResponse =
+	        [MoriRoot handleExtensionSearch:method args:args];
+	    NSString* error = [searchResponse[@"error"] isKindOfClass:[NSString class]]
+	        ? searchResponse[@"error"]
+        : nil;
+    if (error.length > 0) {
+      response[@"error"] = error;
+	    } else {
+	      response[@"result"] = searchResponse[@"result"] ?: [NSNull null];
+	    }
+	  } else if ([method hasPrefix:@"dns."]) {
+	    NSDictionary* dnsResponse = HandleDNS(method, args);
+	    NSString* error = [dnsResponse[@"error"] isKindOfClass:[NSString class]]
+	        ? dnsResponse[@"error"]
+	        : nil;
+	    if (error.length > 0) {
+	      response[@"error"] = error;
+	    } else {
+	      response[@"result"] = dnsResponse[@"result"] ?: [NSNull null];
+	    }
+	  } else if ([method hasPrefix:@"tabs."]) {
+	    NSMutableDictionary* tabArgs = [args mutableCopy];
     tabArgs[@"extensionId"] = extensionId;
     if ([method isEqualToString:@"tabs.sendMessage"]) {
       tabArgs[@"messageRequestId"] = requestId;
@@ -6618,6 +9282,17 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON,
         response[@"deferred"] = @YES;
       }
       response[@"result"] = tabResponse[@"result"] ?: [NSNull null];
+    }
+  } else if ([method hasPrefix:@"tabGroups."]) {
+    NSDictionary* groupResponse =
+        [MoriRoot handleExtensionTabGroups:method args:args];
+    NSString* error = [groupResponse[@"error"] isKindOfClass:[NSString class]]
+        ? groupResponse[@"error"]
+        : nil;
+    if (error.length > 0) {
+      response[@"error"] = error;
+    } else {
+      response[@"result"] = groupResponse[@"result"] ?: [NSNull null];
     }
   } else if ([method hasPrefix:@"windows."]) {
     NSDictionary* windowResponse =
@@ -6675,6 +9350,18 @@ NSDictionary* HandleExtensionBridgeRequest(NSString* requestJSON,
         response[@"deferred"] = @YES;
       }
       response[@"result"] = downloadResponse[@"result"] ?: [NSNull null];
+    }
+  } else if ([method hasPrefix:@"userScripts."]) {
+    NSDictionary* userScriptsResponse =
+        HandleUserScripts(method, args, extensionId);
+    NSString* error =
+        [userScriptsResponse[@"error"] isKindOfClass:[NSString class]]
+            ? userScriptsResponse[@"error"]
+            : nil;
+    if (error.length > 0) {
+      response[@"error"] = error;
+    } else {
+      response[@"result"] = userScriptsResponse[@"result"] ?: [NSNull null];
     }
   } else if ([method hasPrefix:@"scripting."]) {
     NSDictionary* ext = EnabledExtensionRecordForID(extensionId);
@@ -6820,8 +9507,20 @@ bool BrowserClient::OnContextMenuCommand(CefRefPtr<CefBrowser> browser,
         : @"";
     if (extensionID.length == 0) return false;
 
+    BOOL wasChecked = NO;
+    NSDictionary* clickedItem =
+        UpdateContextMenuItemAfterClick(extensionID, item, &wasChecked);
+    NSNumber* previousChecked =
+        ContextMenuItemIsCheckable(clickedItem) ? @(wasChecked) : nil;
+    NSDictionary* tab =
+        ContextMenuTabInfo(browser, params, extension_tab_id_.load());
     [MoriBrowserView dispatchExtensionEvent:@"contextMenus.onClicked"
-                                         args:@[ ContextMenuClickInfo(params, item) ]
+                                         args:@[
+                                           ContextMenuClickInfo(params, frame,
+                                                                clickedItem,
+                                                                previousChecked),
+                                           tab
+                                         ]
                                forExtensionID:extensionID];
     return true;
   }
@@ -6926,6 +9625,9 @@ bool BrowserClient::OnResourceResponse(CefRefPtr<CefBrowser> browser,
   CEF_REQUIRE_IO_THREAD();
   @autoreleasepool {
     ApplyExtensionCORSHeaders(frame, request, response);
+    CefResponse::HeaderMap dnrResponseHeaders;
+    BOOL hasDNRResponseHeaders =
+        DNRModifiedResponseHeaderMap(request, response, dnrResponseHeaders);
     int tabID = extension_tab_id_.load();
     NSMutableDictionary* details =
         [WebRequestDetails(frame, request, tabID) mutableCopy];
@@ -6938,7 +9640,9 @@ bool BrowserClient::OnResourceResponse(CefRefPtr<CefBrowser> browser,
                                      (long)response->GetStatus(),
                                      statusText ?: @""];
     }
-    details[@"responseHeaders"] = ResponseHeaders(response);
+    details[@"responseHeaders"] = hasDNRResponseHeaders
+        ? HeaderArrayFromMap(dnrResponseHeaders)
+        : ResponseHeaders(response);
     DispatchWebRequestEvent(@"webRequest.onHeadersReceived", details);
   }
   return false;
@@ -6984,7 +9688,12 @@ void BrowserClient::OnLoadStart(CefRefPtr<CefBrowser> browser,
   frame->ExecuteJavaScript(kMoriPasskeyAgent, frame->GetURL(), 0);
   frame->ExecuteJavaScript(kMoriWebNavigationAgent, frame->GetURL(), 0);
   InjectExtensionPageRuntime(frame);
-  InjectExtensionContentScripts(frame, @"document_start");
+  InjectExtensionContentScripts(frame, @"document_start", extension_tab_id_.load());
+  // Re-assert WebAuthn capability probes *after* extension content scripts: a
+  // password manager (e.g. Proton Pass) wraps them at document_start and reports
+  // partial passkey support. This runs after that wrapper but before the page's
+  // own scripts, so relying parties see Mori's honest "full support" values.
+  frame->ExecuteJavaScript(kMoriPasskeyCapabilities, frame->GetURL(), 0);
 }
 
 void BrowserClient::OnLoadEnd(CefRefPtr<CefBrowser> browser,
@@ -7002,13 +9711,17 @@ void BrowserClient::OnLoadEnd(CefRefPtr<CefBrowser> browser,
       std::string("window.__moriAutoPiP=") +
       (MoriAutoPiPEnabled() ? "true" : "false") + ";" + kMoriMediaAgent;
   frame->ExecuteJavaScript(js, frame->GetURL(), 0);
-  InjectExtensionContentScripts(frame, @"document_end");
+  InjectExtensionContentScripts(frame, @"document_end", extension_tab_id_.load());
+  // Re-assert passkey capability probes once more after document_end content
+  // scripts, in case a page or extension re-wrapped them post-load.
+  frame->ExecuteJavaScript(kMoriPasskeyCapabilities, frame->GetURL(), 0);
   CefRefPtr<CefFrame> idleFrame = frame;
+  int idleTabID = extension_tab_id_.load();
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
                                (int64_t)(0.2 * NSEC_PER_SEC)),
                  dispatch_get_main_queue(), ^{
     if (idleFrame && idleFrame->IsValid()) {
-      InjectExtensionContentScripts(idleFrame, @"document_idle");
+      InjectExtensionContentScripts(idleFrame, @"document_idle", idleTabID);
     }
   });
 }
@@ -7114,8 +9827,11 @@ bool BrowserClient::OnConsoleMessage(CefRefPtr<CefBrowser> browser,
       NSString* error = [response[@"error"] isKindOfClass:[NSString class]]
           ? response[@"error"]
           : nil;
-      id result = response[@"result"] ?: [NSNull null];
-      ResolveExtensionBridge(requestId, extensionId, result, error);
+      if (error.length > 0) {
+        ResolveExtensionBridge(requestId, extensionId, [NSNull null], error);
+      } else {
+        HandleScriptingResultBridgeResponse(response, browser);
+      }
     }
     return true;
   }

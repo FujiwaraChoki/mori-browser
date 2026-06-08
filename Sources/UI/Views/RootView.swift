@@ -29,6 +29,13 @@ struct RootView: View {
                     .transition(.move(edge: settings.sidebarPosition.edge))
             }
 
+            // AI panel opens on the side opposite the tab sidebar: when the
+            // sidebar sits on the right, the AI panel slides in from the left.
+            if store.aiPanelVisible, settings.sidebarPosition == .right {
+                AIPanel(store: store)
+                    .transition(.move(edge: .leading).combined(with: .opacity))
+            }
+
             // Web content column — the toolbar chrome plus a floating, rounded
             // "card" that encapsulates the live browser, Arc-style.
             VStack(spacing: 0) {
@@ -46,8 +53,8 @@ struct RootView: View {
                 TopChromeOverlay(store: store, sidebarPosition: settings.sidebarPosition)
             }
 
-            // AI panel.
-            if store.aiPanelVisible {
+            // AI panel on the right, when the sidebar sits on the left.
+            if store.aiPanelVisible, settings.sidebarPosition == .left {
                 AIPanel(store: store)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
@@ -116,7 +123,6 @@ struct RootView: View {
         .animation(Motion.reveal, value: store.aiPanelVisible)
         .animation(Motion.snappy, value: store.sidebarVisible)
         .animation(Motion.snappy, value: settings.sidebarPosition)
-        .animation(Motion.reveal, value: store.settingsVisible)
     }
 
     /// The browser, wrapped in a floating rounded card with a hairline border
@@ -143,7 +149,15 @@ struct RootView: View {
             if store.settingsVisible {
                 SettingsView(store: store)
                     .clipShape(RoundedRectangle(cornerRadius: Radius.window, style: .continuous))
-                    .transition(.opacity)
+            }
+
+            // While the sidebar is being resized the CEF view is frozen (see
+            // WebContainerView); cover it with the plain card surface so the
+            // user sees a clean, smoothly-resizing card instead of the static,
+            // clipped page underneath.
+            if store.isResizingSidebar {
+                RoundedRectangle(cornerRadius: Radius.window, style: .continuous)
+                    .fill(palette.card.color)
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -240,6 +254,24 @@ private struct ExtensionBackgroundRunnerHost: NSViewRepresentable {
         }
 
         private var views: [String: RunnerView] = [:]
+        private var reloadObserver: NSObjectProtocol?
+
+        init() {
+            reloadObserver = NotificationCenter.default.addObserver(
+                forName: .moriReloadExtensionRuntime,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                guard let extensionID = note.userInfo?["extensionId"] as? String else { return }
+                self?.reload(extensionID: extensionID)
+            }
+        }
+
+        deinit {
+            if let reloadObserver {
+                NotificationCenter.default.removeObserver(reloadObserver)
+            }
+        }
 
         func sync(runners: [ExtensionStore.BackgroundRunner], in container: NSView) {
             let wanted = Set(runners.map(\.id))
@@ -264,6 +296,13 @@ private struct ExtensionBackgroundRunnerHost: NSViewRepresentable {
                 container.addSubview(view)
                 views[runner.id] = RunnerView(url: runner.url, view: view)
             }
+        }
+
+        private func reload(extensionID: String) {
+            guard let runner = views.first(where: {
+                $0.key.caseInsensitiveCompare(extensionID) == .orderedSame
+            })?.value else { return }
+            runner.view.reloadIgnoringCache()
         }
 
         func closeAll() {
