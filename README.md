@@ -48,7 +48,18 @@ Mori design system, with a right-hand vertical tab sidebar by default.
 
 ## Build & run
 
-Requirements: macOS 26+, Xcode 26+, `xcodegen` and `cmake` (Homebrew).
+Requirements: macOS 26+, Xcode 26+, `xcodegen`, `cmake`, and `git-lfs` (Homebrew).
+
+The CEF framework (~214 MB) is stored in Git LFS. Install `git-lfs` and pull
+the binary before building:
+
+```bash
+brew install git-lfs
+git lfs install
+git lfs pull
+```
+
+Then build and launch:
 
 ```bash
 ./run.sh            # generate project, build Debug, launch
