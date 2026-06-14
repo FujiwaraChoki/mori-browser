@@ -1,128 +1,109 @@
-<p align="center">
-  <img src="mori.svg" width="84" height="84" alt="Mori logo">
-</p>
+# Mori Browser
 
-# Mori
+Mori is now a custom macOS browser UI embedded directly into
+ungoogled-chromium. This repository used to contain a standalone CEF app; the
+current architecture is a Chromium overlay that replaces the old CEF runtime,
+helper app, and extension shims with Chromium's real browser stack.
 
-A native macOS AI browser: **SwiftUI + AppKit** chrome wrapping a real
-**Chromium** engine via **CEF** (Chromium Embedded Framework), styled to the
-Mori design system, with a right-hand vertical tab sidebar by default.
+## Current Architecture
 
-## Architecture
+The Mori source of truth lives in:
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ main.mm (browser process)                                    │
-│  • loads the embedded CEF framework (dynamic, not linked)    │
-│  • CefInitialize → CefRunMessageLoop (drives AppKit too)     │
-│  • MoriApplication : NSApplication <CefAppProtocol>          │
-│  • AppDelegate builds the NSWindow + menu bar, hosts SwiftUI │
-└─────────────────────────────────────────────────────────────┘
-        │ NSHostingController(RootView)              ▲ @objc MoriRoot
-        ▼                                            │
-┌──────────────────────────┐   ObjC bridge   ┌───────────────────────┐
-│ SwiftUI chrome           │ ◀────────────▶  │ MoriBrowserView       │
-│  RootView / Toolbar /    │  (pure-ObjC hdr)│  : NSView, hosts one    │
-│  Sidebar / AIPanel /     │                 │  CEF browser per tab.   │
-│  SettingsView            │                 │  BrowserClient (C++)    │
-│  Theme (Mori tokens)     │                 │  forwards nav/display   │
-└──────────────────────────┘                 │  state back to Swift.   │
-                                             └───────────────────────┘
+```text
+ungoogled-chromium-macos/build/src/chrome/browser/ui/mori
 ```
 
-- **Engine:** CEF 148 / Chromium 148 (`third_party/cef`, arm64).
-- **Process model:** the standard CEF macOS layout — the main app plus 5 helper
-  app bundles (`Mori Helper`, ` (GPU)`, ` (Plugin)`, ` (Renderer)`,
-  ` (Alerts)`) embedded in `Contents/Frameworks`. Helpers and the main app load
-  the framework dynamically through `libcef_dll_wrapper` (the dylib variant — it
-  exports `cef_load_library` and the `cef_*` C API as dlsym-backed stubs, so the
-  framework is **never linked**, only embedded).
-- **Chrome ↔ engine bridge:** Swift talks only to the pure-ObjC
-  `MoriBrowserView` header (`Sources/Bridge`). All C++/CEF lives in `.mm`
-  implementations. AppKit calls into Swift via the generated `Mori-Swift.h`
-  (`@objc MoriRoot`).
-- **Design system:** `Sources/UI/Theme` contains Mori's color tokens
-  (OKLCH→sRGB at runtime), radii (0.4rem base), motion (snappy easing), and
-  Apple **Liquid Glass** (macOS 26 `.glassEffect` + behind-window
-  `NSVisualEffectView` for the translucent sidebar/panels).
+That directory is compiled as part of Chromium's `chrome` target. The rest of
+the Chromium checkout, `depot_tools`, and build outputs are local dependencies
+and are intentionally ignored by Git.
 
-## Build & run
+## Major Pieces
 
-Requirements: macOS 26+, Xcode 26+, `xcodegen` and `cmake` (Homebrew).
+- `MoriRoot.swift` owns the SwiftUI root, shortcut entry points, and the shared
+  app model exposed to the Chromium bridge.
+- `RootView.swift`, `TopChrome.swift`, `Toolbar.swift`, `Sidebar.swift`,
+  `LauncherOverlay.swift`, and the panel views implement Mori's browser chrome.
+- `BrowserStore.swift`, `BrowserTab.swift`, `TabFolder.swift`,
+  `ExtensionStore.swift`, `DownloadStore.swift`, `HistoryStore.swift`, and
+  `BookmarkStore.swift` are the Swift-side state model.
+- `ShortcutRegistry.swift` is the single shortcut routing layer used by both
+  AppKit event monitoring and Chromium web-view key pre-handling.
+- `mori_chrome_bridge.mm` connects SwiftUI/AppKit chrome to Chromium browser
+  commands, tabs, windows, menus, downloads, and extension state.
+- `mori_browser_window.mm` and `mori_browser_window.h` hook Mori into the
+  Chromium browser window lifecycle and web-focused keyboard handling.
+- `mori_chrome_extensions.mm` integrates with Chromium's extension APIs. Mori
+  now relies on Chromium's real extension system, not the old CEF compatibility
+  bridge.
+- `mori_permission_prompt.mm`, `MoriBrowserView.h`, `MoriPrivacy.h`, and
+  `mori_bridge.h` are the remaining Objective-C++ integration surface between
+  Chromium and the SwiftUI shell.
 
-```bash
-./run.sh            # generate project, build Debug, launch
-./run.sh --release  # Release build
-./run.sh --gen      # regenerate Mori.xcodeproj only
+## What Changed From CEF
+
+The old repository layout contained a separate macOS application under
+`Sources/`, helper executables, CEF framework embedding scripts, and custom CEF
+extension/runtime glue. That model is gone.
+
+Mori now runs inside the Chromium app bundle produced by the ungoogled-chromium
+build. Browser primitives such as tabs, navigation, extension pages, downloads,
+permissions, and renderer input are owned by Chromium. Mori's code is the custom
+native chrome and bridge layer around those primitives.
+
+## Local Layout
+
+```text
+BUILDING.md
+  Detailed local build, package, run, and logging instructions.
+
+ungoogled-chromium-macos/build/src/chrome/browser/ui/mori/
+  Mori's tracked Swift, Objective-C++, headers, icons, and glyphs.
+
+ungoogled-chromium-macos/build/src/out/Default/Chromium.app
+  Local Chromium build output. Not tracked.
+
+/Users/choki/Downloads/MoriBrowser.app
+  Packaged app used for manual testing. Not tracked.
 ```
 
-The first run builds `libcef_dll_wrapper` from the bundled CEF distribution.
+## Build And Package
 
-### Notes
+Use the full commands in `BUILDING.md`. The short version is:
 
-- The build is **ad-hoc signed** for local dev, with no personal Apple
-  Developer Team baked into the project. Because each ad-hoc rebuild changes
-  the signature, Chromium's Keychain "Safe Storage" would re-prompt every
-  launch — we pass `--use-mock-keychain` / `--password-store=basic` by default.
-  Set `MORI_USE_REAL_KEYCHAIN=1` only for a stable Developer ID build.
-- Hardened runtime is **off** for dev; the entitlements still grant JIT /
-  unsigned-executable-memory / library-validation-disabled for Chromium's V8.
+```sh
+cd /Users/choki/Developer/chromium-mori/ungoogled-chromium-macos/build/src
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+export PATH="$HOME/Developer/chromium-mori/binshims:$HOME/Developer/chromium-mori/depot_tools:$PATH"
+ninja -j 16 -l 24 -C out/Default chrome
 
-## Local AI assistant
-
-The Codex-powered assistant is **enabled by default**. It launches a local
-Codex app server with broad filesystem access for browser automation, so run
-Mori only on machines where you trust that local Codex setup. To opt out,
-launch with `MORI_ENABLE_CODEX_ASSISTANT=0`. Dynamic browser tools can
-additionally be enabled with `MORI_CODEX_DYNAMIC_TOOLS=1`.
-
-## Extension readiness
-
-Mori targets the modern Chromium extension surface: Manifest V3 manifests,
-service-worker-style background runners, packaged extension pages, content
-scripts, runtime messaging/ports, storage, permissions, tabs/windows, scripting,
-declarativeNetRequest/webRequest events, side panels, offscreen documents,
-identity redirects, cookies/history/bookmarks/downloads/sessions/management,
-native messaging, CRX/Web Store install, and `browser.*` namespace aliases.
-
-The production gate is:
-
-```bash
-./script/build_and_run.sh --verify-extension-smoke
+if [ -e "$HOME/Downloads/MoriBrowser.app" ]; then
+  trash "$HOME/Downloads/MoriBrowser.app"
+fi
+/usr/bin/ditto "out/Default/Chromium.app" "$HOME/Downloads/MoriBrowser.app"
 ```
 
-That smoke boots the bundled CEF runtime, proves no external Google Chrome
-process or `--load-extension` surface is used, installs multiple fixture
-extensions, and exercises the extension APIs above end to end. The smoke wait
-budget defaults to three minutes and can be adjusted for slow machines with
-`MORI_EXTENSION_SMOKE_WAIT_ATTEMPTS` (four attempts per second).
+Use `trash`, not `rm -rf`, when replacing app bundles or build directories.
 
-## Keyboard shortcuts
+## Run
 
-| Shortcut | Action | Shortcut | Action |
-|---|---|---|---|
-| ⌘T / ⌘W | New / close tab | ⌘L | Focus omnibox |
-| ⇧⌘T | Reopen closed tab | ⌘[ / ⌘] | Back / forward |
-| ⌃Tab / ⇧⌃Tab | Next / previous tab | ⌥⌘← / ⌥⌘→ | Previous / next tab |
-| ⇧⌘[ / ⇧⌘] | Previous / next tab | ⌃Page Up / ⌃Page Down | Previous / next tab |
-| ⌘R / ⇧⌘R | Reload / force reload | ⌘+ / ⌘- / ⌘0 | Zoom in / out / reset |
-| ⌘S / ⌃S | Toggle tab sidebar | ⌘K | Toggle AI panel |
-| ⌘, | Settings | ⇧⌘H | Home |
-
-## Layout
-
-```
-Sources/
-  App/       browser-process entry, CefApp/Client, NSApplication, menu, window
-  Bridge/    MoriBrowserView (Swift-facing NSView over one CEF browser)
-  Helper/    CEF sub-process entry point
-  UI/        SwiftUI: Theme/, Models/, Views/, MoriRoot
-  Resources/ Info.plists, entitlements
-Scripts/embed_cef_framework.sh   versioned-framework embed + sign
-third_party/cef/                 CEF 148 distribution + built wrapper
+```sh
+/usr/bin/open -n "$HOME/Downloads/MoriBrowser.app"
 ```
 
-## License
+For a clean profile:
 
-Mori's first-party source code is MIT licensed. Third-party components and
-assets keep their own terms; see `THIRD_PARTY_NOTICES.md`.
+```sh
+profile="$HOME/Library/Application Support/MoriBrowserTestProfile"
+mkdir -p "$profile"
+/usr/bin/open -n "$HOME/Downloads/MoriBrowser.app" --args \
+  --user-data-dir="$profile" \
+  --no-first-run
+```
+
+## Debugging Notes
+
+Current keyboard-shortcut debugging builds emit `MORI-KEY` log lines from the
+shortcut registry, the Swift store, Chromium web-view pre-handling, and the
+AppKit event monitor. See `BUILDING.md` for commands to launch with stderr
+logging and verify that an instrumented packaged framework was copied into
+`MoriBrowser.app`.

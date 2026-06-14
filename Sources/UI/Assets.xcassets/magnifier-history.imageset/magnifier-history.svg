@@ -1,9 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" id="magnifier-history">
-  <title>magnifier-history</title>
-  <g fill="#212121">
-    <path d="M21 21L16.5 16.5L16.7806 16.7806" stroke="#212121" stroke-width="2" stroke-linecap="square" fill="none"></path>
-    <path d="M15 3H16C17.6568 3 19 4.34315 19 6C19 7.65685 17.6568 9 16 9H11H11.5" stroke="#212121" stroke-width="2" stroke-miterlimit="10" stroke-linecap="square" fill="none"></path>
-    <path d="M13.5 11.5L11 9L13.5 6.5" stroke="#212121" stroke-width="2" stroke-linecap="square" fill="none"></path>
-    <path d="M12 4H11C7.13401 4 4 7.13401 4 11C4 14.866 7.13401 18 11 18C14.6406 18 17.6304 15.2206 17.9668 11.668C18.7187 11.4071 19.402 11.0013 19.9844 10.4834C19.994 10.6545 20 10.8267 20 11C20 15.9706 15.9706 20 11 20C6.02944 20 2 15.9706 2 11C2 6.02944 6.02944 2 11 2H12V4Z" fill="#212121" data-stroke="none" stroke="none"></path>
-  </g>
-</svg>

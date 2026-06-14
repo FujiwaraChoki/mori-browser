@@ -1,37 +1,20 @@
 .DS_Store
-
-# Xcode / Swift build products
-build/
-DerivedData/
-dist/
-*.dSYM/
-*.xcarchive/
-*.xcresult/
-*.xcuserstate
-*.xcuserdatad/
-xcuserdata/
-Mori.xcodeproj/
-
-# Local signing and machine-specific overrides
-*.xcconfig.local
-Local.xcconfig
-*.cer
-*.key
-*.p12
-*.pem
-*.mobileprovision
-
-# Local environment and agent/browser artifacts
-.codex/
-.playwright-cli/
-.env
-.env.*
-!.env.example
-
-# Logs and temporary smoke-test artifacts
 *.log
-tmp/
 
-# Downloaded/generated dependency archives and wrapper build products
-third_party/cef_minimal.tar.bz2
-third_party/cef/build/
+# Local build helpers and dependency checkouts. These are machine-local and can
+# be re-created; they are not the Mori app source of truth.
+binshims/
+depot_tools/
+ungoogled-chromium/
+
+# Keep the full Chromium checkout and build output local, but track Mori's
+# browser UI overlay inside the checkout path.
+ungoogled-chromium-macos/**
+!ungoogled-chromium-macos/
+!ungoogled-chromium-macos/build/
+!ungoogled-chromium-macos/build/src/
+!ungoogled-chromium-macos/build/src/chrome/
+!ungoogled-chromium-macos/build/src/chrome/browser/
+!ungoogled-chromium-macos/build/src/chrome/browser/ui/
+!ungoogled-chromium-macos/build/src/chrome/browser/ui/mori/
+!ungoogled-chromium-macos/build/src/chrome/browser/ui/mori/**
