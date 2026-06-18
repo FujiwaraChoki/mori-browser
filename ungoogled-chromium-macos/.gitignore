@@ -1,0 +1,19 @@
+.DS_Store
+
+.gcs_entries
+
+# Ignore the local Chromium build tree, but keep Mori's first-party overlay
+# (chrome/browser/ui/mori) tracked — it lives inside build/ but is our source,
+# not generated output. Re-include the path one directory at a time, since git
+# can't un-ignore a file whose parent directory is still excluded.
+build/*
+!build/src/
+build/src/*
+!build/src/chrome/
+build/src/chrome/*
+!build/src/chrome/browser/
+build/src/chrome/browser/*
+!build/src/chrome/browser/ui/
+build/src/chrome/browser/ui/*
+!build/src/chrome/browser/ui/mori/
+!build/src/chrome/browser/ui/mori/**
