@@ -222,6 +222,13 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         Task { @MainActor in _ = try? await evaluateJavaScript(WebContextScripts.listener) }
     }
 
+    /// Install the media agent that powers the sidebar player and PiP. Idempotent
+    /// per document; `BrowserStore` polls `window.__moriMediaState()` afterwards.
+    func installMediaAgent() {
+        guard isRealized else { return }
+        Task { @MainActor in _ = try? await evaluateJavaScript(MediaAgentScripts.agent) }
+    }
+
     /// Read (and clear) the most recent right-click target, if it was a link or
     /// image.
     func readContextMenuTarget() async -> LinkImageContextTarget? {
@@ -385,6 +392,7 @@ extension BrowserTab: MoriBrowserViewDelegate {
         updateURL(url)
         applyBoosts()
         installContextMenuHook()
+        installMediaAgent()
     }
 
     func browserView(_ view: MoriBrowserView,

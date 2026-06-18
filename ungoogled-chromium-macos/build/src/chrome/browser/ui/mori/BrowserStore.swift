@@ -118,6 +118,10 @@ final class BrowserStore: ObservableObject {
     /// TabMaintenance.swift). Retained here for the lifetime of the store.
     var maintenanceTimer: Timer?
 
+    /// Repeating timer that polls each live tab's injected media agent and
+    /// rebroadcasts its state to `MediaController` (see MediaAgentScripts.swift).
+    var mediaPollTimer: Timer?
+
     private struct PersistedTab: Codable {
         var id: UUID
         var url: String
@@ -189,6 +193,7 @@ final class BrowserStore: ObservableObject {
         }
         installExtensionCommandSmokeIfNeeded()
         startTabMaintenance()
+        startMediaPolling()
     }
 
     /// Smoke-test hook: fire extension keyboard commands shortly after launch

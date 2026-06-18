@@ -95,6 +95,9 @@ bool g_self_insert_in_progress = false;
 NSWindow* __strong g_main_window = nil;
 BOOL g_web_content_suppressed = NO;
 int g_next_browser_identifier = 1;
+// When YES, hiding a tab with a playing video pops it out to Picture-in-Picture
+// (driven from -setPageHidden:). Mirrors BrowserSettings.autoPiP.
+BOOL g_mori_auto_pip = YES;
 
 std::map<content::WebContents*, __weak MoriBrowserView*>& ViewMap() {
   static std::map<content::WebContents*, __weak MoriBrowserView*> map;
@@ -1543,7 +1546,39 @@ Browser* MoriBrowser() {
   return _browserIdentifier;
 }
 
+// Run media-agent JavaScript with a synthetic user activation so gated APIs
+// (requestPictureInPicture, play) succeed even though the call originates from
+// native chrome rather than a real page gesture.
+- (void)runMediaScriptWithUserGesture:(NSString*)source {
+  if (!_webContents) {
+    return;
+  }
+  content::RenderFrameHost* frame = _webContents->GetPrimaryMainFrame();
+  if (!frame) {
+    return;
+  }
+  frame->ExecuteJavaScriptWithUserGestureForTests(
+      base::SysNSStringToUTF16(source), base::BindOnce(^(base::Value) {}),
+      content::ISOLATED_WORLD_ID_GLOBAL);
+}
+
 - (void)sendMediaCommand:(NSString*)action value:(double)value {
+  if (![NSThread isMainThread]) {
+    NSString* actionCopy = [action copy];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self sendMediaCommand:actionCopy value:value];
+    });
+    return;
+  }
+  if (action.length == 0) {
+    return;
+  }
+  // `action` is always one of our fixed command tokens, so a plain quoted
+  // literal is safe; `value` is numeric.
+  NSString* js = [NSString
+      stringWithFormat:@"window.__moriMedia && window.__moriMedia('%@', %f)",
+                       action, value];
+  [self runMediaScriptWithUserGesture:js];
 }
 
 - (void)setPageHidden:(BOOL)hidden {
@@ -1552,8 +1587,18 @@ Browser* MoriBrowser() {
   }
   if (hidden) {
     _webContents->WasHidden();
+    // Pop a playing video out to PiP as the tab goes to the background. The
+    // synthetic user gesture is what lets this clear the activation gate, so
+    // no Chromium auto-PiP feature flag is required.
+    if (g_mori_auto_pip) {
+      [self runMediaScriptWithUserGesture:
+                @"window.__moriMedia && window.__moriMedia('pipEnter')"];
+    }
   } else {
     _webContents->WasShown();
+    // Returning to the tab brings the video back inline.
+    [self runMediaScriptWithUserGesture:
+              @"window.__moriMedia && window.__moriMedia('pipExit')"];
   }
 }
 
@@ -1574,9 +1619,11 @@ Browser* MoriBrowser() {
 }
 
 - (void)applyAutoPiP:(BOOL)enabled {
+  g_mori_auto_pip = enabled;
 }
 
 + (void)setAutoPiPEnabled:(BOOL)enabled {
+  g_mori_auto_pip = enabled;
 }
 
 + (void)setAdBlockerEnabled:(BOOL)enabled {
