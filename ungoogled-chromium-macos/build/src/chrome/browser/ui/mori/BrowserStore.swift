@@ -16,15 +16,29 @@ final class BrowserStore: ObservableObject {
     @Published var findBarVisible: Bool = false
     /// The new-tab launcher (command palette) overlay.
     @Published var launcherVisible: Bool = false
+    /// Bumped every time the launcher is presented, so the AppKit-backed input
+    /// can take first responder deterministically even if the host view is
+    /// reused across presentations.
+    @Published private(set) var launcherFocusRequest: Int = 0
+    /// The site-Boost editor overlay (per-site CSS/JS + zapped elements).
+    @Published var boostEditorVisible: Bool = false
+    /// Host currently loaded into the Boost editor.
+    var boostEditorHost: String = ""
+    /// True while the click-to-zap element picker is armed on the active page.
+    @Published var zapModeActive: Bool = false
+    /// Ephemeral tab shown in the Peek overlay (Little Arc-style transient
+    /// preview). Not a member of any context until promoted.
+    @Published var peekTab: BrowserTab?
+    /// Active custom context menu for a right-clicked link/image, if any.
+    @Published var contextMenu: WebContextMenuRequest?
+    /// True while the drag-to-select screenshot region picker is armed.
+    @Published var captureMode: Bool = false
     /// Seeds the launcher's search field when it opens (e.g. the current URL when
     /// invoked from the address bar). Empty for a blank ⌘T launcher.
     var launcherPrefill: String = ""
     /// When true the launcher edits the *current* tab in place (address-bar
     /// behavior) instead of opening the destination in a fresh tab.
     var launcherEditsCurrentTab: Bool = false
-    /// True while the cursor is at the top edge: the web card slides down to
-    /// reveal the titlebar (traffic lights) in the chrome above it.
-    @Published var topChromeRevealed: Bool = false
     /// The active find-in-page query, held here so the Find Next / Previous menu
     /// commands can drive the search without the bar being focused.
     @Published var findQuery: String = ""
@@ -100,6 +114,10 @@ final class BrowserStore: ObservableObject {
     private var sessionSaveScheduled = false
     private var isRestoringSession = false
 
+    /// Repeating timer that drives auto-sleep and auto-archive (see
+    /// TabMaintenance.swift). Retained here for the lifetime of the store.
+    var maintenanceTimer: Timer?
+
     private struct PersistedTab: Codable {
         var id: UUID
         var url: String
@@ -170,6 +188,7 @@ final class BrowserStore: ObservableObject {
             }
         }
         installExtensionCommandSmokeIfNeeded()
+        startTabMaintenance()
     }
 
     /// Smoke-test hook: fire extension keyboard commands shortly after launch
@@ -352,6 +371,9 @@ final class BrowserStore: ObservableObject {
         tab.onMetadataChanged = { [weak self] _ in
             self?.scheduleSessionSave()
         }
+        tab.onDidNavigate = { [weak self] tab, url in
+            self?.applyRouting(for: tab, url: url)
+        }
         return tab
     }
 
@@ -369,7 +391,7 @@ final class BrowserStore: ObservableObject {
     }
 
     /// Register a freshly created tab as a member of the active context.
-    private func addToActiveContext(_ id: BrowserTab.ID) {
+    func addToActiveContext(_ id: BrowserTab.ID) {
         guard contexts.indices.contains(activeContextIndex) else { return }
         guard !contexts[activeContextIndex].tabIDs.contains(id) else { return }
         contexts[activeContextIndex].tabIDs.append(id)
@@ -408,6 +430,7 @@ final class BrowserStore: ObservableObject {
         let previous = selectedTabID
         selectedTabID = id
         selectedTab?.realize()
+        selectedTab?.markAccessed()
         selectedTab?.setChromePinned(isPinned(id))
         selectedTab?.focus()
         if previous != id { scheduleSessionSave() }
@@ -420,7 +443,7 @@ final class BrowserStore: ObservableObject {
     func presentLauncher() {
         launcherPrefill = ""
         launcherEditsCurrentTab = false
-        NSLog("MORI-KEY presentLauncher visible %d->1", launcherVisible ? 1 : 0)
+        launcherFocusRequest += 1
         withAnimation(Motion.reveal) { launcherVisible = true }
     }
 
@@ -436,13 +459,12 @@ final class BrowserStore: ObservableObject {
         }
         launcherPrefill = selectedTab?.displayURL ?? ""
         launcherEditsCurrentTab = true
+        launcherFocusRequest += 1
         withAnimation(Motion.reveal) { launcherVisible = true }
     }
 
     /// ⌘T behavior: open the launcher, or close it again if it's already up.
     func toggleLauncher() {
-        NSLog("MORI-KEY toggleLauncher visible=%d main=%d",
-              launcherVisible ? 1 : 0, Thread.isMainThread ? 1 : 0)
         if launcherVisible {
             dismissLauncher()
         } else {
@@ -452,7 +474,6 @@ final class BrowserStore: ObservableObject {
 
     func dismissLauncher() {
         launcherEditsCurrentTab = false
-        NSLog("MORI-KEY dismissLauncher visible %d->0", launcherVisible ? 1 : 0)
         withAnimation(Motion.reveal) { launcherVisible = false }
     }
 
@@ -492,12 +513,24 @@ final class BrowserStore: ObservableObject {
         selectTab(id)
     }
 
-    func closeTab(_ id: BrowserTab.ID, allowPinned: Bool = false) {
+    func closeTab(_ id: BrowserTab.ID,
+                  allowPinned: Bool = false,
+                  allowFolderRemoval: Bool = false) {
         if id == splitTabID || id == selectedTabID { splitTabID = nil }
         guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return }
         // Pinned tabs are permanent: a close gesture (Cmd-W, close button) is
         // ignored. They can only be removed by explicitly unpinning them.
         if contexts.contains(where: { $0.pinnedTabIDs.contains(id) }), !allowPinned { return }
+        // Tabs inside a folder are a persistent collection (Zen-style): Cmd-W
+        // doesn't remove them. Instead the tab unloads its content and selection
+        // moves to a neighbour, leaving it in the folder to reopen. The row's ×
+        // button and the "Close Tab" menu item pass allowFolderRemoval to fall
+        // through to a real close.
+        if !allowFolderRemoval,
+           contexts.contains(where: { $0.folders.contains { $0.tabIDs.contains(id) } }) {
+            unloadFolderedTab(id)
+            return
+        }
         let tab = tabs[idx]
         // Remember where it was pointing so Cmd-Shift-T can bring it back.
         let url = tab.urlString
@@ -546,6 +579,32 @@ final class BrowserStore: ObservableObject {
                 selectTab(remaining[newIndex].id)
             }
         }
+        scheduleSessionSave()
+    }
+
+    /// Close gesture for a tab that lives in a folder: unload its content
+    /// (`sleep`) instead of destroying it, so the folder keeps the entry, and
+    /// move selection to a neighbour — the previous tab in the sidebar order, or
+    /// the next one, or a fresh new-tab page when nothing else is open.
+    private func unloadFolderedTab(_ id: BrowserTab.ID) {
+        guard let tab = tab(for: id) else { return }
+        if selectedTabID == id {
+            let ordered = orderedTabsForShortcuts
+            let neighbor: BrowserTab? = ordered.firstIndex(where: { $0.id == id })
+                .flatMap { pos in
+                    if pos - 1 >= 0 { return ordered[pos - 1] }
+                    if pos + 1 < ordered.count { return ordered[pos + 1] }
+                    return nil
+                }
+            if let neighbor {
+                selectTab(neighbor.id)
+            } else {
+                _ = newTab(select: true)
+            }
+        }
+        // Sleep after selection has moved away so the CEF browser tears down
+        // cleanly; the row dims to its asleep state.
+        withAnimation(Motion.snappy) { tab.sleep() }
         scheduleSessionSave()
     }
 
@@ -726,10 +785,7 @@ final class BrowserStore: ObservableObject {
     }
 
     func toggleSidebar() {
-        let before = sidebarVisible
         withAnimation(Motion.snappy) { sidebarVisible.toggle() }
-        NSLog("MORI-KEY store.toggleSidebar main=%d %d->%d",
-              Thread.isMainThread ? 1 : 0, before ? 1 : 0, sidebarVisible ? 1 : 0)
     }
 
     func toggleAIPanel() {
@@ -924,6 +980,14 @@ final class BrowserStore: ObservableObject {
         scheduleSessionSave()
     }
 
+    /// Switch to the context at a 1-based slot (Ctrl-1…Ctrl-9), following the
+    /// bottom-bar switcher's order. Slots past the last context are ignored.
+    func switchContext(atOrdinal ordinal: Int) {
+        let index = ordinal - 1
+        guard contexts.indices.contains(index) else { return }
+        switchContext(to: contexts[index].id)
+    }
+
     /// Create a context and switch to it. Starts empty — the sidebar's New Tab
     /// affordances take it from there.
     @discardableResult
@@ -951,6 +1015,7 @@ final class BrowserStore: ObservableObject {
             switchContext(to: fallback)
         }
         let doomedTabs = contexts[idx].tabIDs
+        RouteStore.shared.removeRules(forContext: id)
         withAnimation(Motion.snappy) {
             contexts.removeAll { $0.id == id }
         }

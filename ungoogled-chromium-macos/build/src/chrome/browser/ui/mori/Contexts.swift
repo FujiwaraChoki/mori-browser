@@ -99,10 +99,11 @@ struct ContextSwitcherStrip: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            ForEach(store.contexts) { context in
+            ForEach(Array(store.contexts.enumerated()), id: \.element.id) { index, context in
                 ContextChip(store: store,
                             context: context,
-                            isActive: context.id == store.activeContextID)
+                            isActive: context.id == store.activeContextID,
+                            ordinal: index < 9 ? index + 1 : nil)
             }
         }
         .animation(Motion.snappy, value: store.activeContextID)
@@ -113,6 +114,8 @@ private struct ContextChip: View {
     @ObservedObject var store: BrowserStore
     let context: BrowserContext
     let isActive: Bool
+    /// 1-based switcher slot, when within the Ctrl-1…Ctrl-9 range.
+    var ordinal: Int? = nil
 
     @Environment(\.palette) private var p
     @State private var hovering = false
@@ -137,7 +140,7 @@ private struct ContextChip: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(context.name)
+        .help(ordinal.map { "\(context.name) (⌃\($0))" } ?? context.name)
         .onHover { hovering = $0 }
         .contextMenu {
             Button("Edit Context…") {

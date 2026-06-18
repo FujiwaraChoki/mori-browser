@@ -18,6 +18,9 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     /// fallback (and the value reported to extensions / persisted).
     @Published var faviconImage: NSImage?
     @Published var didFail: Bool = false
+    /// Human-readable failure reason from the last failed navigation, surfaced
+    /// in the error overlay. Cleared whenever a new load begins.
+    @Published var failError: String = ""
 
     /// Find-in-page results for the active query (1-based active match, total).
     @Published var findOrdinal: Int = 0
@@ -47,15 +50,69 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     /// Fired when persisted metadata (URL, title, favicon) changes so the
     /// store can schedule a session save.
     var onMetadataChanged: ((BrowserTab) -> Void)?
+    /// Fired on each main-frame navigation commit so the store can apply Air
+    /// Traffic Control routing rules.
+    var onDidNavigate: ((BrowserTab, String) -> Void)?
 
-    private(set) lazy var browserView: MoriBrowserView = {
+    /// The native CEF-backed view. Created lazily on first `realize()` and
+    /// recreated transparently after `sleep()` discards it to reclaim memory.
+    /// Only ever touched for realized tabs, so reading it never forces an
+    /// unwanted CEF browser into existence behind the caller's back.
+    var browserView: MoriBrowserView {
+        if let existing = _browserView { return existing }
         let view = MoriBrowserView(url: urlString)
         view.navDelegate = self
+        _browserView = view
         return view
-    }()
+    }
+    private var _browserView: MoriBrowserView?
 
     private var isRealized = false
     private var desiredChromePinnedState = false
+
+    /// True while the tab is "asleep": its CEF browser has been discarded to
+    /// free memory. It keeps its URL/title/favicon and reloads the last URL when
+    /// next selected (`realize()` recreates the native view).
+    @Published private(set) var isAsleep: Bool = false
+
+    /// When the user last viewed/interacted with this tab. Drives the
+    /// auto-sleep and auto-archive maintenance passes.
+    @Published var lastAccessedAt: Date = Date()
+
+    /// True while this tab is showing the distraction-free Reader view.
+    @Published private(set) var readerActive: Bool = false
+
+    /// True while the page is producing audible sound.
+    @Published private(set) var isAudible: Bool = false
+    /// True while this tab's audio is muted.
+    @Published private(set) var isMuted: Bool = false
+
+    /// Mute or unmute this tab's audio.
+    func toggleMute() {
+        guard isRealized else { return }
+        let muted = !isMuted
+        browserView.setAudioMuted(muted)
+        isMuted = muted
+    }
+
+    /// Toggle Reader Mode: extract + restyle the article, or reload to restore.
+    func toggleReader() {
+        guard isRealized else { return }
+        if readerActive {
+            readerActive = false
+            reload()
+            return
+        }
+        Task { @MainActor in
+            let ok = (try? await evaluateJavaScript(ReaderScripts.enable)) as? Bool ?? false
+            if ok {
+                readerActive = true
+            } else {
+                ToastCenter.shared.show("No article found to read",
+                                        icon: "doc.plaintext", style: .warning)
+            }
+        }
+    }
 
     init(id: UUID = UUID(), url: String, title: String = "New Tab") {
         self.id = id
@@ -64,15 +121,40 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         super.init()
     }
 
-    /// Force the native view (and CEF browser) into existence.
+    /// Force the native view (and CEF browser) into existence, waking a sleeping
+    /// tab in the process.
     @discardableResult
     func realize() -> MoriBrowserView {
         isRealized = true
+        if isAsleep { isAsleep = false }
         browserView.setTabPinned(desiredChromePinnedState)
         return browserView
     }
 
     var hasRealized: Bool { isRealized }
+
+    /// Record that the user just viewed / interacted with this tab.
+    func markAccessed() {
+        lastAccessedAt = Date()
+    }
+
+    /// Discard the live CEF browser to reclaim memory while keeping the tab in
+    /// the sidebar. Reloads the last URL transparently on next `realize()`.
+    /// No-op for an unrealized or already-sleeping tab.
+    func sleep() {
+        guard isRealized, let view = _browserView else { return }
+        view.closeBrowser()
+        _browserView = nil
+        isRealized = false
+        isAsleep = true
+        isLoading = false
+        canGoBack = false
+        canGoForward = false
+        findOrdinal = 0
+        findCount = 0
+        isAudible = false
+        isMuted = false
+    }
 
     func setChromePinned(_ pinned: Bool) {
         desiredChromePinnedState = pinned
@@ -87,6 +169,8 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         let target = MoriURLRewriter.rewrite(url)
         urlString = target
         didFail = false
+        failError = ""
+        markAccessed()
         onMetadataChanged?(self)
         realize().loadURL(target)
     }
@@ -104,6 +188,75 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     func stop() { browserView.stopLoading() }
     func focus() { browserView.focusBrowser() }
 
+    // MARK: Site Boosts (per-site CSS/JS + zaps)
+
+    /// Apply this page's site Boost (custom CSS/JS + zapped elements), if any.
+    /// Idempotent: safe to call on every commit/finish callback.
+    func applyBoosts() {
+        guard isRealized,
+              let script = BoostStore.shared.injectionScript(forURL: urlString)
+        else { return }
+        Task { @MainActor in _ = try? await evaluateJavaScript(script) }
+    }
+
+    /// Inject the click-to-zap element picker overlay into the live page.
+    func injectZapPicker() {
+        guard isRealized else { return }
+        Task { @MainActor in _ = try? await evaluateJavaScript(BoostScripts.zapPicker) }
+    }
+
+    /// Tear down the zap picker and return the selectors the user clicked.
+    func collectZaps() async -> [String] {
+        guard isRealized,
+              let result = try? await evaluateJavaScript(BoostScripts.collectZaps)
+        else { return [] }
+        return (result as? [Any])?.compactMap { $0 as? String } ?? []
+    }
+
+    // MARK: Link/image context menu
+
+    /// Install the page-side contextmenu listener that captures the link/image
+    /// under the cursor and suppresses Chrome's native menu when we'll show ours.
+    func installContextMenuHook() {
+        guard isRealized else { return }
+        Task { @MainActor in _ = try? await evaluateJavaScript(WebContextScripts.listener) }
+    }
+
+    /// Read (and clear) the most recent right-click target, if it was a link or
+    /// image.
+    func readContextMenuTarget() async -> LinkImageContextTarget? {
+        guard isRealized,
+              let result = try? await evaluateJavaScript(WebContextScripts.read),
+              let dict = result as? [String: Any]
+        else { return nil }
+        let link = (dict["link"] as? String) ?? ""
+        let image = (dict["image"] as? String) ?? ""
+        let target = LinkImageContextTarget(
+            linkURL: link.isEmpty ? nil : link,
+            linkText: (dict["linkText"] as? String) ?? "",
+            imageURL: image.isEmpty ? nil : image,
+            selection: (dict["selection"] as? String) ?? "")
+        return target.hasContent ? target : nil
+    }
+
+    /// Copy the image under `windowPoint` (window coordinates) to the pasteboard
+    /// via Chromium's native pipeline. Operates on the already-decoded bitmap,
+    /// so it's immune to page CORS. Returns false when there's no live browser.
+    func copyImage(at windowPoint: CGPoint) -> Bool {
+        guard isRealized else { return false }
+        return realize().copyImage(atWindowPoint: windowPoint)
+    }
+
+    /// Save the image under `windowPoint`. http(s) images download by URL
+    /// through Chromium's download UI; canvas / data-URL images route through
+    /// the renderer at the point. Returns false when the browser is unavailable.
+    @discardableResult
+    func saveImage(url: String, at windowPoint: CGPoint) -> Bool {
+        guard isRealized else { return false }
+        return realize().saveImageURL(url, atWindowPoint: windowPoint)
+    }
+
+    @MainActor
     func evaluateJavaScript(_ source: String) async throws -> Any {
         let view = realize()
         return try await withCheckedThrowingContinuation { continuation in
@@ -158,15 +311,20 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     func printPage() { browserView.printPage() }
 
     func close() {
-        if isRealized {
-            browserView.closeBrowser()
-        }
+        _browserView?.closeBrowser()
     }
 }
 
 // MARK: - MoriBrowserViewDelegate
 
 extension BrowserTab: MoriBrowserViewDelegate {
+    private func updateURL(_ url: String) {
+        guard !url.isEmpty, url != urlString else { return }
+        urlString = url
+        HistoryStore.shared.record(url: url, title: title)
+        onMetadataChanged?(self)
+    }
+
     func browserView(_ view: MoriBrowserView, didChangeTitle title: String) {
         self.title = title.isEmpty ? "Untitled" : title
         HistoryStore.shared.updateTitle(self.title, for: urlString)
@@ -174,9 +332,7 @@ extension BrowserTab: MoriBrowserViewDelegate {
     }
 
     func browserView(_ view: MoriBrowserView, didChangeURL url: String) {
-        self.urlString = url
-        HistoryStore.shared.record(url: url, title: title)
-        onMetadataChanged?(self)
+        updateURL(url)
     }
 
     func browserView(_ view: MoriBrowserView,
@@ -185,6 +341,7 @@ extension BrowserTab: MoriBrowserViewDelegate {
                      canGoForward: Bool) {
         if isLoading {
             didFail = false
+            failError = ""
         }
         self.isLoading = isLoading
         self.canGoBack = canGoBack
@@ -206,27 +363,43 @@ extension BrowserTab: MoriBrowserViewDelegate {
                      didStartNavigationToURL url: String,
                      isRedirect: Bool,
                      userGesture: Bool) {
-        // Drop the previous page's decoded icon so we don't show a stale favicon
-        // for the new page; Chromium re-delivers one once it resolves.
+        // Drop the previous page's icon (both the decoded image and its URL) so
+        // we don't show a stale favicon for the new page; Chromium re-delivers
+        // one once it resolves.
         self.faviconImage = nil
+        self.faviconURL = nil
+        // A real navigation leaves the Reader view behind.
+        if readerActive, !isRedirect { readerActive = false }
     }
 
     func browserView(_ view: MoriBrowserView, didCommitNavigationToURL url: String) {
+        updateURL(url)
+        // Inject CSS early to minimize flash; JS waits for the finish callback.
+        applyBoosts()
+        onDidNavigate?(self, url)
     }
 
     func browserView(_ view: MoriBrowserView,
                      didFinishNavigationToURL url: String,
                      httpStatusCode: Int) {
+        updateURL(url)
+        applyBoosts()
+        installContextMenuHook()
     }
 
     func browserView(_ view: MoriBrowserView,
                      didFailLoad errorText: String,
                      failedURL: String) {
+        self.failError = errorText.trimmingCharacters(in: .whitespacesAndNewlines)
         self.didFail = true
     }
 
     func browserView(_ view: MoriBrowserView, requestsNewTabWithURL url: String) {
         onRequestNewTab?(url)
+    }
+
+    func browserView(_ view: MoriBrowserView, didChangeAudioState audible: Bool) {
+        self.isAudible = audible
     }
 
     func browserView(_ view: MoriBrowserView,

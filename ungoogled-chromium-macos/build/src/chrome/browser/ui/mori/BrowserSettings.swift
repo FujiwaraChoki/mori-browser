@@ -92,6 +92,20 @@ final class BrowserSettings: ObservableObject {
         }
     }
 
+    // MARK: Tab maintenance
+
+    /// Put background tabs to sleep (discard their renderer to reclaim memory)
+    /// after this many minutes untouched. 0 disables auto-sleep.
+    @Published var autoSleepMinutes: Int {
+        didSet { defaults.set(autoSleepMinutes, forKey: Key.autoSleepMinutes) }
+    }
+
+    /// Auto-archive background tabs (closed to the restorable Archive, Arc-style)
+    /// after this many hours untouched. 0 disables auto-archive.
+    @Published var autoArchiveHours: Int {
+        didSet { defaults.set(autoArchiveHours, forKey: Key.autoArchiveHours) }
+    }
+
     // MARK: Resolution helpers
 
     /// The built-in start page, served from Mori's internal scheme so it
@@ -136,6 +150,8 @@ final class BrowserSettings: ObservableObject {
         static let sidebarWidth = "mori.sidebarWidth"
         static let autoPiP = "mori.autoPiP"
         static let gradientTheme = "mori.gradientTheme"
+        static let autoSleepMinutes = "mori.autoSleepMinutes"
+        static let autoArchiveHours = "mori.autoArchiveHours"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -161,9 +177,11 @@ final class BrowserSettings: ObservableObject {
             ?? .system
         // Default the sidebar on (matches the Mori default chrome).
         showSidebarOnLaunch = defaults.object(forKey: Key.sidebarOnLaunch) as? Bool ?? true
-        // Default the sidebar to the right to preserve the existing layout.
+        // Arc-style browser structure: the sidebar is the primary navigation
+        // rail, so new profiles start with it on the left. Users can still move
+        // it from Settings.
         sidebarPosition = SidebarPosition(rawValue: defaults.string(forKey: Key.sidebarPosition) ?? "")
-            ?? .right
+            ?? .left
         let storedWidth = defaults.object(forKey: Key.sidebarWidth) as? Double
         sidebarWidth = (storedWidth.map { CGFloat($0) } ?? BrowserSettings.defaultSidebarWidth)
             .clamped(to: BrowserSettings.minSidebarWidth...BrowserSettings.maxSidebarWidth)
@@ -171,6 +189,8 @@ final class BrowserSettings: ObservableObject {
             .flatMap { try? JSONDecoder().decode(GradientTheme.self, from: $0) }
             ?? .none
         autoPiP = defaults.object(forKey: Key.autoPiP) as? Bool ?? true
+        autoSleepMinutes = defaults.object(forKey: Key.autoSleepMinutes) as? Int ?? 60
+        autoArchiveHours = defaults.object(forKey: Key.autoArchiveHours) as? Int ?? 24
 
         // Apply the persisted auto-PiP default to the engine on startup.
         MoriBrowserView.setAutoPiPEnabled(autoPiP)
