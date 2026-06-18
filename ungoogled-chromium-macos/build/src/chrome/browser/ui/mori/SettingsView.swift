@@ -104,7 +104,7 @@ struct SettingsView: View {
                     Text("A native macOS browser powered by Chromium (CEF).")
                         .font(Typography.ui(Typography.base))
                         .foregroundStyle(p.mutedForeground.color)
-                    Text("Version 0.1.0")
+                    Text("Version 2.0.2")
                         .font(Typography.ui(Typography.label))
                         .foregroundStyle(p.mutedForeground.color)
                 }
