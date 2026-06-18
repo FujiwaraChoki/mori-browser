@@ -35,6 +35,7 @@ checkout. Chromium owns the web; Mori owns everything around it.
 
 ## Highlights
 
+| Feature | Description |
 |---|---|
 | 🗂️ **Spaces & folders** | Arc-style contexts and tab folders with custom glyph icons. |
 | ✈️ **Air Traffic Control** | Routing rules auto-file tabs into the space that matches their host. |
@@ -44,7 +45,7 @@ checkout. Chromium owns the web; Mori owns everything around it.
 | 📖 **Reader** | Distraction-free reading mode. |
 | 🎨 **Gradient themes** | Wash the chrome in a custom hue/saturation gradient that derives a matching accent. |
 | 🔍 **Launcher** | A Spotlight-style ⌘T command palette to search, jump to open tabs, or pick from history. |
-| 💤 **Sleep & archive** | Stale tabs sleep to save memory and archive (restorably) instead of vanishing. |
+| 💤 **Sleep & archive** | Stale tabs sleep to save memory and archive restorably instead of vanishing. |
 | 🔑 **Passkeys, downloads, media** | Native passkey auth, a downloads panel, and picture-in-picture media controls. |
 
 ## Security status
