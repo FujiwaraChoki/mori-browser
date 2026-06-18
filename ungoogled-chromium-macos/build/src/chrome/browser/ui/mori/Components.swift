@@ -79,7 +79,6 @@ struct Favicon: View {
     /// over the remote-URL load and the monogram (the icon/page strings still
     /// drive the brand glyph and the fallbacks).
     var image: NSImage? = nil
-    var isLoading: Bool = false
     var size: CGFloat = 15
     /// Inactive tabs render slightly desaturated so the active tab reads first.
     var active: Bool = true
@@ -88,15 +87,9 @@ struct Favicon: View {
     private var source: FaviconSource { FaviconSource.resolve(icon: icon, page: page) }
 
     var body: some View {
-        ZStack {
-            if isLoading {
-                ProgressView()
-                    .controlSize(.small)
-                    .scaleEffect(0.6)
-            } else {
-                content
-            }
-        }
+        // Loading is shown by the LoadingBar (loader line) at the bottom of the
+        // web card — never by replacing the favicon with a spinner.
+        content
         .frame(width: size, height: size)
         .grayscale(active ? 0 : 0.55)
         .opacity(active ? 1 : 0.9)
@@ -142,10 +135,12 @@ struct Favicon: View {
                     case .failure:
                         monogram   // genuinely broken → monogram, not a blank box
                     case .empty:
-                        // Still loading: stay blank rather than flashing the
-                        // domain monogram (e.g. "D" for the search engine) for the
-                        // instant before the real favicon arrives.
-                        Color.clear
+                        // Still loading: a faint neutral tile rather than flashing
+                        // the domain monogram (e.g. "D" for the search engine) for
+                        // the instant before the real favicon arrives — keeps the
+                        // row from feeling empty without committing to a glyph.
+                        RoundedRectangle(cornerRadius: corner, style: .continuous)
+                            .fill(Color.primary.opacity(0.07))
                     @unknown default:
                         monogram
                     }

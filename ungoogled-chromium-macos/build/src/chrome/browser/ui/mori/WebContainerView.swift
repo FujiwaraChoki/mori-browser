@@ -87,8 +87,15 @@ struct WebContainerView: NSViewRepresentable {
             if store.shouldAutoFocusWebContent,
                !activeLoadFailed,
                !Self.windowHasTextInputFocus(nsView.window) {
-                DispatchQueue.main.async { [weak browserView = active.browserView] in
-                    guard let browserView, !browserView.isHidden else { return }
+                DispatchQueue.main.async { [weak browserView = active.browserView,
+                                            weak store,
+                                            weak nsView] in
+                    guard let browserView,
+                          let store,
+                          store.shouldAutoFocusWebContent,
+                          !browserView.isHidden,
+                          !Self.windowHasTextInputFocus(nsView?.window)
+                    else { return }
                     browserView.focusBrowser()
                 }
             }

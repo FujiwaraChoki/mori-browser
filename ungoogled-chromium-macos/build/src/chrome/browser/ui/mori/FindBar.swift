@@ -6,6 +6,7 @@ struct FindBar: View {
     @ObservedObject var store: BrowserStore
     @ObservedObject var tab: BrowserTab
     @Environment(\.palette) private var p
+    @Environment(\.colorScheme) private var scheme
 
     @FocusState private var focused: Bool
 
@@ -35,16 +36,22 @@ struct FindBar: View {
 
             IconButton(systemName: "chevron.up", size: 24,
                        disabled: tab.findCount == 0) { search(forward: false) }
+                .help("Previous match")
+                .accessibilityLabel("Previous match")
             IconButton(systemName: "chevron.down", size: 24,
                        disabled: tab.findCount == 0) { search(forward: true) }
+                .help("Next match")
+                .accessibilityLabel("Next match")
             IconButton(systemName: "xmark", size: 24) { store.hideFindBar() }
+                .help("Close find bar")
+                .accessibilityLabel("Close find bar")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(
             RoundedRectangle(cornerRadius: Radius.popover, style: .continuous)
                 .fill(p.popover.color)
-                .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+                .elevation(.popover, scheme)
         )
         .overlay(
             RoundedRectangle(cornerRadius: Radius.popover, style: .continuous)

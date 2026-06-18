@@ -34,10 +34,13 @@ struct MediaPlayerStrip: View {
                 Spacer(minLength: 4)
 
                 HStack(spacing: 3) {
-                    PlayerButton(systemName: "gobackward.10") { media.skipBack() }
+                    PlayerButton(systemName: "gobackward.10",
+                                 label: "Skip back 10 seconds") { media.skipBack() }
                     PlayerButton(systemName: s.playing ? "pause.fill" : "play.fill",
+                                 label: s.playing ? "Pause" : "Play",
                                  prominent: true) { media.togglePlay() }
-                    PlayerButton(systemName: "goforward.10") { media.skipForward() }
+                    PlayerButton(systemName: "goforward.10",
+                                 label: "Skip forward 10 seconds") { media.skipForward() }
                 }
             }
 
@@ -51,7 +54,7 @@ struct MediaPlayerStrip: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: Radius.popover, style: .continuous)
-                .strokeBorder(p.sidebarBorder.color.opacity(0.5), lineWidth: 1)
+                .strokeBorder(p.sidebarBorder.color.opacity(Stroke.border), lineWidth: 1)
         )
         .padding(.horizontal, 8)
         .padding(.bottom, 6)
@@ -162,6 +165,7 @@ struct MediaPlayerStrip: View {
 /// play/pause gets a solid primary disc with a contrasting glyph.
 private struct PlayerButton: View {
     let systemName: String
+    var label: String = ""
     var prominent: Bool = false
     let action: () -> Void
 
@@ -179,6 +183,8 @@ private struct PlayerButton: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .help(label)
+        .accessibilityLabel(label)
     }
 
     private var foreground: Color {

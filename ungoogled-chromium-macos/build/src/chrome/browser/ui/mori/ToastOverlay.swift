@@ -29,6 +29,7 @@ private struct ToastView: View {
     let onDismiss: () -> Void
 
     @Environment(\.palette) private var p
+    @Environment(\.colorScheme) private var scheme
     @State private var hovering = false
 
     var body: some View {
@@ -56,8 +57,9 @@ private struct ToastView: View {
             RoundedRectangle(cornerRadius: Radius.popover, style: .continuous)
                 .strokeBorder(p.border.color.opacity(0.6), lineWidth: 1)
         )
-        .shadow(color: .black.opacity(0.20), radius: 12, x: 0, y: 4)
+        .elevation(.popover, scheme)
         .scaleEffect(hovering ? 1.02 : 1)
+        .animation(Motion.state, value: hovering)
         .contentShape(RoundedRectangle(cornerRadius: Radius.popover, style: .continuous))
         .onHover { hovering = $0 }
         .onTapGesture { onDismiss() }

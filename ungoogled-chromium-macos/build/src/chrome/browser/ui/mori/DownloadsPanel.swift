@@ -45,9 +45,7 @@ struct DownloadsButton: View {
                         style: StrokeStyle(lineWidth: 2, lineCap: .round))
                 .frame(width: 26, height: 26)
                 .rotationEffect(.degrees(spin ? 360 : 0))
-                .animation(reduceMotion ? nil
-                           : .linear(duration: 0.9).repeatForever(autoreverses: false),
-                           value: spin)
+                .animation(reduceMotion ? nil : Motion.spin, value: spin)
                 .onAppear { spin = true }
         } else {
             ZStack {
@@ -58,7 +56,7 @@ struct DownloadsButton: View {
                     .stroke(p.primary.color,
                             style: StrokeStyle(lineWidth: 2, lineCap: .round))
                     .rotationEffect(.degrees(-90))
-                    .animation(.easeOut(duration: 0.25), value: downloads.aggregateFraction)
+                    .animation(Motion.reveal, value: downloads.aggregateFraction)
             }
             .frame(width: 26, height: 26)
         }
@@ -93,7 +91,7 @@ struct DownloadsPanel: View {
     private var header: some View {
         HStack(spacing: 8) {
             Text("Downloads")
-                .font(Typography.ui(14, weight: .semibold))
+                .font(Typography.ui(Typography.title, weight: .semibold))
                 .foregroundStyle(p.foreground.color)
             Spacer()
             Button { downloads.showDefaultFolder() } label: {
@@ -143,6 +141,7 @@ private struct DownloadRow: View {
     let item: DownloadItem
     @ObservedObject var downloads: DownloadStore
     @Environment(\.palette) private var p
+    @Environment(\.colorScheme) private var scheme
     @State private var hovering = false
 
     var body: some View {
@@ -152,11 +151,13 @@ private struct DownloadRow: View {
                 .frame(width: 22)
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(item.displayName)
-                    .font(Typography.ui(Typography.base, weight: .medium))
-                    .foregroundStyle(p.foreground.color)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+                if !item.displayName.isEmpty {
+                    Text(item.displayName)
+                        .font(Typography.ui(Typography.base, weight: .medium))
+                        .foregroundStyle(p.foreground.color)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
 
                 if item.isInProgress && !item.isComplete && !item.isCanceled {
                     ProgressView(value: min(max(item.fractionComplete, 0), 1))
@@ -195,10 +196,11 @@ private struct DownloadRow: View {
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                .fill(hovering ? p.foreground.color.opacity(0.05) : .clear)
+                .fill(hovering ? TabSurface.hoverFill(scheme) : .clear)
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+        .animation(Motion.state, value: hovering)
         .onTapGesture(count: 2) { downloads.open(item) }
     }
 

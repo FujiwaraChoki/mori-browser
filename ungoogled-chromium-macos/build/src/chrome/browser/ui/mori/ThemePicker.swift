@@ -193,9 +193,9 @@ private struct ThemeRow: View {
             HStack(spacing: 12) {
                 swatchView
                     .frame(width: 60, height: 36)
-                    .clipShape(RoundedRectangle(cornerRadius: Radius.md + 2, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
                     .overlay(
-                        RoundedRectangle(cornerRadius: Radius.md + 2, style: .continuous)
+                        RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
                             .strokeBorder(.white.opacity(0.12), lineWidth: 1)
                     )
 
@@ -248,7 +248,7 @@ private struct ThemeRow: View {
 
 /// Shared tile geometry/chrome so the preset and default tiles read as one set.
 private enum Tile {
-    static let radius: CGFloat = 12
+    static let radius: CGFloat = Radius.popover
     static let height: CGFloat = 70
 
     static var shape: RoundedRectangle {

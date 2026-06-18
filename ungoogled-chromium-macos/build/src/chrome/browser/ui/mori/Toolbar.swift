@@ -3,8 +3,7 @@ import SwiftUI
 /// A fixed hairline strip atop the web content: its 4pt height plus the card's
 /// 4pt top padding makes the top gap match the 8pt inset on the card's other
 /// edges. Acts as the window drag area and shows the page-load progress bar. The
-/// revealed titlebar (traffic lights + a slim bar) is handled separately by
-/// `TopChromeOverlay`, which floats over the page rather than resizing it.
+/// page-load indicator now lives inside the web card rather than in this strip.
 struct WebTopStrip: View {
     var tab: BrowserTab?
 
@@ -24,11 +23,13 @@ struct WebTopStrip: View {
 }
 
 /// A slim indeterminate progress bar shown while a page loads. A muted segment
-/// sweeps left→right; respects reduced-motion by holding still.
+/// sweeps left→right; under reduced-motion it holds still and instead breathes
+/// its opacity so it still reads as active "loading" rather than a dead line.
 struct LoadingBar: View {
     @Environment(\.palette) private var p
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var phase: CGFloat = 0
+    @State private var pulsing = false
 
     var body: some View {
         GeometryReader { geo in
@@ -44,10 +45,14 @@ struct LoadingBar: View {
                 )
                 .frame(width: segment, height: 2)
                 .offset(x: reduceMotion ? (w - segment) / 2 : phase * (w + segment) - segment)
+                .opacity(reduceMotion ? (pulsing ? 1 : 0.35) : 1)
                 .onAppear {
-                    guard !reduceMotion else { return }
-                    withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: false)) {
-                        phase = 1
+                    if reduceMotion {
+                        withAnimation(Motion.pulse) { pulsing = true }
+                    } else {
+                        withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: false)) {
+                            phase = 1
+                        }
                     }
                 }
         }
@@ -112,6 +117,8 @@ struct Omnibox: View {
 
             ExtensionToolbarItems(store: store)
 
+            ReaderButton(store: store, tab: tab)
+
             if tab.isLoading {
                 ProgressView().controlSize(.small).scaleEffect(0.55)
             }
@@ -132,7 +139,6 @@ struct Omnibox: View {
             Favicon(icon: tab.faviconURL,
                     page: tab.urlString,
                     image: tab.faviconImage,
-                    isLoading: false,
                     size: 15,
                     active: true)
         } else {

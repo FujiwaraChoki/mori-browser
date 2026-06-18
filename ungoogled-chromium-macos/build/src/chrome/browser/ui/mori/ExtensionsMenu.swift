@@ -77,7 +77,7 @@ private struct ExtensionActionButton: View {
                 .frame(width: 22, height: 22)
                 .overlay(alignment: .topTrailing) { badge }
                 .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
                         .fill(hover ? p.foreground.color.opacity(0.12) : .clear)
                 )
                 .contentShape(Rectangle())
@@ -85,6 +85,7 @@ private struct ExtensionActionButton: View {
         .buttonStyle(.plain)
         .background(AnchorReader(box: anchor))
         .onHover { hover = $0 }
+        .animation(Motion.snappy, value: hover)
         .help(ext.actionTitle.isEmpty ? ext.name : ext.actionTitle)
     }
 
@@ -276,6 +277,7 @@ private struct ExtensionMenuRow: View {
         )
         .background(AnchorReader(box: anchor))
         .onHover { hover = $0 }
+        .animation(Motion.snappy, value: hover)
         .contextMenu {
             if ext.hasOptionsPage {
                 Button("Options…") {
