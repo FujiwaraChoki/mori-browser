@@ -1,8 +1,8 @@
 import SwiftUI
 import AppKit
 
-/// A full set of Mori color tokens for one appearance, transcribed from
-/// `~/Developer/mori/src/app/globals.css` (`:root` = light, `.dark` = dark).
+/// A full set of Mori color tokens for one appearance, transcribed from the
+/// original app stylesheet (`:root` = light, `.dark` = dark).
 struct ThemePalette {
     // `var` (not `let`) so a gradient theme can layer a derived accent over the
     // brand-driven tokens via `applying(theme:scheme:)`. The `static let`

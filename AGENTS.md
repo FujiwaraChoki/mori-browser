@@ -18,7 +18,7 @@ See `BUILDING.md` for the canonical local build, package, run, and logging
 commands. The packaged app used for manual testing is:
 
 ```text
-/Users/choki/Downloads/MoriBrowser.app
+$HOME/Downloads/MoriBrowser.app
 ```
 
 ## Architecture Notes

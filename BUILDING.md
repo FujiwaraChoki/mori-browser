@@ -7,9 +7,8 @@ instead of the old CEF app.
 
 - `ungoogled-chromium-macos/build/src` is the Chromium source tree used for
   day-to-day builds.
-- `out/Default/Chromium.app` inside that source tree is the local build output.
-- `/Users/choki/Downloads/MoriBrowser.app` is the packaged app used for manual
-  testing.
+- `out/Default/Mori.app` inside that source tree is the local build output.
+- `$HOME/Downloads/MoriBrowser.app` is the packaged app used for manual testing.
 - `depot_tools` and `binshims` are checked out beside the source tree and should
   be placed on `PATH` for builds.
 
@@ -25,9 +24,10 @@ instead of the old CEF app.
 Run from the repository root:
 
 ```sh
-cd /Users/choki/Developer/chromium-mori/ungoogled-chromium-macos/build/src
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root/ungoogled-chromium-macos/build/src"
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-export PATH="$HOME/Developer/chromium-mori/binshims:$HOME/Developer/chromium-mori/depot_tools:$PATH"
+export PATH="$repo_root/binshims:$repo_root/depot_tools:$PATH"
 ninja -j 16 -l 24 -C out/Default chrome
 ```
 
@@ -40,11 +40,12 @@ source of truth.
 After a successful build:
 
 ```sh
-cd /Users/choki/Developer/chromium-mori/ungoogled-chromium-macos/build/src
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root/ungoogled-chromium-macos/build/src"
 if [ -e "$HOME/Downloads/MoriBrowser.app" ]; then
   trash "$HOME/Downloads/MoriBrowser.app"
 fi
-/usr/bin/ditto "out/Default/Chromium.app" "$HOME/Downloads/MoriBrowser.app"
+/usr/bin/ditto "out/Default/Mori.app" "$HOME/Downloads/MoriBrowser.app"
 ```
 
 Use `trash`, not `rm -rf`, when replacing old app bundles.
@@ -52,8 +53,9 @@ Use `trash`, not `rm -rf`, when replacing old app bundles.
 Verify the packaged framework timestamp:
 
 ```sh
-stat -f '%Sm %N' -t '%Y-%m-%d %H:%M:%S' \
-  "$HOME/Downloads/MoriBrowser.app/Contents/Frameworks/Chromium Framework.framework/Versions/148.0.7778.215/Chromium Framework"
+find "$HOME/Downloads/MoriBrowser.app/Contents/Frameworks" \
+  -type f \( -name 'Chromium Framework' -o -name 'Mori Framework' \) \
+  -exec stat -f '%Sm %N' -t '%Y-%m-%d %H:%M:%S' {} \;
 ```
 
 ## Run
@@ -77,7 +79,7 @@ mkdir -p "$profile"
 Check that it stayed running:
 
 ```sh
-pgrep -fl "/Users/choki/Downloads/MoriBrowser.app/Contents/MacOS/Chromium"
+pgrep -fl "$HOME/Downloads/MoriBrowser.app/Contents/MacOS/Mori"
 ```
 
 ## Logging
@@ -86,7 +88,7 @@ For keyboard shortcut diagnostics, current instrumented builds emit `MORI-KEY`
 messages. To capture launch logs directly:
 
 ```sh
-"$HOME/Downloads/MoriBrowser.app/Contents/MacOS/Chromium" \
+"$HOME/Downloads/MoriBrowser.app/Contents/MacOS/Mori" \
   --enable-logging=stderr \
   --v=0
 ```
@@ -94,8 +96,9 @@ messages. To capture launch logs directly:
 You can also confirm an instrumented packaged binary contains the diagnostics:
 
 ```sh
-strings -a "$HOME/Downloads/MoriBrowser.app/Contents/Frameworks/Chromium Framework.framework/Versions/148.0.7778.215/Chromium Framework" \
-  | grep -m 5 'MORI-KEY'
+find "$HOME/Downloads/MoriBrowser.app/Contents/Frameworks" \
+  -type f \( -name 'Chromium Framework' -o -name 'Mori Framework' \) \
+  -exec strings -a {} \; | grep -m 5 'MORI-KEY'
 ```
 
 ## Avoiding Stale Binaries
@@ -108,14 +111,15 @@ packaged bundle.
 ## Common Build Loop
 
 ```sh
-cd /Users/choki/Developer/chromium-mori/ungoogled-chromium-macos/build/src
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root/ungoogled-chromium-macos/build/src"
 export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-export PATH="$HOME/Developer/chromium-mori/binshims:$HOME/Developer/chromium-mori/depot_tools:$PATH"
+export PATH="$repo_root/binshims:$repo_root/depot_tools:$PATH"
 ninja -j 16 -l 24 -C out/Default chrome
 
 if [ -e "$HOME/Downloads/MoriBrowser.app" ]; then
   trash "$HOME/Downloads/MoriBrowser.app"
 fi
-/usr/bin/ditto "out/Default/Chromium.app" "$HOME/Downloads/MoriBrowser.app"
+/usr/bin/ditto "out/Default/Mori.app" "$HOME/Downloads/MoriBrowser.app"
 /usr/bin/open -n "$HOME/Downloads/MoriBrowser.app"
 ```
