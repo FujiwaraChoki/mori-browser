@@ -48,6 +48,9 @@ typedef void (^MoriJavaScriptResultHandler)(id _Nullable result,
 - (void)browserView:(MoriBrowserView *)view
     didUpdateFindMatchOrdinal:(int)ordinal
                      ofMatches:(int)count;
+/// The page started or stopped producing audible sound.
+- (void)browserView:(MoriBrowserView *)view
+    didChangeAudioState:(BOOL)audible;
 @end
 
 @interface MoriBrowserView : NSView
@@ -97,6 +100,17 @@ typedef void (^MoriJavaScriptResultHandler)(id _Nullable result,
 - (BOOL)evaluateJavaScript:(NSString *)source
                 completion:(MoriJavaScriptResultHandler)completion;
 
+/// Copy the image under a window-space point to the pasteboard using
+/// Chromium's native image pipeline. Operates on the already-decoded bitmap, so
+/// it works for cross-origin (CORS-restricted) images. Returns NO when there is
+/// no live browser/view or no image at that point.
+- (BOOL)copyImageAtWindowPoint:(NSPoint)point;
+
+/// Save the image under a window-space point. http(s)/blob/file images download
+/// by URL through Chromium's download UI; canvas and data-URL images route
+/// through the renderer at the given point. Returns NO when unavailable.
+- (BOOL)saveImageURL:(NSString *)url atWindowPoint:(NSPoint)point;
+
 /// Make this browser the first responder / give it keyboard focus.
 - (void)focusBrowser;
 
@@ -110,6 +124,11 @@ typedef void (^MoriJavaScriptResultHandler)(id _Nullable result,
 
 /// Drive the injected media agent (play/pause/seek/skip/mute/pip).
 - (void)sendMediaCommand:(NSString *)action value:(double)value;
+
+/// Mute or unmute all audio from this tab's page.
+- (void)setAudioMuted:(BOOL)muted;
+/// Whether this tab's audio is currently muted.
+@property(nonatomic, readonly) BOOL isAudioMuted;
 
 /// Tell Chromium this page is (un)occluded — flips `document.hidden`, which
 /// drives throttling and the auto-PiP-on-tab-switch behavior.

@@ -43,11 +43,7 @@ bool HandleMoriShortcut(const input::NativeWebKeyboardEvent& event) {
   if (!ns_event || ns_event.type != NSEventTypeKeyDown) {
     return false;
   }
-  BOOL handled = [MoriRoot handleShortcutEvent:ns_event];
-  NSLog(@"MORI-KEY PreHandleKeyboardEvent keyCode=%d mods=%lu handled=%d",
-        (int)ns_event.keyCode, (unsigned long)ns_event.modifierFlags,
-        handled ? 1 : 0);
-  return handled == YES;
+  return [MoriRoot handleShortcutEvent:ns_event] == YES;
 }
 
 }  // namespace

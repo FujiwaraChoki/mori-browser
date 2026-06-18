@@ -27,18 +27,22 @@
 #include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+#include "components/favicon/content/content_favicon_driver.h"
+#include "components/favicon/core/favicon_driver.h"
+#include "components/favicon/core/favicon_driver_observer.h"
 #include "components/find_in_page/find_notification_details.h"
 #include "components/find_in_page/find_result_observer.h"
 #include "components/find_in_page/find_tab_helper.h"
 #include "components/find_in_page/find_types.h"
 #include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/navigation_controller.h"
-#include "content/public/common/referrer.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/referrer.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/download_manager.h"
 #include "components/download/public/common/download_item.h"
@@ -48,17 +52,22 @@
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "ui/base/page_transition_types.h"
+#include "ui/gfx/image/image.h"
 #include "url/gurl.h"
 
 // Swift-exported surface of MoriRoot (MoriRoot.swift).
 @interface MoriRoot : NSObject
 + (NSViewController*)makeRootViewController;
 + (void)prepareForTermination;
++ (BOOL)shouldAutoFocusWebContent;
 + (BOOL)handleShortcutEvent:(NSEvent*)event;
 + (void)releaseShortcutEvent:(NSEvent*)event;
-+ (BOOL)dismissLauncherIfVisible;
++ (BOOL)isReservedShortcutKeyEquivalent:(NSString*)keyEquivalent
+                           modifierMask:(NSUInteger)modifierMask;
 + (void)newTab;
 + (void)openNewTabWithURL:(NSString*)url;
++ (void)goBack;
++ (void)goForward;
 + (void)toggleSidebar;
 @end
 
@@ -157,17 +166,40 @@ MoriBrowserView* MoriBrowserViewForEvent(NSEvent* event) {
   return nil;
 }
 
+bool HandleNavigationMouseButton(NSEvent* event, bool performNavigation) {
+  if (event.type != NSEventTypeOtherMouseDown &&
+      event.type != NSEventTypeOtherMouseUp) {
+    return false;
+  }
+
+  MoriBrowserView* view = MoriBrowserViewForEvent(event);
+  switch (event.buttonNumber) {
+    case 3:
+      if (performNavigation) {
+        if (view) {
+          [view goBack];
+        } else {
+          [MoriRoot goBack];
+        }
+      }
+      return true;
+    case 4:
+      if (performNavigation) {
+        if (view) {
+          [view goForward];
+        } else {
+          [MoriRoot goForward];
+        }
+      }
+      return true;
+    default:
+      return false;
+  }
+}
+
 bool IsNativeTextInputFirstResponder(NSResponder* responder) {
   return [responder isKindOfClass:[NSTextView class]] ||
          [responder isKindOfClass:[NSTextField class]];
-}
-
-bool IsPlainEscape(NSEvent* event) {
-  NSEventModifierFlags modifiers =
-      event.modifierFlags &
-      (NSEventModifierFlagCommand | NSEventModifierFlagShift |
-       NSEventModifierFlagOption | NSEventModifierFlagControl);
-  return modifiers == 0 && event.keyCode == 53;
 }
 
 NSMenu* FindTopLevelMenu(NSString* title) {
@@ -271,12 +303,11 @@ void InstallSidebarMenuShortcut() {
           item.keyEquivalentModifierMask &
           (NSEventModifierFlagCommand | NSEventModifierFlagShift |
            NSEventModifierFlagOption | NSEventModifierFlagControl);
-      // Strip the key equivalents Mori repurposes (⌘S → toggle sidebar,
-      // ⌘T → toggle omnibox) off Chromium's menu items (Save Page As, New
-      // Tab) so the menu never intercepts them out from under Mori's own
-      // shortcut handling.
-      if (([key isEqualToString:@"s"] || [key isEqualToString:@"t"]) &&
-          modifiers == NSEventModifierFlagCommand) {
+      // Strip key equivalents Mori owns so Chromium menu accelerators never
+      // intercept them before the Swift shortcut registry. The reservations
+      // live beside the shortcut declarations in ShortcutRegistry.swift.
+      if ([MoriRoot isReservedShortcutKeyEquivalent:key
+                                      modifierMask:modifiers]) {
         item.keyEquivalent = @"";
       }
       if ([item.title isEqualToString:@"Toggle Sidebar"]) {
@@ -353,9 +384,11 @@ id NSObjectFromValue(const base::Value& value) {
 - (void)engineWebContentsGone;
 - (void)engineSetTitle:(NSString*)title;
 - (void)engineSetURL:(NSString*)url;
+- (void)engineSetFaviconImage:(NSImage*)image iconURL:(NSString*)iconURL;
 - (void)engineSetLoading:(BOOL)loading;
 - (void)engineNavStateChanged;
 - (void)engineFindReplyOrdinal:(int)ordinal count:(int)count;
+- (void)engineAudioStateChanged:(BOOL)audible;
 - (void)engineRequestsNewTabWithURL:(NSString*)url;
 - (void)engineMaybeRefocus;
 - (BOOL)canReceiveBrowserFocus;
@@ -386,12 +419,21 @@ id NSObjectFromValue(const base::Value& value) {
 namespace mori {
 
 class TabBridge : public content::WebContentsObserver,
-                  public find_in_page::FindResultObserver {
+                  public find_in_page::FindResultObserver,
+                  public favicon::FaviconDriverObserver {
  public:
   TabBridge(content::WebContents* contents, MoriBrowserView* view)
       : content::WebContentsObserver(contents), view_(view) {
     if (auto* helper = find_in_page::FindTabHelper::FromWebContents(contents)) {
       find_observation_.Observe(helper);
+    }
+    // Chromium downloads and decodes the page's real favicon (any format) and
+    // notifies us here; without this the sidebar only ever sees the Swift-side
+    // /favicon.ico guess, which fails for many sites and falls back to a
+    // monogram.
+    if (auto* favicon_driver =
+            favicon::ContentFaviconDriver::FromWebContents(contents)) {
+      favicon_observation_.Observe(favicon_driver);
     }
   }
   ~TabBridge() override = default;
@@ -409,6 +451,18 @@ class TabBridge : public content::WebContentsObserver,
     [view_ engineMaybeRefocus];
   }
 
+  void DidFinishNavigation(
+      content::NavigationHandle* navigation_handle) override {
+    if (!navigation_handle->HasCommitted() ||
+        !navigation_handle->IsInPrimaryMainFrame() ||
+        !navigation_handle->IsSameDocument()) {
+      return;
+    }
+    [view_ engineSetURL:base::SysUTF8ToNSString(
+                             navigation_handle->GetURL().spec())];
+    [view_ engineNavStateChanged];
+  }
+
   void DidStartLoading() override {
     [view_ engineSetLoading:YES];
   }
@@ -417,6 +471,10 @@ class TabBridge : public content::WebContentsObserver,
     [view_ engineSetLoading:NO];
     [view_ engineNavStateChanged];
     [view_ engineMaybeRefocus];
+  }
+
+  void OnAudioStateChanged(bool audible) override {
+    [view_ engineAudioStateChanged:audible];
   }
 
   void WebContentsDestroyed() override {
@@ -438,11 +496,32 @@ class TabBridge : public content::WebContentsObserver,
     find_observation_.Reset();
   }
 
+  // favicon::FaviconDriverObserver:
+  void OnFaviconUpdated(favicon::FaviconDriver* favicon_driver,
+                        NotificationIconType notification_icon_type,
+                        const GURL& icon_url,
+                        bool icon_url_changed,
+                        const gfx::Image& image) override {
+    // Only the standard 16-DIP page favicon drives the sidebar glyph; ignore
+    // the larger touch-icon notifications so a big apple-touch-icon doesn't
+    // displace the crisp favicon. `AsNSImage` is nil for an empty image (icon
+    // removed), which the Swift side treats as "fall back to monogram".
+    if (notification_icon_type !=
+        favicon::FaviconDriverObserver::NON_TOUCH_16_DIP) {
+      return;
+    }
+    [view_ engineSetFaviconImage:image.AsNSImage()
+                         iconURL:base::SysUTF8ToNSString(icon_url.spec())];
+  }
+
  private:
   __weak MoriBrowserView* view_;
   base::ScopedObservation<find_in_page::FindTabHelper,
                           find_in_page::FindResultObserver>
       find_observation_{this};
+  base::ScopedObservation<favicon::FaviconDriver,
+                          favicon::FaviconDriverObserver>
+      favicon_observation_{this};
 };
 
 // ---------------------------------------------------------------------------
@@ -620,6 +699,19 @@ void EnsureMoriUIStarted(Browser* browser) {
   window.title = @"Mori";
   window.titlebarAppearsTransparent = YES;
   window.titleVisibility = NSWindowTitleHidden;
+  NSButton* closeButton = [window standardWindowButton:NSWindowCloseButton];
+  NSButton* miniaturizeButton =
+      [window standardWindowButton:NSWindowMiniaturizeButton];
+  NSButton* zoomButton = [window standardWindowButton:NSWindowZoomButton];
+  NSButton* titlebarButtons[3] = {closeButton, miniaturizeButton, zoomButton};
+  for (NSButton* button : titlebarButtons) {
+    if (!button) {
+      continue;
+    }
+    button.hidden = YES;
+    button.enabled = NO;
+    button.alphaValue = 0;
+  }
   window.releasedWhenClosed = NO;
   window.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
   window.contentMinSize = NSMakeSize(720, 480);
@@ -635,45 +727,13 @@ void EnsureMoriUIStarted(Browser* browser) {
   [NSEvent
       addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown |
                                            NSEventMaskKeyUp |
+                                           NSEventMaskFlagsChanged |
                                            NSEventMaskLeftMouseDown |
                                            NSEventMaskRightMouseDown |
-                                           NSEventMaskOtherMouseDown
+                                           NSEventMaskOtherMouseDown |
+                                           NSEventMaskOtherMouseUp
                                    handler:^NSEvent*(NSEvent* event) {
                                      if (event.type == NSEventTypeKeyDown) {
-                                       // Chromium redispatches unhandled key
-                                       // events through sendEvent a second
-                                       // time (renderer round-trip); the same
-                                       // hardware event must only trigger a
-                                       // shortcut once.
-                                       static NSTimeInterval lastHandled = 0;
-                                       static unsigned short lastKeyCode = 0;
-                                       static NSEventModifierFlags
-                                           lastModifiers = 0;
-                                       if (lastHandled > 0 &&
-                                           event.timestamp == lastHandled &&
-                                           event.keyCode == lastKeyCode &&
-                                           event.modifierFlags ==
-                                               lastModifiers) {
-                                         NSLog(@"MORI-KEY monitor DUP-EVENT "
-                                               @"keyCode=%d",
-                                               (int)event.keyCode);
-                                         return nil;
-                                       }
-                                       if (event.modifierFlags &
-                                           NSEventModifierFlagCommand) {
-                                         NSLog(@"MORI-KEY monitor keyDown "
-                                               @"keyCode=%d mods=%lu repeat=%d",
-                                               (int)event.keyCode,
-                                               (unsigned long)event.modifierFlags,
-                                               event.isARepeat ? 1 : 0);
-                                       }
-                                       if (IsPlainEscape(event) &&
-                                           [MoriRoot dismissLauncherIfVisible]) {
-                                         lastHandled = event.timestamp;
-                                         lastKeyCode = event.keyCode;
-                                         lastModifiers = event.modifierFlags;
-                                         return nil;
-                                       }
                                        // ⌘S (toggle sidebar) and ⌘T (toggle
                                        // omnibox) flow through the shared
                                        // shortcut registry below like every
@@ -682,9 +742,6 @@ void EnsureMoriUIStarted(Browser* browser) {
                                        // content has focus.
                                        if ([MoriRoot
                                                handleShortcutEvent:event]) {
-                                         lastHandled = event.timestamp;
-                                         lastKeyCode = event.keyCode;
-                                         lastModifiers = event.modifierFlags;
                                          return nil;
                                        }
                                        if (MoriBrowserView* view =
@@ -709,6 +766,9 @@ void EnsureMoriUIStarted(Browser* browser) {
                                                    event];
                                        }
                                      } else if (event.type ==
+                                                NSEventTypeFlagsChanged) {
+                                       [MoriRoot releaseShortcutEvent:event];
+                                     } else if (event.type ==
                                                     NSEventTypeLeftMouseDown ||
                                                 event.type ==
                                                     NSEventTypeRightMouseDown ||
@@ -717,6 +777,16 @@ void EnsureMoriUIStarted(Browser* browser) {
                                        if (MoriBrowserView* view =
                                                MoriBrowserViewForEvent(event)) {
                                          [view focusBrowser];
+                                       }
+                                       if (HandleNavigationMouseButton(
+                                               event, false)) {
+                                         return nil;
+                                       }
+                                     } else if (event.type ==
+                                                NSEventTypeOtherMouseUp) {
+                                       if (HandleNavigationMouseButton(
+                                               event, true)) {
+                                         return nil;
                                        }
                                      }
                                      return event;
@@ -898,6 +968,18 @@ Browser* MoriBrowser() {
   }
 }
 
+- (void)engineSetFaviconImage:(NSImage*)image iconURL:(NSString*)iconURL {
+  if (iconURL.length &&
+      [_navDelegate respondsToSelector:@selector(browserView:
+                                           didChangeFaviconURLs:)]) {
+    [_navDelegate browserView:self didChangeFaviconURLs:@[ iconURL ]];
+  }
+  if ([_navDelegate respondsToSelector:@selector(browserView:
+                                           didLoadFaviconImage:)]) {
+    [_navDelegate browserView:self didLoadFaviconImage:image];
+  }
+}
+
 - (void)engineSetLoading:(BOOL)loading {
   const BOOL wasLoading = _isLoading;
   _isLoading = loading;
@@ -949,6 +1031,23 @@ Browser* MoriBrowser() {
                                            requestsNewTabWithURL:)]) {
     [_navDelegate browserView:self requestsNewTabWithURL:url];
   }
+}
+
+- (void)engineAudioStateChanged:(BOOL)audible {
+  if ([_navDelegate respondsToSelector:@selector(browserView:
+                                           didChangeAudioState:)]) {
+    [_navDelegate browserView:self didChangeAudioState:audible];
+  }
+}
+
+- (void)setAudioMuted:(BOOL)muted {
+  if (_webContents) {
+    _webContents->SetAudioMuted(muted);
+  }
+}
+
+- (BOOL)isAudioMuted {
+  return _webContents ? _webContents->IsAudioMuted() : NO;
 }
 
 // MARK: commands
@@ -1100,6 +1199,16 @@ Browser* MoriBrowser() {
 
 - (BOOL)evaluateJavaScript:(NSString*)source
                 completion:(MoriJavaScriptResultHandler)completion {
+  if (![NSThread isMainThread]) {
+    NSString* sourceCopy = [source copy];
+    MoriJavaScriptResultHandler handler = [completion copy];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (![self evaluateJavaScript:sourceCopy completion:handler]) {
+        handler(nil, @"Browser unavailable");
+      }
+    });
+    return YES;
+  }
   if (!_webContents) {
     return NO;
   }
@@ -1117,15 +1226,82 @@ Browser* MoriBrowser() {
   return YES;
 }
 
+// MARK: image context-menu actions (native copy/save)
+
+// Convert a window-space point (AppKit, bottom-left origin) into the render
+// widget's viewport coordinates (top-left origin, DIP) that CopyImageAt /
+// SaveImageAt expect. Returns NO if there's no live render view.
+- (BOOL)viewportPointForWindowPoint:(NSPoint)windowPoint
+                               outX:(int*)outX
+                               outY:(int*)outY {
+  content::RenderWidgetHostView* rv =
+      _webContents ? _webContents->GetRenderWidgetHostView() : nullptr;
+  NSView* nsview = rv ? rv->GetNativeView().GetNativeNSView() : nil;
+  if (!nsview) {
+    return NO;
+  }
+  NSPoint local = [nsview convertPoint:windowPoint fromView:nil];
+  CGFloat y = nsview.isFlipped ? local.y : nsview.bounds.size.height - local.y;
+  *outX = static_cast<int>(std::lround(local.x));
+  *outY = static_cast<int>(std::lround(y));
+  return YES;
+}
+
+- (BOOL)copyImageAtWindowPoint:(NSPoint)windowPoint {
+  if (!_webContents) {
+    return NO;
+  }
+  content::RenderFrameHost* frame = _webContents->GetPrimaryMainFrame();
+  int x = 0, y = 0;
+  if (!frame ||
+      ![self viewportPointForWindowPoint:windowPoint outX:&x outY:&y]) {
+    return NO;
+  }
+  // Copies the already-decoded bitmap — no network fetch, so cross-origin
+  // (CORS-restricted) images copy fine.
+  frame->CopyImageAt(x, y);
+  return YES;
+}
+
+- (BOOL)saveImageURL:(NSString*)url atWindowPoint:(NSPoint)windowPoint {
+  if (!_webContents) {
+    return NO;
+  }
+  content::RenderFrameHost* frame = _webContents->GetPrimaryMainFrame();
+  if (!frame) {
+    return NO;
+  }
+  GURL gurl(base::SysNSStringToUTF8(url ?: @""));
+  // Canvas and large data-URL images have no fetchable URL; let the renderer
+  // post back the download (mirrors Chromium's own RenderViewContextMenu).
+  if (!gurl.is_valid() || gurl.SchemeIs("data")) {
+    int x = 0, y = 0;
+    if (![self viewportPointForWindowPoint:windowPoint outX:&x outY:&y]) {
+      return NO;
+    }
+    frame->SaveImageAt(x, y);
+    return YES;
+  }
+  // http(s)/blob/file images download by URL through Chromium's download UI,
+  // using the frame's isolation info (correct referrer, cookies, etc.).
+  _webContents->SaveFrame(gurl, content::Referrer(), frame);
+  return YES;
+}
+
 // MARK: focus / visibility / lifetime
 
 - (void)engineMaybeRefocus {
-  if (!_webContents || self.isHidden || !_webWindowVisible || _webView.hidden) {
+  if (!_webContents || self.isHidden || !_webWindowVisible || _webView.hidden ||
+      ![MoriRoot shouldAutoFocusWebContent]) {
     return;
   }
   dispatch_async(dispatch_get_main_queue(), ^{
     if (!self->_webContents || self.isHidden || !self->_webWindowVisible ||
-        self->_webView.hidden) {
+        self->_webView.hidden || ![MoriRoot shouldAutoFocusWebContent]) {
+      return;
+    }
+    NSWindow* window = self.window ?: self->_webView.window;
+    if (IsNativeTextInputFirstResponder(window.firstResponder)) {
       return;
     }
     [self focusBrowser];
