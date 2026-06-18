@@ -45,9 +45,12 @@ struct LibraryPanel: View {
     @Binding var isOpen: Bool
     @ObservedObject private var history = HistoryStore.shared
     @ObservedObject private var bookmarks = BookmarkStore.shared
+    @ObservedObject private var archive = ArchiveStore.shared
     @Environment(\.palette) private var p
 
-    enum Tab: String, CaseIterable { case history = "History", bookmarks = "Bookmarks" }
+    enum Tab: String, CaseIterable {
+        case history = "History", bookmarks = "Bookmarks", archive = "Archive"
+    }
     @State private var tab: Tab = .history
 
     var body: some View {
@@ -135,7 +138,16 @@ struct LibraryPanel: View {
                 }
                 .buttonStyle(.plain)
             }
+            if tab == .archive && !archive.tabs.isEmpty {
+                Button { archive.clear() } label: {
+                    Text("Clear")
+                        .font(Typography.ui(Typography.label, weight: .medium))
+                        .foregroundStyle(p.mutedForeground.color)
+                }
+                .buttonStyle(.plain)
+            }
         }
+        .animation(Motion.state, value: tab)
         .padding(.horizontal, 12)
         .frame(height: 44)
     }
@@ -155,6 +167,13 @@ struct LibraryPanel: View {
                                     Button("Remove", role: .destructive) { history.remove(entry) }
                                 }
                         }
+                        if history.entries.count > 200 {
+                            Text("Showing the 200 most recent of \(history.entries.count) entries")
+                                .font(Typography.ui(Typography.small))
+                                .foregroundStyle(p.mutedForeground.color)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 10)
+                        }
                     }
                     .padding(8)
                 }
@@ -170,6 +189,29 @@ struct LibraryPanel: View {
                                 .contextMenu {
                                     Button("Remove", role: .destructive) { bookmarks.remove(mark) }
                                 }
+                        }
+                    }
+                    .padding(8)
+                }
+            }
+        case .archive:
+            if archive.tabs.isEmpty {
+                emptyState("archivebox", "No archived tabs")
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 1) {
+                        ForEach(archive.tabs) { archived in
+                            LibraryRow(title: archived.title, url: archived.url) {
+                                store.restoreArchived(archived)
+                                isOpen = false
+                            }
+                            .contextMenu {
+                                Button("Reopen") {
+                                    store.restoreArchived(archived)
+                                    isOpen = false
+                                }
+                                Button("Remove", role: .destructive) { archive.remove(archived) }
+                            }
                         }
                     }
                     .padding(8)
@@ -202,6 +244,7 @@ private struct LibraryRow: View {
     let action: () -> Void
 
     @Environment(\.palette) private var p
+    @Environment(\.colorScheme) private var scheme
     @State private var hovering = false
 
     var body: some View {
@@ -225,12 +268,13 @@ private struct LibraryRow: View {
             .padding(.vertical, 6)
             .background(
                 RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                    .fill(hovering ? p.foreground.color.opacity(0.05) : .clear)
+                    .fill(hovering ? TabSurface.hoverFill(scheme) : .clear)
             )
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .animation(Motion.state, value: hovering)
     }
 
     private var faviconURL: String? {

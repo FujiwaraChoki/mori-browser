@@ -19,30 +19,45 @@ struct TabRow: View {
     @Environment(\.palette) private var p
     @Environment(\.colorScheme) private var scheme
     @State private var hovering = false
+    @State private var pressing = false
     @State private var closeHovering = false
 
     var body: some View {
         HStack(spacing: 9) {
             Favicon(icon: tab.faviconURL, page: tab.urlString,
                     image: tab.faviconImage,
-                    isLoading: tab.isLoading, size: 15,
+                    size: 15,
                     active: isSelected || hovering)
+                .opacity(tab.isAsleep ? 0.5 : 1)
 
             Text(tab.title)
                 .font(Typography.ui(Typography.base))
                 .foregroundStyle(isSelected ? p.sidebarForeground.color
-                                            : p.sidebarForeground.color.opacity(0.78))
+                                            : p.sidebarForeground.color.opacity(tab.isAsleep ? 0.5 : 0.78))
                 .lineLimit(1)
                 .truncationMode(.tail)
 
             Spacer(minLength: 0)
+
+            // Audio indicator / mute toggle for tabs that are (or were) playing.
+            if tab.isAudible || tab.isMuted {
+                Button { tab.toggleMute() } label: {
+                    Icon(name: tab.isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill", size: 11)
+                        .foregroundStyle(tab.isMuted ? p.mutedForeground.color
+                                                     : p.sidebarForeground.color.opacity(0.75))
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(tab.isMuted ? "Unmute tab" : "Mute tab")
+            }
 
             Button(action: onClose) {
                 Icon(name: "xmark", size: 11, weight: .bold)
                     .foregroundStyle(p.mutedForeground.color)
                     .frame(width: 18, height: 18)
                     .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
                             .fill(closeHovering ? p.sidebarForeground.color.opacity(0.10) : .clear)
                     )
                     .contentShape(Rectangle())
@@ -66,9 +81,14 @@ struct TabRow: View {
                 .shadow(color: isSelected ? TabSurface.shadow(scheme) : .clear,
                         radius: isSelected ? TabSurface.shadowRadius : 0,
                         x: 0, y: isSelected ? TabSurface.shadowY : 0)
+                .transaction { transaction in
+                    transaction.animation = nil
+                }
         )
         .contentShape(Rectangle())
-        .pressShrink(perform: onSelect)
+        .pressShrink(perform: onSelect) { isPressing in
+            pressing = isPressing
+        }
         .onHover { hovering = $0 }
     }
 
@@ -77,7 +97,9 @@ struct TabRow: View {
     }
 
     private var backgroundFill: Color {
-        if isSelected { return TabSurface.selectedFill(scheme) }
+        if isSelected || (pressing && !closeHovering) {
+            return TabSurface.selectedFill(scheme)
+        }
         if hovering { return TabSurface.hoverFill(scheme) }
         return .clear
     }

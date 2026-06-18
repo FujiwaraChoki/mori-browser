@@ -23,6 +23,8 @@ struct SettingsView: View {
                     searchSection
                     privacySection
                     appearanceSection
+                    tabsSection
+                    RoutingSection(store: store)
                     mediaSection
                     extensionsSection
                     aboutSection
@@ -42,23 +44,29 @@ struct SettingsView: View {
             Button {
                 store.settingsVisible = false
             } label: {
-                Icon(name: "chevron.left", size: 14, weight: .semibold)
-                    .foregroundStyle(p.foreground.color)
-                    .frame(width: 30, height: 30)
-                    .background(
-                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                            .fill(p.input.color.opacity(0.5))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
-                            .strokeBorder(p.border.color.opacity(0.6), lineWidth: 1)
-                    )
+                HStack(spacing: 5) {
+                    Icon(name: "chevron.left", size: 13, weight: .semibold)
+                    Text("Back")
+                        .font(Typography.ui(Typography.base, weight: .medium))
+                }
+                .foregroundStyle(p.foreground.color)
+                .padding(.horizontal, 11)
+                .frame(height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                        .fill(p.input.color.opacity(0.5))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                        .strokeBorder(p.border.color.opacity(0.6), lineWidth: 1)
+                )
             }
             .buttonStyle(.plain)
             .help("Back to browsing")
+            .accessibilityLabel("Back to browsing")
 
             Text("Settings")
-                .font(Typography.ui(16, weight: .semibold))
+                .font(Typography.ui(Typography.title, weight: .semibold))
                 .foregroundStyle(p.foreground.color)
             Spacer()
             Button {
@@ -90,7 +98,7 @@ struct SettingsView: View {
                     .foregroundStyle(p.primary.color)
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Mori")
-                        .font(Typography.ui(15, weight: .semibold))
+                        .font(Typography.ui(Typography.title, weight: .semibold))
                         .foregroundStyle(p.foreground.color)
                     Text("A native macOS browser powered by Chromium (CEF).")
                         .font(Typography.ui(Typography.base))
@@ -188,6 +196,31 @@ struct SettingsView: View {
             }
         }
     }
+
+    private var tabsSection: some View {
+        Section(title: "Tabs") {
+            Field(label: "Sleep idle tabs") {
+                IntMenu(value: $settings.autoSleepMinutes, options: Self.sleepOptions)
+            }
+            Field(label: "Archive idle tabs") {
+                IntMenu(value: $settings.autoArchiveHours, options: Self.archiveOptions)
+            }
+            Text("Sleeping frees a background tab's memory; it reloads when you return. "
+                 + "Archiving closes stale tabs to the restorable Archive in your Library.")
+                .font(Typography.ui(Typography.label))
+                .foregroundStyle(p.mutedForeground.color)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private static let sleepOptions: [(Int, String)] = [
+        (0, "Never"), (15, "15 minutes"), (30, "30 minutes"),
+        (60, "1 hour"), (180, "3 hours"), (360, "6 hours")
+    ]
+    private static let archiveOptions: [(Int, String)] = [
+        (0, "Never"), (12, "12 hours"), (24, "1 day"),
+        (72, "3 days"), (168, "1 week"), (720, "30 days")
+    ]
 
     private var mediaSection: some View {
         Section(title: "Media") {
@@ -438,6 +471,155 @@ private struct SettingTextField: View {
     }
 }
 
+/// A dropdown over preset integer values (used for sleep/archive intervals).
+private struct IntMenu: View {
+    @Binding var value: Int
+    let options: [(Int, String)]
+    @Environment(\.palette) private var p
+
+    private var label: String {
+        options.first { $0.0 == value }?.1 ?? "\(value)"
+    }
+
+    var body: some View {
+        Menu {
+            ForEach(options, id: \.0) { option in
+                Button(option.1) { value = option.0 }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(label)
+                    .font(Typography.ui(Typography.base))
+                    .foregroundStyle(p.foreground.color)
+                Icon(name: "chevron.up.chevron.down", size: 12)
+                    .foregroundStyle(p.mutedForeground.color)
+            }
+            .padding(.horizontal, 11)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                    .fill(p.input.color.opacity(0.5))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                    .strokeBorder(p.border.color.opacity(0.6), lineWidth: 1)
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+    }
+}
+
+/// Air Traffic Control: routing rules that send hosts to a chosen space.
+private struct RoutingSection: View {
+    @ObservedObject var store: BrowserStore
+    @ObservedObject private var routes = RouteStore.shared
+    @Environment(\.palette) private var p
+    @State private var newPattern = ""
+    @State private var newContextID: BrowserContext.ID?
+
+    var body: some View {
+        Section(title: "Air Traffic Control") {
+            Text("Open matching sites in a chosen space automatically.")
+                .font(Typography.ui(Typography.label))
+                .foregroundStyle(p.mutedForeground.color)
+
+            if !routes.rules.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(routes.rules) { rule in
+                        ruleRow(rule)
+                        if rule.id != routes.rules.last?.id {
+                            Hairline().opacity(0.5)
+                        }
+                    }
+                }
+            }
+
+            HStack(spacing: 8) {
+                SettingTextField(text: $newPattern, placeholder: "figma.com")
+                Menu {
+                    ForEach(store.contexts) { context in
+                        Button(context.name) { newContextID = context.id }
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Text(selectedContextName)
+                            .font(Typography.ui(Typography.base))
+                            .foregroundStyle(p.foreground.color)
+                            .lineLimit(1)
+                        Icon(name: "chevron.up.chevron.down", size: 11)
+                            .foregroundStyle(p.mutedForeground.color)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(height: 30)
+                    .background(
+                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                            .fill(p.input.color.opacity(0.5))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                            .strokeBorder(p.border.color.opacity(0.6), lineWidth: 1)
+                    )
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+
+                Button("Add") { addRule() }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(newPattern.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+    }
+
+    private var resolvedContextID: BrowserContext.ID? {
+        newContextID ?? store.contexts.first?.id
+    }
+
+    private var selectedContextName: String {
+        store.contexts.first { $0.id == resolvedContextID }?.name ?? "Space"
+    }
+
+    private func ruleRow(_ rule: RoutingRule) -> some View {
+        HStack(spacing: 10) {
+            Icon(name: "arrow.triangle.branch", size: 13)
+                .foregroundStyle(p.mutedForeground.color)
+            Text(rule.pattern)
+                .font(Typography.ui(Typography.base, weight: .medium))
+                .foregroundStyle(p.foreground.color)
+            Icon(name: "arrow.right", size: 11)
+                .foregroundStyle(p.mutedForeground.color)
+            Text(store.contexts.first { $0.id == rule.contextID }?.name ?? "—")
+                .font(Typography.ui(Typography.base))
+                .foregroundStyle(p.mutedForeground.color)
+            Spacer(minLength: 8)
+            Toggle("", isOn: Binding(
+                get: { rule.enabled },
+                set: { routes.setEnabled($0, for: rule) }))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .tint(p.primary.color)
+            Button { routes.remove(rule) } label: {
+                Icon(name: "trash", size: 13)
+                    .foregroundStyle(p.mutedForeground.color)
+            }
+            .buttonStyle(.plain)
+            .help("Remove rule")
+        }
+        .padding(.vertical, 8)
+    }
+
+    private func addRule() {
+        guard let contextID = resolvedContextID else { return }
+        if routes.add(pattern: newPattern, contextID: contextID) {
+            newPattern = ""
+        }
+    }
+}
+
 /// A dropdown driven by a `CaseIterable` enum, styled like a Mori select.
 private struct EnumMenu<T: Hashable & Identifiable>: View {
     @Binding var selection: T
@@ -496,11 +678,11 @@ private struct SegmentedTheme: View {
                     .padding(.horizontal, 12)
                     .frame(height: 26)
                     .background(
-                        RoundedRectangle(cornerRadius: Radius.sm + 2, style: .continuous)
+                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
                             .fill(active ? p.background.color : .clear)
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: Radius.sm + 2, style: .continuous)
+                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
                             .strokeBorder(active ? p.border.color.opacity(0.7) : .clear, lineWidth: 1)
                     )
                 }

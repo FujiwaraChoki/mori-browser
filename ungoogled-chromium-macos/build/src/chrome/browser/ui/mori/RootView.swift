@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// The complete browser chrome: web content, optional AI panel, and the
-/// user-positioned vertical tab sidebar (right by default).
+/// The complete browser chrome: a primary vertical tab/sidebar rail, main web
+/// content, and optional side panels.
 struct RootView: View {
     @ObservedObject var store: BrowserStore
     @ObservedObject private var settings = BrowserSettings.shared
@@ -28,9 +28,8 @@ struct RootView: View {
         let activeTab = store.selectedTab ?? store.tabs.first
 
         HStack(spacing: 0) {
-            if store.sidebarVisible, settings.sidebarPosition == .left {
-                Sidebar(store: store)
-                    .transition(.move(edge: settings.sidebarPosition.edge))
+            if settings.sidebarPosition == .left {
+                sidebarSlot(onLeft: true)
             }
 
             // AI panel opens on the side opposite the tab sidebar: when the
@@ -45,17 +44,8 @@ struct RootView: View {
             VStack(spacing: 0) {
                 WebTopStrip(tab: activeTab)
                 webCard(activeTab: activeTab)
-                    // Hovering the top edge slides the card down to reveal the
-                    // chrome (and traffic lights) above it. Moved with a
-                    // transform, so the web view is repositioned, never resized.
-                    .offset(y: store.topChromeRevealed ? TopChromeContainerView.revealHeight : 0)
-                    .animation(Motion.snappy, value: store.topChromeRevealed)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // Hover the top edge to reveal the titlebar over the page.
-            .overlay {
-                TopChromeOverlay(store: store, sidebarPosition: settings.sidebarPosition)
-            }
 
             // AI panel on the right, when the sidebar sits on the left.
             if store.aiPanelVisible, settings.sidebarPosition == .left {
@@ -68,9 +58,8 @@ struct RootView: View {
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }
 
-            if store.sidebarVisible, settings.sidebarPosition == .right {
-                Sidebar(store: store)
-                    .transition(.move(edge: settings.sidebarPosition.edge))
+            if settings.sidebarPosition == .right {
+                sidebarSlot(onLeft: false)
             }
         }
         // Hover-to-peek sidebar — full-window overlay above the web view,
@@ -87,6 +76,30 @@ struct RootView: View {
         .overlay {
             LauncherOverlay(store: store, palette: palette, scheme: scheme)
                 .ignoresSafeArea()
+        }
+        // Per-site Boost editor (custom CSS/JS + zaps).
+        .overlay {
+            BoostEditorOverlay(store: store)
+                .ignoresSafeArea()
+        }
+        // Transient Peek preview (Little Arc-style link glance).
+        .overlay {
+            PeekOverlay(store: store)
+                .ignoresSafeArea()
+        }
+        // Custom right-click menu for links & images.
+        .overlay {
+            WebContextMenuOverlay(store: store)
+                .ignoresSafeArea()
+        }
+        // Screenshot region selector (AppKit-hosted, above the web view).
+        .overlay {
+            CaptureOverlay(store: store)
+                .ignoresSafeArea()
+        }
+        .background {
+            WebRightClickCatcher(store: store)
+                .frame(width: 0, height: 0)
         }
         // Transient notifications (link copied, etc.) — bottom-centered above
         // everything so they read clearly regardless of the active panel.
@@ -122,6 +135,17 @@ struct RootView: View {
         .animation(Motion.snappy, value: settings.sidebarPosition)
     }
 
+    private func sidebarSlot(onLeft: Bool) -> some View {
+        let width = settings.sidebarWidth
+        return Sidebar(store: store)
+            .frame(width: width)
+            .frame(width: store.sidebarVisible ? width : 0,
+                   alignment: onLeft ? .leading : .trailing)
+            .clipped()
+            .allowsHitTesting(store.sidebarVisible)
+            .accessibilityHidden(!store.sidebarVisible)
+    }
+
     /// The browser, wrapped in a floating rounded card with a hairline border
     /// and a soft drop shadow, inset from the window edges so the chrome reads
     /// as a frame around the content (à la Arc).
@@ -132,8 +156,7 @@ struct RootView: View {
             // hugs the rounded corners (a clipped NSView can't cast one itself).
             RoundedRectangle(cornerRadius: Radius.window, style: .continuous)
                 .fill(palette.card.color)
-                .shadow(color: .black.opacity(scheme == .dark ? 0.40 : 0.10),
-                        radius: 8, x: 0, y: 2)
+                .elevation(.card, scheme)
 
             if let activeTab {
                 ActiveWebContent(store: store,
@@ -340,7 +363,7 @@ private struct ExtensionSidePanel: View {
                 Icon(name: "sidebar.trailing", size: 15, weight: .regular)
                     .foregroundStyle(p.primary.color)
                 Text(extensions.sidePanelTitle ?? "Extension")
-                    .font(Typography.ui(15, weight: .semibold))
+                    .font(Typography.ui(Typography.title, weight: .semibold))
                     .foregroundStyle(p.foreground.color)
                     .lineLimit(1)
                 Spacer()
@@ -406,27 +429,60 @@ private struct ErrorOverlay: View {
             Icon(name: "wifi.exclamationmark", size: 40, weight: .light)
                 .foregroundStyle(p.mutedForeground.color)
             Text("This page couldn't load")
-                .font(Typography.ui(15, weight: .medium))
+                .font(Typography.ui(Typography.title, weight: .medium))
                 .foregroundStyle(p.foreground.color)
             Text(tab.urlString)
                 .font(Typography.mono(12))
                 .foregroundStyle(p.mutedForeground.color)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Button {
-                tab.reload()
-            } label: {
-                Text("Reload")
-                    .font(Typography.ui(Typography.base))
-                    .foregroundStyle(p.primaryForeground.color)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
-                    .background(
-                        RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
-                            .fill(p.primary.color)
-                    )
+
+            // Surface the underlying failure (DNS, timeout, SSL, …) so the user
+            // can actually diagnose the problem instead of a generic message.
+            if !tab.failError.isEmpty {
+                Text(tab.failError)
+                    .font(Typography.ui(Typography.small))
+                    .foregroundStyle(p.mutedForeground.color)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            .buttonStyle(.plain)
+
+            HStack(spacing: 8) {
+                Button {
+                    tab.didFail = false
+                    tab.failError = ""
+                } label: {
+                    Text("Dismiss")
+                        .font(Typography.ui(Typography.base))
+                        .foregroundStyle(p.foreground.color)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
+                                .fill(p.muted.color.opacity(0.6))
+                        )
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
+
+                Button {
+                    tab.reload()
+                } label: {
+                    Text("Reload")
+                        .font(Typography.ui(Typography.base))
+                        .foregroundStyle(p.primaryForeground.color)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(
+                            RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
+                                .fill(p.primary.color)
+                        )
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(.top, 2)
         }
         .padding(28)
         .frame(maxWidth: 360)

@@ -225,7 +225,7 @@ private struct PeekUI: View {
 
     /// The full sidebar, wrapped as a floating, inset card spanning the window.
     private var panel: some View {
-        Sidebar(store: store)
+        Sidebar(store: store, floating: true)
             .frame(width: cardWidth)
             .frame(maxHeight: .infinity)
             .background {
@@ -237,8 +237,11 @@ private struct PeekUI: View {
                     .strokeBorder(palette.sidebarBorder.color.opacity(scheme == .dark ? 0.70 : 0.62),
                                   lineWidth: 1)
             )
-            .shadow(color: .black.opacity(scheme == .dark ? 0.46 : 0.16),
-                    radius: 22, x: isLeft ? 7 : -7, y: 5)
+            // Overlay elevation, but offset horizontally toward the edge the
+            // panel slides from (the `.elevation` helper is centered, so spell
+            // the directional variant out using the same token values).
+            .shadow(color: Shadow.overlay.color(scheme),
+                    radius: Shadow.overlay.radius, x: isLeft ? 7 : -7, y: Shadow.overlay.y)
             .padding(.vertical, inset)
             .padding(isLeft ? .leading : .trailing, inset)
     }

@@ -10,6 +10,12 @@ struct Sidebar: View {
     @ObservedObject var store: BrowserStore
     @ObservedObject private var settings = BrowserSettings.shared
 
+    /// True when hosted as a standalone floating card (the peek overlay) rather
+    /// than docked. In that mode there's no adjacent web-card float gap to
+    /// compensate for, so the row/header padding stays symmetric instead of
+    /// trimming the web-card-facing edge.
+    var floating: Bool = false
+
     /// The tab currently being dragged in the sidebar, shared across all drop
     /// targets so any container can reorder/accept it live. Held here at the top
     /// level and threaded down as a binding.
@@ -25,6 +31,9 @@ struct Sidebar: View {
     /// within the visible chrome instead of crowding the outer window edge.
     private static let webCardGap: CGFloat = 8
     private func rowInsets(_ base: CGFloat) -> EdgeInsets {
+        if floating {
+            return EdgeInsets(top: 0, leading: base, bottom: 0, trailing: base)
+        }
         let trimLeading = settings.sidebarPosition == .right
         return EdgeInsets(
             top: 0,
@@ -41,37 +50,40 @@ struct Sidebar: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             } else {
                 if let tab = store.selectedTab ?? store.tabs.first {
-                    SidebarHeader(store: store, tab: tab)
+                    SidebarHeader(store: store, tab: tab, floating: floating)
                         .zIndex(10)
                 }
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ContextHeaderRow(store: store)
+                            .padding(rowInsets(8))
+                            .padding(.top, 4)
+
                         if !store.pinnedTabs.isEmpty || draggingTabID != nil {
                             PinnedGrid(store: store, draggingTabID: $draggingTabID)
-                                .padding(rowInsets(10))
+                                .padding(rowInsets(8))
                         }
 
                         if !store.folders.isEmpty {
                             FolderSection(store: store, draggingTabID: $draggingTabID)
                                 .padding(rowInsets(8))
+                            SidebarSeparator()
+                                .padding(rowInsets(8))
                         }
 
-                        NewTabRow { store.presentLauncher() }
-                            .padding(rowInsets(8))
-                            // Pull up to tighten the gap above New Tab in every
-                            // state (first row, or below pins/folders).
-                            .padding(.top, -6)
-                            .onDrop(of: SidebarTabDrag.acceptedTypes,
-                                    delegate: TabReorderDropDelegate(
-                                        target: .loose(index: 0),
-                                        draggingID: $draggingTabID,
-                                        store: store))
-
-                        LooseTabList(store: store, draggingTabID: $draggingTabID)
+                        VStack(alignment: .leading, spacing: 4) {
+                            NewTabRow { store.presentLauncher() }
+                                .onDrop(of: SidebarTabDrag.acceptedTypes,
+                                        delegate: TabReorderDropDelegate(
+                                            target: .loose(index: 0),
+                                            draggingID: $draggingTabID,
+                                            store: store))
+                            LooseTabList(store: store, draggingTabID: $draggingTabID)
+                        }
                             .padding(rowInsets(8))
                             .padding(.bottom, 10)
                     }
-                    .padding(.top, 8)
+                    .padding(.top, 2)
                     // Re-identify the tab list per context so a switch can
                     // quietly crossfade the list instead of morphing rows.
                     .id(store.activeContextID)
@@ -165,6 +177,21 @@ private struct SidebarContextMenu: View {
 
         Divider()
 
+        Button("Sleep Background Tabs") {
+            store.sleepBackgroundTabs()
+        }
+        Button("Peek a Link") {
+            store.peekFromClipboardOrCurrent()
+        }
+        Button("Capture Region…") {
+            store.startRegionCapture()
+        }
+        Button("Capture Visible Tab") {
+            store.captureVisibleArea()
+        }
+
+        Divider()
+
         Button(store.aiPanelVisible ? "Hide AI Panel" : "Show AI Panel") {
             store.toggleAIPanel()
         }
@@ -222,6 +249,7 @@ private struct SidebarHeader: View {
     @ObservedObject private var settings = BrowserSettings.shared
     @ObservedObject private var downloads = DownloadStore.shared
     @State private var showDownloads = false
+    var floating: Bool = false
 
     var body: some View {
         VStack(spacing: 8) {
@@ -247,11 +275,22 @@ private struct SidebarHeader: View {
         }
         // Mirror the tab rows: trim the padding on the web-card-facing edge by
         // its 8pt float gap so the header reads as evenly inset, not crowded
-        // toward the outer window edge.
-        .padding(.leading, settings.sidebarPosition == .right ? 2 : 10)
-        .padding(.trailing, settings.sidebarPosition == .right ? 10 : 2)
+        // toward the outer window edge. When floating (peek), there's no gap to
+        // compensate for, so keep the inset symmetric.
+        .padding(.leading, floating ? 10 : (settings.sidebarPosition == .right ? 2 : 10))
+        .padding(.trailing, floating ? 10 : (settings.sidebarPosition == .right ? 10 : 2))
         .padding(.top, 10)
         .padding(.bottom, 6)
+    }
+}
+
+private struct SidebarSeparator: View {
+    @Environment(\.palette) private var p
+
+    var body: some View {
+        Rectangle()
+            .fill(p.sidebarForeground.color.opacity(0.12))
+            .frame(height: 1)
     }
 }
 
@@ -262,7 +301,16 @@ private struct PinnedGrid: View {
     @Binding var draggingTabID: BrowserTab.ID?
     @State private var dropTargeted = false
 
-    private let columns = [GridItem(.adaptive(minimum: 64, maximum: 92), spacing: 6)]
+    /// Pinned tiles lay out at most 3 per row, widening to 4 only once there are
+    /// 4+ pins. Flexible columns split the available sidebar width evenly, so the
+    /// tiles grow and shrink as the sidebar is resized. While empty (a drag is in
+    /// progress) a single column keeps the drop hint full-width.
+    private var columns: [GridItem] {
+        let count = store.pinnedTabs.isEmpty
+            ? 1
+            : (store.pinnedTabs.count >= 4 ? 4 : 3)
+        return Array(repeating: GridItem(.flexible(), spacing: 6), count: count)
+    }
 
     var body: some View {
         LazyVGrid(columns: columns, spacing: 6) {
@@ -282,6 +330,11 @@ private struct PinnedGrid: View {
                 .onDrag {
                     draggingTabID = tab.id
                     return SidebarTabDrag.provider(for: tab.id)
+                } preview: {
+                    // Hide the cursor-following drag image: the live row already
+                    // reorders in place, so a second floating copy under the
+                    // pointer just reads as a confusing duplicate.
+                    Color.clear.frame(width: 1, height: 1)
                 }
                 .onDrop(of: SidebarTabDrag.acceptedTypes, delegate: TabReorderDropDelegate(
                     target: .pinned(index: idx),
@@ -308,10 +361,11 @@ private struct PinnedTile: View {
     @Environment(\.palette) private var p
     @Environment(\.colorScheme) private var scheme
     @State private var hovering = false
+    @State private var pressing = false
 
     var body: some View {
         Favicon(icon: tab.faviconURL, page: tab.urlString, image: tab.faviconImage,
-                isLoading: tab.isLoading, size: 24)
+                size: 24)
             .frame(height: 48)
             .frame(maxWidth: .infinity)
             .background(
@@ -320,15 +374,20 @@ private struct PinnedTile: View {
                     .shadow(color: isSelected ? TabSurface.shadow(scheme) : .clear,
                             radius: isSelected ? TabSurface.shadowRadius : 0,
                             x: 0, y: isSelected ? TabSurface.shadowY : 0)
+                    .transaction { transaction in
+                        transaction.animation = nil
+                    }
             )
             .contentShape(Rectangle())
-            .pressShrink(perform: onSelect)
+            .pressShrink(perform: onSelect) { isPressing in
+                pressing = isPressing
+            }
             .onHover { hovering = $0 }
             .help(tab.title)
     }
 
     private var tileFill: Color {
-        if isSelected { return TabSurface.selectedFill(scheme) }
+        if isSelected || pressing { return TabSurface.selectedFill(scheme) }
         if hovering { return TabSurface.hoverFill(scheme) }
         return TabSurface.tileRestFill(scheme)
     }
@@ -446,7 +505,7 @@ private struct FolderRow: View {
                         tab: tab,
                         isSelected: tab.id == store.selectedTabID,
                         onSelect: { store.selectTab(tab.id) },
-                        onClose: { store.closeTab(tab.id) }
+                        onClose: { store.closeTab(tab.id, allowFolderRemoval: true) }
                     )
                     .padding(.leading, 16)
                     .transition(.tabClose)
@@ -454,6 +513,11 @@ private struct FolderRow: View {
                     .onDrag {
                         draggingTabID = tab.id
                         return SidebarTabDrag.provider(for: tab.id)
+                    } preview: {
+                        // Hide the cursor-following drag image: the live row
+                        // already reorders in place, so a second floating copy
+                        // under the pointer just reads as a confusing duplicate.
+                        Color.clear.frame(width: 1, height: 1)
                     }
                     .onDrop(of: SidebarTabDrag.acceptedTypes, delegate: TabReorderDropDelegate(
                         target: .folder(id: folder.id, index: idx),
@@ -509,6 +573,11 @@ private struct LooseTabList: View {
                 .onDrag {
                     draggingTabID = tab.id
                     return SidebarTabDrag.provider(for: tab.id)
+                } preview: {
+                    // Hide the cursor-following drag image: the live row already
+                    // reorders in place, so a second floating copy under the
+                    // pointer just reads as a confusing duplicate.
+                    Color.clear.frame(width: 1, height: 1)
                 }
                 .onDrop(of: SidebarTabDrag.acceptedTypes, delegate: TabReorderDropDelegate(
                     target: .loose(index: idx),
@@ -563,8 +632,9 @@ private struct NewTabRow: View {
                     .foregroundStyle(p.mutedForeground.color)
                 Spacer()
             }
-            .padding(.horizontal, 9)
-            .frame(height: 32)
+            .padding(.leading, 9)
+            .padding(.trailing, 6)
+            .frame(height: 34)
             .background(
                 RoundedRectangle(cornerRadius: TabSurface.radius, style: .continuous)
                     .fill(hovering ? p.foreground.color.opacity(0.05) : .clear)
@@ -602,9 +672,28 @@ struct TabMenu: View {
             Button("Remove from Folder") { store.removeTabFromFolders(tab.id) }
         }
         Divider()
+        Button("Always Open in This Space") { store.routeHostToActiveSpace(tab.id) }
+            .disabled(!tab.urlString.hasPrefix("http"))
+        Divider()
         Button("Duplicate Tab") { store.duplicateTab(tab.id) }
         Button("Copy URL") { store.copyURL(of: tab.id) }
         Divider()
+        if tab.hasRealized, !tab.isAsleep,
+           store.selectedTabID != tab.id, store.splitTabID != tab.id {
+            Button("Sleep Tab") { store.sleepTab(tab.id) }
+        }
+        Button("Archive Tab") { store.archiveTab(tab.id) }
+            .disabled(store.isPinned(tab.id))
+        Divider()
+        if store.selectedTabID == tab.id {
+            Button("Boost This Site…") { store.presentBoostEditor() }
+            Button("Zap an Element") { store.startZapMode() }
+            Divider()
+        }
+        if tab.isAudible || tab.isMuted {
+            Button(tab.isMuted ? "Unmute Tab" : "Mute Tab") { tab.toggleMute() }
+            Divider()
+        }
         Button("Reload") { tab.reload() }
         Button("Close Other Tabs") { store.closeOtherTabs(than: tab.id) }
             .disabled(!store.activeContext.tabIDs.contains {
@@ -612,7 +701,9 @@ struct TabMenu: View {
             })
         Button("Close Tabs to Right") { store.closeTabsToRight(of: tab.id) }
             .disabled(!store.hasClosableTabsToRight(of: tab.id))
-        Button("Close Tab", role: .destructive) { store.closeTab(tab.id) }
+        Button("Close Tab", role: .destructive) {
+            store.closeTab(tab.id, allowFolderRemoval: true)
+        }
     }
 }
 
