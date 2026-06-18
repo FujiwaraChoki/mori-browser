@@ -125,18 +125,30 @@ extension BrowserStore {
     // Link actions
 
     func ctxOpenLink(_ url: String, inBackground: Bool) {
-        newTab(url: url, select: !inBackground)
+        guard let safeURL = resolvePageDerivedNavigationURL(url, source: "A page link") else {
+            dismissWebContextMenu()
+            return
+        }
+        newTab(url: safeURL, select: !inBackground)
         dismissWebContextMenu()
     }
 
     func ctxPeekLink(_ url: String) {
-        peek(url: url)
+        guard let safeURL = resolvePageDerivedNavigationURL(url, source: "A page link") else {
+            dismissWebContextMenu()
+            return
+        }
+        peek(url: safeURL)
         dismissWebContextMenu()
     }
 
     /// Open the link in a chosen space (creating the tab there and switching to it).
     func ctxOpenLink(_ url: String, inContext id: BrowserContext.ID) {
-        let tab = newTab(url: url, select: false)
+        guard let safeURL = resolvePageDerivedNavigationURL(url, source: "A page link") else {
+            dismissWebContextMenu()
+            return
+        }
+        let tab = newTab(url: safeURL, select: false)
         moveTab(tab.id, toContext: id, activate: true)
         dismissWebContextMenu()
     }
@@ -144,7 +156,11 @@ extension BrowserStore {
     // Image actions
 
     func ctxOpenImage(_ url: String) {
-        newTab(url: url, select: true)
+        guard let safeURL = resolvePageDerivedNavigationURL(url, source: "A page image") else {
+            dismissWebContextMenu()
+            return
+        }
+        newTab(url: safeURL, select: true)
         dismissWebContextMenu()
     }
 
@@ -172,7 +188,14 @@ extension BrowserStore {
     }
 
     func ctxSearchImage(_ url: String) {
-        let encoded = url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? url
+        guard let explicitURL = BrowserURLPolicy.explicitURL(url),
+              BrowserURLPolicy.isWebURL(explicitURL) else {
+            dismissWebContextMenu()
+            ToastCenter.shared.show("Blocked non-web image search", icon: "lock", style: .warning)
+            return
+        }
+        let encoded = explicitURL.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+            ?? explicitURL
         newTab(url: "https://lens.google.com/uploadbyurl?url=\(encoded)", select: true)
         dismissWebContextMenu()
     }

@@ -8,6 +8,15 @@ extension BrowserStore {
     /// it to any space.
     func peek(url rawURL: String) {
         let resolved = URLInterpreter.resolve(rawURL, settings: settings)
+        if BrowserURLPolicy.isPrivilegedURL(resolved),
+           !confirmPrivilegedNavigation(resolved, source: "Peek") {
+            ToastCenter.shared.show("Blocked internal URL", icon: "lock", style: .warning)
+            return
+        }
+        guard BrowserURLPolicy.isWebURL(resolved) || BrowserURLPolicy.isPrivilegedURL(resolved) else {
+            ToastCenter.shared.show("Nothing to peek", icon: "eye", style: .warning)
+            return
+        }
         let target = MoriURLRewriter.rewrite(resolved)
         let tab = BrowserTab(url: target, title: "Peek")
         tab.onRequestNewTab = { [weak self] u in self?.newTab(url: u) }

@@ -34,7 +34,7 @@ struct RootView: View {
 
             // AI panel opens on the side opposite the tab sidebar: when the
             // sidebar sits on the right, the AI panel slides in from the left.
-            if store.aiPanelVisible, settings.sidebarPosition == .right {
+            if store.aiPanelVisible, settings.aiIntegrationEnabled, settings.sidebarPosition == .right {
                 AIPanel(store: store)
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
@@ -48,7 +48,7 @@ struct RootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             // AI panel on the right, when the sidebar sits on the left.
-            if store.aiPanelVisible, settings.sidebarPosition == .left {
+            if store.aiPanelVisible, settings.aiIntegrationEnabled, settings.sidebarPosition == .left {
                 AIPanel(store: store)
                     .transition(.move(edge: .trailing).combined(with: .opacity))
             }

@@ -93,6 +93,9 @@ final class BrowserStore: ObservableObject {
     /// Mirrors theme edits (made through the existing pickers, which write
     /// `settings.gradientTheme`) back into the active context.
     private var themeMirror: AnyCancellable?
+    /// Keeps the assistant surface closed while the user-level AI integration
+    /// preference is off.
+    private var aiIntegrationMirror: AnyCancellable?
 
     /// Shared, persisted user preferences.
     let settings = BrowserSettings.shared
@@ -184,6 +187,12 @@ final class BrowserStore: ObservableObject {
                 guard self.contexts[self.activeContextIndex].theme != theme else { return }
                 self.contexts[self.activeContextIndex].theme = theme
                 self.scheduleSessionSave()
+            }
+        aiIntegrationMirror = settings.$aiIntegrationEnabled
+            .dropFirst()
+            .sink { [weak self] enabled in
+                guard let self, !enabled else { return }
+                self.closeAIPanelForDisabledIntegration(showToast: false)
             }
         // Let the media controller map an engine broadcast back to its tab.
         media.resolveTab = { [weak self] browserId in
@@ -793,8 +802,33 @@ final class BrowserStore: ObservableObject {
         withAnimation(Motion.snappy) { sidebarVisible.toggle() }
     }
 
+    func openAIPanel() {
+        guard prepareAIPanelOpen() else { return }
+        withAnimation(Motion.reveal) { aiPanelVisible = true }
+    }
+
     func toggleAIPanel() {
+        guard prepareAIPanelOpen() else { return }
         withAnimation(Motion.reveal) { aiPanelVisible.toggle() }
+    }
+
+    private func prepareAIPanelOpen() -> Bool {
+        guard settings.aiIntegrationEnabled else {
+            closeAIPanelForDisabledIntegration(showToast: true)
+            return false
+        }
+        return true
+    }
+
+    private func closeAIPanelForDisabledIntegration(showToast: Bool) {
+        if aiPanelVisible {
+            withAnimation(Motion.reveal) { aiPanelVisible = false }
+        } else {
+            aiPanelVisible = false
+        }
+        if showToast {
+            ToastCenter.shared.show("AI integration is off", icon: "sparkles", style: .warning)
+        }
     }
 
     func toggleSettings() {
@@ -1070,6 +1104,75 @@ final class BrowserStore: ObservableObject {
 /// pass-through kept for the call-site shape.
 enum MoriURLRewriter {
     static func rewrite(_ raw: String) -> String { raw }
+}
+
+/// Source-specific navigation policy. Omnibox/user-entered URLs may still use
+/// Mori/Chromium internal schemes, but page-derived and assistant-proposed
+/// navigation should treat them as privileged and disclose that before loading.
+enum BrowserURLPolicy {
+    private static let webSchemes: Set<String> = ["http", "https"]
+    private static let privilegedSchemes: Set<String> = [
+        "file", "mori", "chrome", "chrome-extension"
+    ]
+
+    static func isWebURL(_ raw: String) -> Bool {
+        guard let scheme = scheme(of: raw) else { return false }
+        return webSchemes.contains(scheme)
+    }
+
+    static func isPrivilegedURL(_ raw: String) -> Bool {
+        guard let scheme = scheme(of: raw) else { return false }
+        return privilegedSchemes.contains(scheme)
+    }
+
+    static func explicitURL(_ raw: String) -> String? {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, scheme(of: text) != nil else { return nil }
+        return MoriURLRewriter.rewrite(text)
+    }
+
+    static func scheme(of raw: String) -> String? {
+        URLComponents(string: raw.trimmingCharacters(in: .whitespacesAndNewlines))?
+            .scheme?
+            .lowercased()
+    }
+
+    static func schemeLabel(for raw: String) -> String {
+        scheme(of: raw).map { "\($0)://" } ?? "this"
+    }
+}
+
+extension BrowserStore {
+    func confirmPrivilegedNavigation(_ url: String, source: String) -> Bool {
+        guard BrowserURLPolicy.isPrivilegedURL(url) else { return true }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Open Internal or Local URL?"
+        alert.informativeText = """
+        \(source) wants to open \(BrowserURLPolicy.schemeLabel(for: url)) content:
+
+        \(url)
+
+        Only continue if you expected this navigation.
+        """
+        alert.addButton(withTitle: "Open URL")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    func resolvePageDerivedNavigationURL(_ rawURL: String, source: String) -> String? {
+        guard let url = BrowserURLPolicy.explicitURL(rawURL) else {
+            ToastCenter.shared.show("Blocked invalid link", icon: "link", style: .warning)
+            return nil
+        }
+        if BrowserURLPolicy.isWebURL(url) { return url }
+        guard BrowserURLPolicy.isPrivilegedURL(url),
+              confirmPrivilegedNavigation(url, source: source) else {
+            ToastCenter.shared.show("Blocked non-web link", icon: "lock", style: .warning)
+            return nil
+        }
+        return url
+    }
 }
 
 /// Turns omnibox input into a navigable URL or a search, honoring the user's

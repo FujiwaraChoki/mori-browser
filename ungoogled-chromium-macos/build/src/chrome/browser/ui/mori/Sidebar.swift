@@ -192,8 +192,10 @@ private struct SidebarContextMenu: View {
 
         Divider()
 
-        Button(store.aiPanelVisible ? "Hide AI Panel" : "Show AI Panel") {
-            store.toggleAIPanel()
+        if settings.aiIntegrationEnabled {
+            Button(store.aiPanelVisible ? "Hide AI Panel" : "Show AI Panel") {
+                store.toggleAIPanel()
+            }
         }
         Menu("Sidebar Side") {
             ForEach(SidebarPosition.allCases) { position in
@@ -714,14 +716,17 @@ struct TabMenu: View {
 /// right.
 private struct SidebarBottomBar: View {
     @ObservedObject var store: BrowserStore
+    @ObservedObject private var settings = BrowserSettings.shared
 
     var body: some View {
         ZStack {
             HStack(spacing: 6) {
-                IconButton(systemName: "mori",
-                           kind: store.aiPanelVisible ? .primary : .ghost,
-                           size: 30) { store.toggleAIPanel() }
-                    .help("Codex AI panel")
+                if settings.aiIntegrationEnabled {
+                    IconButton(systemName: "mori",
+                               kind: store.aiPanelVisible ? .primary : .ghost,
+                               size: 30) { store.toggleAIPanel() }
+                        .help("Codex AI panel")
+                }
                 Spacer()
                 IconButton(systemName: "gearshape", size: 30) { store.toggleSettings() }
                     .help("Settings")

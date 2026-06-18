@@ -1,3 +1,5 @@
+import AppKit
+import Combine
 import Foundation
 
 struct CodexModelOption: Identifiable, Equatable {
@@ -44,10 +46,23 @@ final class CodexBrowserAssistant: ObservableObject {
     @Published var modelLoadError: String?
 
     private static let codexHistorySourceKinds = ["cli", "vscode", "appServer"]
+    private static let settingsDisabledMessage = "Mori's AI integration is turned off in Settings."
+    private static let environmentDisabledMessage = "Mori's local Codex assistant is disabled. Relaunch without MORI_ENABLE_CODEX_ASSISTANT=0 to grant the local Codex app server browser-assistant access again."
+    private static let codexApprovalPolicy = "on-request"
+    private static let codexSandbox = "workspace-write"
 
     private weak var store: BrowserStore?
-    // Enabled by default; opt out by launching with MORI_ENABLE_CODEX_ASSISTANT=0.
-    private let isEnabled = ProcessInfo.processInfo.environment["MORI_ENABLE_CODEX_ASSISTANT"] != "0"
+    // Enabled by default; developers can also opt out before launch.
+    private let isEnvironmentEnabled = ProcessInfo.processInfo.environment["MORI_ENABLE_CODEX_ASSISTANT"] != "0"
+    private var isEnabled: Bool {
+        isEnvironmentEnabled && BrowserSettings.shared.aiIntegrationEnabled
+    }
+    private var disabledMessage: String {
+        if !BrowserSettings.shared.aiIntegrationEnabled {
+            return Self.settingsDisabledMessage
+        }
+        return Self.environmentDisabledMessage
+    }
     private let connection = CodexAppServerConnection()
     private var threadId: String?
     private var activeAssistantMessageId: AIMessage.ID?
@@ -56,6 +71,7 @@ final class CodexBrowserAssistant: ObservableObject {
     private var fallbackToolIterations = 0
     private var pendingAssistantText = ""
     private var turnWatchdogTask: Task<Void, Never>?
+    private var settingsMirror: AnyCancellable?
 
     init(store: BrowserStore) {
         self.store = store
@@ -68,6 +84,11 @@ final class CodexBrowserAssistant: ObservableObject {
         connection.onServerRequest = { [weak self] method, params in
             await self?.handleServerRequest(method: method, params: params) ?? [:]
         }
+        settingsMirror = BrowserSettings.shared.$aiIntegrationEnabled
+            .dropFirst()
+            .sink { [weak self] enabled in
+                self?.handleAIIntegrationPreferenceChange(enabled: enabled)
+            }
     }
 
     func loadModelCatalogIfNeeded() async {
@@ -88,7 +109,7 @@ final class CodexBrowserAssistant: ObservableObject {
 
     func loadConversationHistory(searchTerm: String = "") async {
         guard isEnabled else {
-            historyError = "Set MORI_ENABLE_CODEX_ASSISTANT=1 before launching Mori to enable Codex history."
+            historyError = disabledMessage
             conversationHistory = []
             return
         }
@@ -135,7 +156,7 @@ final class CodexBrowserAssistant: ObservableObject {
 
     func openConversation(_ conversation: CodexConversationSummary) async {
         guard isEnabled else {
-            historyError = "Set MORI_ENABLE_CODEX_ASSISTANT=1 before launching Mori to enable Codex."
+            historyError = disabledMessage
             return
         }
         guard !isWorking else { return }
@@ -175,7 +196,7 @@ final class CodexBrowserAssistant: ObservableObject {
             messages.append(AIMessage(role: .user, text: text))
             messages.append(AIMessage(
                 role: .assistant,
-                text: "Mori's local Codex assistant is disabled. It's enabled by default; relaunch without MORI_ENABLE_CODEX_ASSISTANT=0 to grant the local Codex app server browser-assistant access again."
+                text: disabledMessage
             ))
             statusText = "Disabled"
             return
@@ -204,15 +225,16 @@ final class CodexBrowserAssistant: ObservableObject {
     }
 
     private func ensureThread() async throws -> String {
+        guard isEnabled else { throw CodexAppServerError.protocolError(disabledMessage) }
         if let threadId { return threadId }
         try await connection.connectIfNeeded()
         if modelOptions.isEmpty {
             try? await refreshModelCatalog()
         }
         var baseParams: [String: Any] = [
-                "cwd": NSHomeDirectory(),
-                "approvalPolicy": "never",
-                "sandbox": "danger-full-access",
+                "cwd": Self.assistantWorkingDirectory(),
+                "approvalPolicy": Self.codexApprovalPolicy,
+                "sandbox": Self.codexSandbox,
                 "personality": "friendly",
                 "serviceName": "mori_browser"
         ]
@@ -241,12 +263,12 @@ final class CodexBrowserAssistant: ObservableObject {
     }
 
     private func startTurn(threadId: String, prompt: String) async throws {
+        guard isEnabled else { throw CodexAppServerError.protocolError(disabledMessage) }
         statusText = "Thinking"
         var params: [String: Any] = [
             "threadId": threadId,
             "input": [["type": "text", "text": prompt]],
-            "approvalPolicy": "never",
-            "sandboxPolicy": ["type": "dangerFullAccess"]
+            "approvalPolicy": Self.codexApprovalPolicy
         ]
         if !selectedModelID.isEmpty {
             params["model"] = selectedModelID
@@ -261,6 +283,7 @@ final class CodexBrowserAssistant: ObservableObject {
     }
 
     private func refreshModelCatalog() async throws {
+        guard isEnabled else { throw CodexAppServerError.protocolError(disabledMessage) }
         try await connection.connectIfNeeded()
         let response = try await withTimeout(seconds: 8) {
             try await self.connection.request(method: "model/list", params: [:])
@@ -443,8 +466,8 @@ final class CodexBrowserAssistant: ObservableObject {
     private func resumeConversation(_ id: String) async throws {
         var params: [String: Any] = [
             "threadId": id,
-            "approvalPolicy": "never",
-            "sandbox": "danger-full-access",
+            "approvalPolicy": Self.codexApprovalPolicy,
+            "sandbox": Self.codexSandbox,
             "personality": "friendly"
         ]
         if !selectedModelID.isEmpty {
@@ -499,24 +522,32 @@ final class CodexBrowserAssistant: ObservableObject {
         }
     }
 
+    private static func assistantWorkingDirectory() -> String {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory,
+                                            in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+        let directory = base
+            .appendingPathComponent("MoriBrowser", isDirectory: true)
+            .appendingPathComponent("CodexAssistant", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        return directory.path
+    }
+
     private func promptForUserRequest(_ text: String) async throws -> String {
+        guard isEnabled else { throw CodexAppServerError.protocolError(disabledMessage) }
         if usesDynamicTools {
             return """
-            You are Mori's built-in browser assistant. Use the Mori browser tools whenever you need page contents, tab state, or browser actions. Do not ask the user to sign in; Mori is using local Codex authentication.
+            You are Mori's built-in browser assistant. Use the Mori browser tools whenever you need page contents, tab state, or browser actions. Mori asks the user before sharing browser/page data or before changing browser state. Do not ask the user to sign in; Mori is using local Codex authentication.
 
             User request: \(text)
             """
         }
 
-        guard let store else { return text }
-        let snapshot = await BrowserAutomation.handle(
-            tool: "mori_browser_snapshot",
-            arguments: ["includePage": true, "maxTextChars": 10_000],
-            store: store
-        ).text
+        guard store != nil else { return text }
         return """
         You are Mori's built-in browser assistant. The native dynamic tool channel is unavailable in this Codex app-server version, so use this JSON protocol exactly.
         Return only one JSON object. Do not wrap it in Markdown and do not add a session summary.
+        Mori asks the user before sharing browser/page data or before changing browser state. Do not claim to have seen tabs or page contents until Mori returns a tool result with that data.
 
         To answer, return:
         {"kind":"final","text":"..."}
@@ -527,14 +558,17 @@ final class CodexBrowserAssistant: ObservableObject {
         Available tools — use the exact name and the arguments shown:
         \(BrowserAutomation.dynamicTools)
 
-        Current browser snapshot:
-        \(snapshot)
-
         User request: \(text)
         """
     }
 
     private func handleNotification(method: String, params: [String: Any]) {
+        guard isEnabled else {
+            cancelTurnWatchdog()
+            isWorking = false
+            statusText = "Disabled"
+            return
+        }
         switch method {
         case "item/agentMessage/delta":
             if let delta = findString(named: "delta", in: params), !delta.isEmpty {
@@ -583,6 +617,12 @@ final class CodexBrowserAssistant: ObservableObject {
 
     private func handleFallbackCompletion(params: [String: Any]) async {
         cancelTurnWatchdog()
+        guard isEnabled else {
+            replaceActiveAssistantText(disabledMessage)
+            isWorking = false
+            statusText = "Disabled"
+            return
+        }
         var raw = pendingAssistantText.isEmpty ? activeAssistantText : pendingAssistantText
         if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
            let text = await latestAssistantMessageFromThread() {
@@ -637,7 +677,7 @@ final class CodexBrowserAssistant: ObservableObject {
                                           arguments: arguments,
                                           reason: payload["reason"] as? String)
         statusText = "Using \(tool.replacingOccurrences(of: "mori_", with: ""))"
-        let result = await BrowserAutomation.handle(tool: tool, arguments: arguments, store: store)
+        let result = await runBrowserTool(tool: tool, arguments: arguments, store: store)
         finishToolCall(toolMessageId, result: result.text, success: result.success)
         let prompt = """
         Mori tool result for \(tool), success=\(result.success):
@@ -737,6 +777,14 @@ final class CodexBrowserAssistant: ObservableObject {
     }
 
     private func handleServerRequest(method: String, params: [String: Any]) async -> [String: Any] {
+        guard isEnabled else {
+            return [
+                "contentItems": [
+                    ["type": "inputText", "text": disabledMessage]
+                ],
+                "success": false
+            ]
+        }
         guard method == "item/tool/call" else {
             return [
                 "contentItems": [
@@ -757,10 +805,72 @@ final class CodexBrowserAssistant: ObservableObject {
         let arguments = params["arguments"] as? [String: Any] ?? [:]
         let toolMessageId = beginToolCall(tool: tool, arguments: arguments, reason: nil)
         statusText = "Using \(tool.replacingOccurrences(of: "mori_", with: ""))"
-        let result = await BrowserAutomation.handle(tool: tool, arguments: arguments, store: store)
+        let result = await runBrowserTool(tool: tool, arguments: arguments, store: store)
         finishToolCall(toolMessageId, result: result.text, success: result.success)
         statusText = "Working"
         return result.rpcResult
+    }
+
+    private func runBrowserTool(tool: String,
+                                arguments: [String: Any],
+                                store: BrowserStore) async -> BrowserToolResult {
+        guard approveBrowserTool(tool: tool, arguments: arguments, store: store) else {
+            let name = toolTitle(tool: tool, arguments: arguments)
+            return BrowserToolResult(
+                text: "User denied permission to run \(name). Do not retry this tool unless the user explicitly asks for it.",
+                success: false
+            )
+        }
+        return await BrowserAutomation.handle(tool: tool, arguments: arguments, store: store)
+    }
+
+    private func approveBrowserTool(tool: String,
+                                    arguments: [String: Any],
+                                    store: BrowserStore) -> Bool {
+        guard let request = BrowserAutomation.approvalRequest(tool: tool,
+                                                              arguments: arguments,
+                                                              store: store)
+        else { return true }
+        let alert = NSAlert()
+        alert.alertStyle = request.isDestructive ? .warning : .informational
+        alert.messageText = request.title
+        alert.informativeText = request.message
+        alert.addButton(withTitle: request.confirmButtonTitle)
+        alert.addButton(withTitle: "Deny")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    private func disableAssistant() {
+        let message = disabledMessage
+        cancelTurnWatchdog()
+        if isWorking && activeAssistantText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            replaceActiveAssistantText(message)
+        }
+        isWorking = false
+        statusText = "Disabled"
+        threadId = nil
+        activeAssistantMessageId = nil
+        pendingAssistantText = ""
+        fallbackToolIterations = 0
+        modelLoadError = nil
+        connection.disconnect()
+    }
+
+    private func handleAIIntegrationPreferenceChange(enabled: Bool) {
+        guard enabled else {
+            disableAssistant()
+            return
+        }
+        guard isEnvironmentEnabled else {
+            statusText = "Disabled"
+            return
+        }
+        if statusText == "Disabled" {
+            statusText = "Local Codex"
+        }
+        if historyError == Self.settingsDisabledMessage {
+            historyError = nil
+        }
     }
 
     private var activeAssistantText: String {
@@ -1077,6 +1187,17 @@ final class CodexAppServerConnection {
     deinit {
         socket?.cancel(with: .goingAway, reason: nil)
         process?.terminate()
+    }
+
+    func disconnect() {
+        socket?.cancel(with: .goingAway, reason: nil)
+        socket = nil
+        receiveTask?.cancel()
+        receiveTask = nil
+        process?.terminate()
+        process = nil
+        initialized = false
+        failPending(CodexAppServerError.connectionFailed)
     }
 
     func connectIfNeeded() async throws {

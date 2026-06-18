@@ -181,7 +181,7 @@ struct AIPanel: View {
 
     private func runQuick(_ prompt: String) {
         guard !assistant.isWorking else { return }
-        store.aiPanelVisible = true
+        store.openAIPanel()
         assistant.send(prompt)
     }
 
@@ -698,7 +698,9 @@ final class SpeechCenter: ObservableObject {
     private var delegateProxy: Delegate?
 
     private init() {
-        let proxy = Delegate(owner: self)
+        let proxy = Delegate { [weak self] in
+            Task { @MainActor in self?.finished() }
+        }
         delegateProxy = proxy
         synthesizer.delegate = proxy
     }
@@ -730,14 +732,17 @@ final class SpeechCenter: ObservableObject {
     fileprivate func finished() { speakingMessageID = nil }
 
     private final class Delegate: NSObject, AVSpeechSynthesizerDelegate {
-        weak var owner: SpeechCenter?
-        init(owner: SpeechCenter) { self.owner = owner }
+        private let onFinish: @Sendable () -> Void
+
+        init(onFinish: @escaping @Sendable () -> Void) {
+            self.onFinish = onFinish
+        }
 
         func speechSynthesizer(_ s: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-            Task { @MainActor in owner?.finished() }
+            onFinish()
         }
         func speechSynthesizer(_ s: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-            Task { @MainActor in owner?.finished() }
+            onFinish()
         }
     }
 }

@@ -48,6 +48,15 @@ checkout. Chromium owns the web; Mori owns everything around it.
 | 💤 **Sleep & archive** | Stale tabs sleep to save memory and archive (restorably) instead of vanishing. |
 | 🔑 **Passkeys, downloads, media** | Native passkey auth, a downloads panel, and picture-in-picture media controls. |
 
+## Security status
+
+Mori is still in its infancy and should be treated as experimental software.
+Security risk is especially relevant around features that execute or interpret
+site content, including Boosts, injected CSS/JavaScript, AI page-reading tools,
+and prompt-injection paths through web content. Use a dedicated test profile,
+avoid sensitive browsing, and review any site automation or custom scripts
+before trusting them.
+
 ## Documentation map
 
 Start here, then use the focused docs when you need the exact workflow:

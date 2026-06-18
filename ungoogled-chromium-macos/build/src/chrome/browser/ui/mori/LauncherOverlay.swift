@@ -440,24 +440,16 @@ private struct LauncherItem: Identifiable {
         var seen = Set<String>()
         var out: [LauncherItem] = []
 
-        func favicon(for u: String) -> String? {
-            guard let host = URL(string: u)?.host else { return nil }
-            return "https://www.google.com/s2/favicons?domain=\(host)&sz=64"
-        }
-
         if !rawQuery.isEmpty {
             let resolved = URLInterpreter.resolve(rawQuery, settings: store.settings)
             let isAddress = URLInterpreter.resolvesAsAddress(rawQuery)
             seen.insert(resolved)
-            // Stable id (not keyed on the resolved URL) so the row — and its
-            // Favicon/AsyncImage — persists across keystrokes instead of being
-            // torn down and reloaded on every character. The search-engine
-            // favicon is host-derived and therefore constant while typing, so a
-            // persistent view keeps it rock-solid with no reload flash.
+            // Stable id (not keyed on the resolved URL) so the row persists
+            // across keystrokes instead of being torn down on every character.
             out.append(LauncherItem(id: isAddress ? "direct-address" : "direct-search",
                                     title: isAddress ? "Open \(rawQuery)" : "Search \(rawQuery)",
                                     url: resolved,
-                                    faviconURL: isAddress ? favicon(for: resolved) : nil,
+                                    faviconURL: nil,
                                     tabID: nil,
                                     action: isAddress ? "Open" : "Search"))
         }
@@ -479,7 +471,7 @@ private struct LauncherItem: Identifiable {
             out.append(LauncherItem(id: "tab-\(tab.id)",
                                     title: tab.title,
                                     url: tab.displayURL,
-                                    faviconURL: tab.faviconURL ?? favicon(for: tab.urlString),
+                                    faviconURL: tab.faviconURL,
                                     tabID: tab.id,
                                     action: "Switch to Tab"))
         }
@@ -493,7 +485,7 @@ private struct LauncherItem: Identifiable {
             out.append(LauncherItem(id: "hist-\(entry.id)",
                                     title: entry.title.isEmpty ? entry.url : entry.title,
                                     url: entry.url,
-                                    faviconURL: favicon(for: entry.url),
+                                    faviconURL: nil,
                                     tabID: nil,
                                     action: "Open"))
         }
@@ -522,8 +514,6 @@ private struct LauncherItem: Identifiable {
                 store.dismissLauncher(); store.startZapMode() },
             Cmd(title: "Peek a Link", icon: "eye", keywords: "peek preview clipboard little arc") {
                 store.dismissLauncher(); store.peekFromClipboardOrCurrent() },
-            Cmd(title: "Open Assistant", icon: "sparkles", keywords: "ai assistant codex chat ask") {
-                store.dismissLauncher(); store.aiPanelVisible = true },
             Cmd(title: "Sleep Background Tabs", icon: "moon.zzz", keywords: "sleep memory tabs free") {
                 store.dismissLauncher(); store.sleepBackgroundTabs() },
             Cmd(title: "Reopen Closed Tab", icon: "arrow.uturn.left", keywords: "reopen closed restore tab") {
@@ -537,6 +527,11 @@ private struct LauncherItem: Identifiable {
             Cmd(title: "New Space", icon: "square.grid.2x2", keywords: "space context new create") {
                 store.dismissLauncher(); store.contextCreationVisible = true }
         ]
+        if store.settings.aiIntegrationEnabled {
+            defs.append(Cmd(title: "Open Assistant", icon: "sparkles", keywords: "ai assistant codex chat ask") {
+                store.dismissLauncher(); store.openAIPanel()
+            })
+        }
         for ctx in store.contexts where ctx.id != store.activeContextID {
             defs.append(Cmd(title: "Switch to \(ctx.name)",
                             icon: "arrow.right.circle",

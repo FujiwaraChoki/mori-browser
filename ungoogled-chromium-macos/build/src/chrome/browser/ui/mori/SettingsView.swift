@@ -22,6 +22,7 @@ struct SettingsView: View {
                     generalSection
                     searchSection
                     privacySection
+                    aiSection
                     appearanceSection
                     tabsSection
                     RoutingSection(store: store)
@@ -152,6 +153,22 @@ struct SettingsView: View {
                     Text("Use Mori's bundled Block List Project ads list.")
                         .font(Typography.ui(Typography.label))
                         .foregroundStyle(p.mutedForeground.color)
+                }
+            }
+        }
+    }
+
+    private var aiSection: some View {
+        Section(title: "AI") {
+            ToggleRow(isOn: $settings.aiIntegrationEnabled) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("AI integration")
+                        .font(Typography.ui(Typography.base))
+                        .foregroundStyle(p.foreground.color)
+                    Text("Allow Mori to use the local Codex assistant and browser automation tools.")
+                        .font(Typography.ui(Typography.label))
+                        .foregroundStyle(p.mutedForeground.color)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }

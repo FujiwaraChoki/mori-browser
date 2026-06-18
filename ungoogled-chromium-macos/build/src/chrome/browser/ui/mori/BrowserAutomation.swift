@@ -37,11 +37,18 @@ struct BrowserToolResult {
     }
 }
 
+struct BrowserToolApprovalRequest {
+    let title: String
+    let message: String
+    let confirmButtonTitle: String
+    let isDestructive: Bool
+}
+
 enum BrowserAutomation {
     static let dynamicTools: [[String: Any]] = [
         [
             "name": "mori_browser_snapshot",
-            "description": "Read Mori's open tabs and, by default, the active page. Returns tab IDs, titles, URLs, loading state, selected text, visible page text, links, form controls, viewport and scroll position.",
+            "description": "Read Mori's open tabs and, by default, the active page. Returns tab IDs, titles, URLs, loading state, selected text, visible page text, links, form controls, viewport and scroll position. Mori asks the user before sharing this data.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
@@ -58,7 +65,7 @@ enum BrowserAutomation {
         ],
         [
             "name": "mori_browser_action",
-            "description": "Perform browser and page actions in Mori. Supports openTab, selectTab, navigate, back, forward, reload, readPage, click, doubleClick, hover, hold, type, keyPress, scroll, findText and wait. Prefer selectors when available; use x/y viewport coordinates when selectors are not available.",
+            "description": "Perform browser and page actions in Mori. Supports openTab, selectTab, navigate, back, forward, reload, readPage, click, doubleClick, hover, hold, type, keyPress, scroll, findText and wait. Prefer selectors when available; use x/y viewport coordinates when selectors are not available. Mori asks the user before reading page data or changing browser/page state.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
@@ -90,7 +97,7 @@ enum BrowserAutomation {
         ],
         [
             "name": "mori_get_settings",
-            "description": "Read Mori's current browser settings: homepage, new-tab behavior, search engine (and custom template), appearance theme, sidebar visibility and position, auto Picture-in-Picture, and the active gradient theme preset.",
+            "description": "Read Mori's current browser settings: homepage, new-tab behavior, search engine (and custom template), privacy preferences, appearance theme, sidebar visibility and position, auto Picture-in-Picture, and the active gradient theme preset.",
             "inputSchema": [
                 "type": "object",
                 "properties": [:]
@@ -98,7 +105,7 @@ enum BrowserAutomation {
         ],
         [
             "name": "mori_update_settings",
-            "description": "Change one or more of Mori's browser settings. Only the fields you provide are changed; omit a field to leave it untouched. Changes persist and apply live.",
+            "description": "Change one or more of Mori's browser settings. Only the fields you provide are changed; omit a field to leave it untouched. Changes persist and apply live. Mori asks the user before applying these changes.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
@@ -119,6 +126,10 @@ enum BrowserAutomation {
                     "customSearchTemplate": [
                         "type": "string",
                         "description": "Search URL used when searchEngine is 'custom'. Include '{query}' where the search terms go, e.g. 'https://example.com/search?q={query}'."
+                    ],
+                    "aiIntegrationEnabled": [
+                        "type": "boolean",
+                        "description": "Whether Mori's assistant panel, shortcuts, launcher command, and Codex browser tools are enabled."
                     ],
                     "theme": [
                         "type": "string",
@@ -151,7 +162,7 @@ enum BrowserAutomation {
         ],
         [
             "name": "mori_organize_tabs",
-            "description": "Tidy the user's open tabs into named sidebar folders (groups). Use the tab IDs reported by mori_browser_snapshot. Each tab should appear in at most one group; tabs you omit are left where they are.",
+            "description": "Tidy the user's open tabs into named sidebar folders (groups). Use the tab IDs reported by mori_browser_snapshot. Each tab should appear in at most one group; tabs you omit are left where they are. Mori asks the user before changing tab organization.",
             "inputSchema": [
                 "type": "object",
                 "properties": [
@@ -175,6 +186,51 @@ enum BrowserAutomation {
             ]
         ]
     ]
+
+    @MainActor
+    static func approvalRequest(tool: String,
+                                arguments: [String: Any],
+                                store: BrowserStore) -> BrowserToolApprovalRequest? {
+        switch tool {
+        case "mori_browser_snapshot":
+            let includePage = bool(arguments["includePage"]) ?? true
+            let scope = includePage
+                ? "open tab list and the active page contents"
+                : "open tab list"
+            return BrowserToolApprovalRequest(
+                title: "Allow Mori Assistant to read browser context?",
+                message: """
+                Codex wants to read the \(scope).
+
+                Page content and tab URLs can include sensitive information or untrusted instructions from websites.
+                """,
+                confirmButtonTitle: "Allow Read",
+                isDestructive: false
+            )
+        case "mori_browser_action":
+            guard let action = string(arguments["action"]) else { return nil }
+            guard action != "wait" else { return nil }
+            return browserActionApprovalRequest(action: action,
+                                                arguments: arguments,
+                                                store: store)
+        case "mori_update_settings":
+            return BrowserToolApprovalRequest(
+                title: "Allow Mori Assistant to change settings?",
+                message: "Codex wants to change \(settingsChangeSummary(arguments)).",
+                confirmButtonTitle: "Allow Changes",
+                isDestructive: true
+            )
+        case "mori_organize_tabs":
+            return BrowserToolApprovalRequest(
+                title: "Allow Mori Assistant to organize tabs?",
+                message: "Codex wants to \(tabOrganizationSummary(arguments)).",
+                confirmButtonTitle: "Allow Organizing",
+                isDestructive: true
+            )
+        default:
+            return nil
+        }
+    }
 
     @MainActor
     static func handle(tool: String,
@@ -240,7 +296,8 @@ enum BrowserAutomation {
 
         switch action {
         case "openTab":
-            let url = string(arguments["url"]) ?? store.settings.newTabURL
+            let rawURL = string(arguments["url"]) ?? store.settings.newTabURL
+            let url = assistantNavigationURL(rawURL, store: store)
             let tab = store.newTab(url: url, select: true)
             return BrowserToolResult(text: "Opened tab \(tab.id.uuidString) at \(tab.urlString).", success: true)
         case "selectTab":
@@ -251,9 +308,10 @@ enum BrowserAutomation {
             store.selectTab(tab.id)
             return BrowserToolResult(text: "Selected tab \(tab.id.uuidString): \(tab.title).", success: true)
         case "navigate":
-            guard let url = string(arguments["url"]) else {
+            guard let rawURL = string(arguments["url"]) else {
                 throw BrowserAutomationError.missingArgument("url")
             }
+            let url = assistantNavigationURL(rawURL, store: store)
             let tab = try targetTab(arguments: arguments, store: store)
             tab.load(url)
             return BrowserToolResult(text: "Navigating \(tab.id.uuidString) to \(tab.urlString).", success: true)
@@ -298,6 +356,7 @@ enum BrowserAutomation {
             "newTabBehavior": settings.newTabBehavior.rawValue,
             "searchEngine": settings.searchEngine.rawValue,
             "customSearchTemplate": settings.customSearchTemplate,
+            "aiIntegrationEnabled": settings.aiIntegrationEnabled,
             "theme": settings.theme.rawValue,
             "showSidebarOnLaunch": settings.showSidebarOnLaunch,
             "sidebarPosition": settings.sidebarPosition.rawValue,
@@ -336,6 +395,10 @@ enum BrowserAutomation {
         if let value = string(arguments["customSearchTemplate"]) {
             settings.customSearchTemplate = value
             changes.append("custom search template → \(value)")
+        }
+        if let value = bool(arguments["aiIntegrationEnabled"]) {
+            settings.aiIntegrationEnabled = value
+            changes.append("AI integration → \(value)")
         }
         if let raw = string(arguments["theme"]) {
             guard let value = ThemePreference(rawValue: raw) else {
@@ -415,6 +478,165 @@ enum BrowserAutomation {
         return BrowserToolResult(
             text: "Organized \(tabsMoved) tab(s) into \(foldersCreated) folder(s).",
             success: true)
+    }
+
+    @MainActor
+    private static func browserActionApprovalRequest(action: String,
+                                                     arguments: [String: Any],
+                                                     store: BrowserStore) -> BrowserToolApprovalRequest {
+        let readOnly = action == "readPage"
+        return BrowserToolApprovalRequest(
+            title: "Allow Mori Assistant to \(actionLabel(action))?",
+            message: browserActionApprovalMessage(action: action,
+                                                  arguments: arguments,
+                                                  store: store),
+            confirmButtonTitle: readOnly ? "Allow Read" : "Allow Action",
+            isDestructive: !readOnly
+        )
+    }
+
+    @MainActor
+    private static func assistantNavigationURL(_ rawURL: String,
+                                               store: BrowserStore) -> String {
+        MoriURLRewriter.rewrite(URLInterpreter.resolve(rawURL, settings: store.settings))
+    }
+
+    @MainActor
+    private static func browserActionApprovalMessage(action: String,
+                                                     arguments: [String: Any],
+                                                     store: BrowserStore) -> String {
+        let tab = approvalTabSummary(arguments: arguments, store: store)
+        switch action {
+        case "readPage":
+            return """
+            Codex wants to read the visible contents of \(tab).
+
+            Page content can include sensitive information or untrusted instructions from websites.
+            """
+        case "openTab":
+            let url = assistantNavigationURL(string(arguments["url"]) ?? store.settings.newTabURL,
+                                             store: store)
+            if BrowserURLPolicy.isPrivilegedURL(url) {
+                return "Codex wants to open a privileged internal/local URL: \(clippedForApproval(url)). Only allow this if it matches your request."
+            }
+            let urlText = clippedForApproval(url)
+            return "Codex wants to open a new tab at \(urlText)."
+        case "selectTab":
+            return "Codex wants to switch Mori to \(tab)."
+        case "navigate":
+            let url = assistantNavigationURL(string(arguments["url"]) ?? "", store: store)
+            if BrowserURLPolicy.isPrivilegedURL(url) {
+                return "Codex wants to navigate \(tab) to a privileged internal/local URL: \(clippedForApproval(url)). Only allow this if it matches your request."
+            }
+            let urlText = clippedForApproval(url)
+            return "Codex wants to navigate \(tab) to \(urlText)."
+        case "back":
+            return "Codex wants to go back in \(tab)."
+        case "forward":
+            return "Codex wants to go forward in \(tab)."
+        case "reload":
+            return "Codex wants to reload \(tab)."
+        case "click", "doubleClick", "hover", "hold":
+            return "Codex wants to \(actionLabel(action).lowercased()) in \(tab) at \(targetSummary(arguments))."
+        case "type":
+            let text = clippedForApproval(string(arguments["text"]) ?? "")
+            return "Codex wants to type into \(tab) at \(targetSummary(arguments)): \(text)"
+        case "keyPress":
+            let key = clippedForApproval(string(arguments["key"]) ?? "")
+            return "Codex wants to press \(key) in \(tab)."
+        case "scroll":
+            let direction = string(arguments["direction"]) ?? "down"
+            let amount = string(arguments["amount"]) ?? "default distance"
+            return "Codex wants to scroll \(direction) by \(amount) in \(tab)."
+        case "findText":
+            let text = clippedForApproval(string(arguments["text"]) ?? "")
+            return "Codex wants to search \(tab) for \(text)."
+        default:
+            return "Codex wants to run \(actionLabel(action)) in \(tab)."
+        }
+    }
+
+    @MainActor
+    private static func approvalTabSummary(arguments: [String: Any],
+                                           store: BrowserStore) -> String {
+        let tab: BrowserTab?
+        if let id = string(arguments["tabId"]) {
+            tab = store.tabs.first {
+                $0.id.uuidString == id || $0.id.uuidString.hasPrefix(id)
+            }
+        } else {
+            tab = store.selectedTab
+        }
+        guard let tab else { return "the active tab" }
+        let title = tab.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = title.isEmpty ? tab.urlString : title
+        return "\(clippedForApproval(label)) (\(clippedForApproval(tab.urlString)))"
+    }
+
+    private static func targetSummary(_ arguments: [String: Any]) -> String {
+        if let selector = string(arguments["selector"]),
+           !selector.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "selector \(clippedForApproval(selector))"
+        }
+        if let x = string(arguments["x"]), let y = string(arguments["y"]) {
+            return "coordinates \(x), \(y)"
+        }
+        return "the focused element"
+    }
+
+    private static func settingsChangeSummary(_ arguments: [String: Any]) -> String {
+        let names: [(String, String)] = [
+            ("homepageURL", "homepage"),
+            ("newTabBehavior", "new-tab behavior"),
+            ("searchEngine", "search engine"),
+            ("customSearchTemplate", "custom search template"),
+            ("aiIntegrationEnabled", "AI integration"),
+            ("theme", "theme"),
+            ("showSidebarOnLaunch", "show sidebar on launch"),
+            ("sidebarPosition", "sidebar position"),
+            ("autoPiP", "auto Picture-in-Picture"),
+            ("gradientTheme", "gradient theme")
+        ]
+        let changes = names.compactMap { key, label -> String? in
+            guard let value = arguments[key] else { return nil }
+            return "\(label) to \(clippedForApproval(String(describing: value)))"
+        }
+        guard !changes.isEmpty else {
+            return "Mori settings, but did not provide any recognized setting fields"
+        }
+        return changes.joined(separator: ", ")
+    }
+
+    private static func tabOrganizationSummary(_ arguments: [String: Any]) -> String {
+        guard let groups = arguments["groups"] as? [[String: Any]], !groups.isEmpty else {
+            return "change tab folders, but did not provide any groups"
+        }
+        let names = groups.prefix(5).compactMap { group -> String? in
+            guard let name = string(group["name"]),
+                  !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return nil }
+            return clippedForApproval(name)
+        }
+        let suffix = groups.count > names.count ? " and \(groups.count - names.count) more" : ""
+        return names.isEmpty
+            ? "create \(groups.count) tab folder(s)"
+            : "create tab folder(s): \(names.joined(separator: ", "))\(suffix)"
+    }
+
+    private static func actionLabel(_ raw: String) -> String {
+        raw
+            .replacingOccurrences(of: "([a-z])([A-Z])",
+                                  with: "$1 $2",
+                                  options: .regularExpression)
+            .replacingOccurrences(of: "_", with: " ")
+            .split(separator: " ")
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+    }
+
+    private static func clippedForApproval(_ text: String, maxLength: Int = 160) -> String {
+        guard text.count > maxLength else { return text.isEmpty ? "(empty)" : text }
+        return String(text.prefix(maxLength)) + "..."
     }
 
     @MainActor

@@ -39,6 +39,11 @@ final class BrowserSettings: ObservableObject {
         }
     }
 
+    /// Enables Mori's local Codex assistant and browser automation tools.
+    @Published var aiIntegrationEnabled: Bool {
+        didSet { defaults.set(aiIntegrationEnabled, forKey: Key.aiIntegrationEnabled) }
+    }
+
     // MARK: Appearance
 
     @Published var theme: ThemePreference {
@@ -144,6 +149,7 @@ final class BrowserSettings: ObservableObject {
         static let engine = "mori.searchEngine"
         static let customEngine = "mori.customSearchTemplate"
         static let blockAds = "mori.blockAds"
+        static let aiIntegrationEnabled = "mori.aiIntegrationEnabled"
         static let theme = "mori.theme"
         static let sidebarOnLaunch = "mori.showSidebarOnLaunch"
         static let sidebarPosition = "mori.sidebarPosition"
@@ -173,6 +179,7 @@ final class BrowserSettings: ObservableObject {
         customSearchTemplate = defaults.string(forKey: Key.customEngine)
             ?? "https://www.example.com/search?q={query}"
         blockAds = defaults.object(forKey: Key.blockAds) as? Bool ?? true
+        aiIntegrationEnabled = defaults.object(forKey: Key.aiIntegrationEnabled) as? Bool ?? true
         theme = ThemePreference(rawValue: defaults.string(forKey: Key.theme) ?? "")
             ?? .system
         // Default the sidebar on (matches the Mori default chrome).

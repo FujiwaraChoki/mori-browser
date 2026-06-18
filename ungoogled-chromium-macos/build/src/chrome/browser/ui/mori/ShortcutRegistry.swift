@@ -415,7 +415,10 @@ enum MoriCommands {
                          acceptsRepeats: true) {
                 $0.selectPreviousTab()
             },
-            MoriShortcut("toggleAIOptionA", modifiers: .option, key: "a") {
+            MoriShortcut("toggleAIOptionA",
+                         modifiers: .option,
+                         key: "a",
+                         isEnabled: { store, _ in store.settings.aiIntegrationEnabled }) {
                 $0.toggleAIPanel()
             },
             MoriShortcut("nextTabCommandShiftBracket",
@@ -529,7 +532,10 @@ enum MoriCommands {
             MoriShortcut("findNext", modifiers: .command, key: "g") {
                 $0.findNext(forward: true)
             },
-            MoriShortcut("toggleAI", modifiers: .command, key: "k") {
+            MoriShortcut("toggleAI",
+                         modifiers: .command,
+                         key: "k",
+                         isEnabled: { store, _ in store.settings.aiIntegrationEnabled }) {
                 $0.toggleAIPanel()
             },
             MoriShortcut("stop", modifiers: .command, key: ".") {
