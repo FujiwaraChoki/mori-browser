@@ -106,7 +106,9 @@ private final class PasskeyAuthenticator {
     private func register(options: [String: Any],
                           origin: String) throws -> [String: Any] {
         let rp = options["rp"] as? [String: Any]
-        let rpId = (rp?["id"] as? String) ?? Self.effectiveDomain(origin)
+        let binding = try Self.validateBinding(origin: origin,
+                                               requestedRPID: rp?["id"] as? String)
+        let rpId = binding.rpId
         guard let challenge = options["challenge"] as? String else {
             throw WebAuthnError("NotAllowedError", "Missing challenge.")
         }
@@ -158,7 +160,7 @@ private final class PasskeyAuthenticator {
 
         let clientDataJSON = Self.clientDataJSON(type: "webauthn.create",
                                                  challenge: challenge,
-                                                 origin: origin)
+                                                 origin: binding.origin)
 
         // Persist the credential record (sign counter stays 0, like Apple's
         // own platform passkeys, so there is nothing to update per-assertion).
@@ -187,7 +189,9 @@ private final class PasskeyAuthenticator {
 
     private func assert(options: [String: Any],
                         origin: String) throws -> [String: Any] {
-        let rpId = (options["rpId"] as? String) ?? Self.effectiveDomain(origin)
+        let binding = try Self.validateBinding(origin: origin,
+                                               requestedRPID: options["rpId"] as? String)
+        let rpId = binding.rpId
         guard let challenge = options["challenge"] as? String else {
             throw WebAuthnError("NotAllowedError", "Missing challenge.")
         }
@@ -216,7 +220,7 @@ private final class PasskeyAuthenticator {
                                               attestedCredentialData: Data())
         let clientDataJSON = Self.clientDataJSON(type: "webauthn.get",
                                                  challenge: challenge,
-                                                 origin: origin)
+                                                 origin: binding.origin)
         let clientDataHash = Data(SHA256.hash(data: clientDataJSON))
         let signature = try KeyManager.sign(blob: record.keyBlob,
                                             message: authData + clientDataHash)
@@ -298,9 +302,113 @@ private final class PasskeyAuthenticator {
 
     // MARK: Helpers
 
-    private static func effectiveDomain(_ origin: String) -> String {
-        guard let host = URL(string: origin)?.host else { return origin }
-        return host
+    private static func validateBinding(origin rawOrigin: String,
+                                        requestedRPID: String?) throws
+        -> (origin: String, rpId: String) {
+        guard let components = URLComponents(string: rawOrigin),
+              let scheme = components.scheme?.lowercased(),
+              let rawHost = components.host,
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil,
+              components.path.isEmpty || components.path == "/" else {
+            throw WebAuthnError("SecurityError", "Invalid WebAuthn origin.")
+        }
+
+        let host = normalizeHost(rawHost)
+        guard !host.isEmpty else {
+            throw WebAuthnError("SecurityError", "Invalid WebAuthn origin.")
+        }
+        guard isTrustworthyOrigin(scheme: scheme, host: host) else {
+            throw WebAuthnError("SecurityError", "Passkeys require a secure origin.")
+        }
+
+        let rpId = normalizeHost(requestedRPID ?? host)
+        guard isValidRPID(rpId), rpIdMatchesOriginHost(rpId: rpId, host: host) else {
+            throw WebAuthnError("SecurityError",
+                                "Relying party ID does not match the origin.")
+        }
+        return (serializedOrigin(scheme: scheme,
+                                 host: host,
+                                 port: components.port),
+                rpId)
+    }
+
+    private static func normalizeHost(_ host: String) -> String {
+        var normalized = host.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        while normalized.hasSuffix(".") {
+            normalized.removeLast()
+        }
+        return normalized
+    }
+
+    private static func isTrustworthyOrigin(scheme: String, host: String) -> Bool {
+        if scheme == "https" { return true }
+        if scheme == "http" && isLocalHost(host) { return true }
+        return false
+    }
+
+    private static func isValidRPID(_ rpId: String) -> Bool {
+        guard !rpId.isEmpty,
+              rpId.rangeOfCharacter(from: .whitespacesAndNewlines) == nil,
+              rpId.rangeOfCharacter(from: .controlCharacters) == nil,
+              !rpId.contains("/"),
+              !rpId.contains(":"),
+              !isIPv4Literal(rpId) else {
+            return false
+        }
+        if rpId == "localhost" || rpId.hasSuffix(".localhost") {
+            return true
+        }
+        let labels = rpId.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count >= 2,
+              labels.allSatisfy({ !$0.isEmpty && $0.count <= 63 }) else {
+            return false
+        }
+        let allowed = CharacterSet(charactersIn:
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-")
+        return labels.allSatisfy { label in
+            let text = String(label)
+            guard text.rangeOfCharacter(from: allowed.inverted) == nil else {
+                return false
+            }
+            return !(text.hasPrefix("-") || text.hasSuffix("-"))
+        }
+    }
+
+    private static func rpIdMatchesOriginHost(rpId: String, host: String) -> Bool {
+        host == rpId || host.hasSuffix("." + rpId)
+    }
+
+    private static func serializedOrigin(scheme: String,
+                                         host: String,
+                                         port: Int?) -> String {
+        let defaultPort = (scheme == "https" && port == 443)
+            || (scheme == "http" && port == 80)
+        guard let port, !defaultPort else {
+            return "\(scheme)://\(host)"
+        }
+        return "\(scheme)://\(host):\(port)"
+    }
+
+    private static func isLocalHost(_ host: String) -> Bool {
+        host == "localhost"
+            || host.hasSuffix(".localhost")
+            || host == "::1"
+            || (isIPv4Literal(host) && host.hasPrefix("127."))
+    }
+
+    private static func isIPv4Literal(_ host: String) -> Bool {
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        return parts.allSatisfy { part in
+            guard let value = Int(part), (0...255).contains(value) else {
+                return false
+            }
+            return String(value) == part || part == "0"
+        }
     }
 
     private static func randomBytes(_ count: Int) -> Data {

@@ -250,7 +250,7 @@ private struct LibraryRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 10) {
-                Favicon(icon: faviconURL, page: url, size: 15)
+                Favicon(icon: nil, page: url, size: 15)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title.isEmpty ? url : title)
                         .font(Typography.ui(Typography.base))
@@ -275,11 +275,6 @@ private struct LibraryRow: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(Motion.state, value: hovering)
-    }
-
-    private var faviconURL: String? {
-        guard let host = URL(string: url)?.host else { return nil }
-        return "https://www.google.com/s2/favicons?sz=32&domain=\(host)"
     }
 
     private var prettyURL: String {

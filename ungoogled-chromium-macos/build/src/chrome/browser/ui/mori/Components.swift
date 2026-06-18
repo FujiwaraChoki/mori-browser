@@ -68,16 +68,15 @@ struct IconButton: View {
     }
 }
 
-/// A favicon with Mori's compact browser styling: curated brand glyphs, a
-/// domain-tinted monogram when no icon is available, and a subtle desaturation
-/// when its tab is inactive. `icon` is the favicon image URL; `page` is the site
-/// URL (drives brand lookup, monogram color, and the broken-image fallback).
+/// A favicon with Mori's compact browser styling: Chromium-decoded favicons,
+/// curated brand glyphs, a domain-tinted monogram when no icon is available,
+/// and a subtle desaturation when its tab is inactive. `icon` is retained for
+/// metadata compatibility; rendering never fetches it from native UI.
 struct Favicon: View {
     let icon: String?
     var page: String? = nil
     /// The real site favicon decoded by Chromium. When present it is preferred
-    /// over the remote-URL load and the monogram (the icon/page strings still
-    /// drive the brand glyph and the fallbacks).
+    /// over local brand glyphs and the monogram.
     var image: NSImage? = nil
     var size: CGFloat = 15
     /// Inactive tabs render slightly desaturated so the active tab reads first.
@@ -127,26 +126,6 @@ struct Favicon: View {
                 .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         } else {
             switch source {
-            case .remote(let url):
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().interpolation(.high)
-                    case .failure:
-                        monogram   // genuinely broken → monogram, not a blank box
-                    case .empty:
-                        // Still loading: a faint neutral tile rather than flashing
-                        // the domain monogram (e.g. "D" for the search engine) for
-                        // the instant before the real favicon arrives — keeps the
-                        // row from feeling empty without committing to a glyph.
-                        RoundedRectangle(cornerRadius: corner, style: .continuous)
-                            .fill(Color.primary.opacity(0.07))
-                    @unknown default:
-                        monogram
-                    }
-                }
-                .frame(width: size, height: size)
-                .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
             case .monogram(let letter, let color):
                 FaviconMonogram(letter: letter, color: color, size: size)
             case .brand:

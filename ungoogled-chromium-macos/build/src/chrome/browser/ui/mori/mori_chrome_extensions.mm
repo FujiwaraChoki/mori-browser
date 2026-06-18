@@ -772,8 +772,11 @@ NSString* InstallTypeString(const extensions::Extension& extension) {
   }
 
   auto installer = extensions::CrxInstaller::CreateSilent(profile);
-  installer->set_allow_silent_install(true);
-  installer->set_grant_permissions(true);
+  // Mori obtains explicit install consent in Swift before staging the CRX.
+  // Keep Chrome's host/API permission grants withheld until the user grants
+  // them through Chromium's extension UI.
+  installer->set_allow_silent_install(false);
+  installer->set_grant_permissions(false);
   installer->set_is_gallery_install(true);
   installer->set_delete_source(true);
   installer->set_off_store_install_allow_reason(

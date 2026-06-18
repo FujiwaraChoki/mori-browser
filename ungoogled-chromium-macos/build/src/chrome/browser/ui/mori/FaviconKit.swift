@@ -5,27 +5,18 @@ import SwiftUI
 enum FaviconSource {
     /// A bundled, curated brand asset (e.g. `brand-github`).
     case brand(String)
-    /// A remote favicon image to load.
-    case remote(URL)
     /// No usable image — show a colored monogram derived from the domain.
     case monogram(letter: String, color: Color)
 
-    /// Resolve the best source for a page: curated brand → remote favicon →
-    /// monogram. `icon` is the favicon image URL, `page` the site URL.
+    /// Resolve the best source for a page: curated brand → monogram. Network
+    /// favicon loading is intentionally absent here; Mori uses Chromium-decoded
+    /// favicon images supplied separately by `BrowserTab.faviconImage`.
     static func resolve(icon: String?, page: String?) -> FaviconSource {
         let host = Self.host(from: page)
         if let host, let asset = SiteBrand.asset(forHost: host) {
             return .brand(asset)
         }
-        if let icon, let url = URL(string: icon) {
-            return .remote(url)
-        }
-        // No declared icon yet (e.g. a restored or background tab whose browser
-        // hasn't been realized): try the site's conventional /favicon.ico so the
-        // real icon still shows. AsyncImage falls back to the monogram if it 404s.
-        if let host, let url = URL(string: "https://\(host)/favicon.ico") {
-            return .remote(url)
-        }
+        _ = icon
         return monogram(for: host)
     }
 

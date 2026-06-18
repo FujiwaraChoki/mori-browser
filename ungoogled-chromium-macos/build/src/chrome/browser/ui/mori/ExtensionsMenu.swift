@@ -32,7 +32,7 @@ struct ExtensionToolbarItems: View {
         }
         // Badge/title state is per-tab; keep the snapshot fresh as the user
         // switches tabs.
-        .onChange(of: store.selectedTabID) { _ in extensions.refresh() }
+        .onChange(of: store.selectedTabID) { _, _ in extensions.refresh() }
     }
 }
 

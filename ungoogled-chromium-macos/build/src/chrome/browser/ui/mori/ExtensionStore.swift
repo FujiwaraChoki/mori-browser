@@ -272,6 +272,11 @@ final class ExtensionStore: ObservableObject {
             lastError = "That folder has no manifest.json — pick an unpacked extension directory."
             return
         }
+        guard confirmUnpackedExtensionInstall(name: source.lastPathComponent,
+                                              source: source.path) else {
+            lastError = nil
+            return
+        }
         guard MoriChromeExtensions.loadUnpacked(atPath: source.path) else {
             lastError = "Chrome's extension service is not ready yet."
             return
@@ -285,11 +290,12 @@ final class ExtensionStore: ObservableObject {
     /// Idempotent per id while a download is in flight.
     func beginWebStoreInstall(extensionID id: String) {
         guard !installingIDs.contains(id) else { return }
+        guard confirmWebStoreInstall(extensionID: id) else { return }
         installingIDs.insert(id)
         Task { @MainActor in
             do {
                 let data = try await downloadCRX(extensionID: id)
-                try installCRXData(data, expectedID: id, name: id)
+                try installCRXData(data, expectedID: id, name: id, userApproved: true)
                 // installingIDs is cleared by handleInstallFinished.
             } catch {
                 installingIDs.remove(id)
@@ -317,7 +323,13 @@ final class ExtensionStore: ObservableObject {
     }
 
     /// Stage CRX bytes in the install queue and hand them to Chrome.
-    fileprivate func installCRXData(_ data: Data, expectedID: String?, name: String) throws {
+    fileprivate func installCRXData(_ data: Data,
+                                    expectedID: String?,
+                                    name: String,
+                                    userApproved: Bool) throws {
+        guard userApproved else {
+            throw ExtensionInstallError.cancelled
+        }
         let queue = Self.managedDirectory()
             .appendingPathComponent("ChromeInstallQueue", isDirectory: true)
         try FileManager.default.createDirectory(at: queue, withIntermediateDirectories: true)
@@ -354,6 +366,11 @@ final class ExtensionStore: ObservableObject {
     }
 
     fileprivate func presentInstallError(_ error: Error) {
+        if let installError = error as? ExtensionInstallError,
+           case .cancelled = installError {
+            lastError = nil
+            return
+        }
         lastError = error.localizedDescription
         guard !suppressDialogs else { return }
         let alert = NSAlert()
@@ -362,6 +379,50 @@ final class ExtensionStore: ObservableObject {
         alert.informativeText = error.localizedDescription
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    private func confirmWebStoreInstall(extensionID id: String) -> Bool {
+        confirmExtensionInstall(
+            title: "Install Extension?",
+            detail: """
+            Mori will download extension \(id) from the Chrome Web Store and install it into this profile.
+
+            Extensions can request permission to read or change page data. Only continue if you trust this extension.
+            """
+        )
+    }
+
+    private func confirmUnpackedExtensionInstall(name: String, source: String) -> Bool {
+        confirmExtensionInstall(
+            title: "Add Unpacked Extension?",
+            detail: """
+            Mori will load \(name.isEmpty ? "this unpacked extension" : name) from \(source).
+
+            Extensions can request permission to read or change page data. Only continue if you trust this extension.
+            """
+        )
+    }
+
+    fileprivate func confirmDownloadedCRXInstall(name: String, source: String) -> Bool {
+        confirmExtensionInstall(
+            title: "Install Downloaded Extension?",
+            detail: """
+            Mori will install \(name.isEmpty ? "this CRX file" : name) from \(source).
+
+            Extensions can request permission to read or change page data. Only continue if you trust this extension.
+            """
+        )
+    }
+
+    private func confirmExtensionInstall(title: String, detail: String) -> Bool {
+        guard !suppressDialogs else { return true }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = detail
+        alert.addButton(withTitle: "Install Extension")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     /// Automated runs (smoke tests) suppress modal dialogs.
@@ -402,10 +463,13 @@ final class ExtensionStore: ObservableObject {
 // MARK: - Errors
 
 enum ExtensionInstallError: LocalizedError {
+    case cancelled
     case download(String)
 
     var errorDescription: String? {
         switch self {
+        case .cancelled:
+            return "Extension install was cancelled."
         case .download(let detail):
             return "Couldn't download the extension. \(detail)"
         }
@@ -426,10 +490,20 @@ final class MoriExtensionBridge: NSObject {
     @objc static func installCRX(atPath path: String, fallbackURL urlString: String) {
         let url = URL(fileURLWithPath: path)
         Task { @MainActor in
+            let source = urlString.isEmpty ? path : urlString
+            guard ExtensionStore.shared.confirmDownloadedCRXInstall(
+                name: url.lastPathComponent,
+                source: source
+            ) else {
+                NSLog("Mori CRX install cancelled path=%@", path as NSString)
+                return
+            }
+            var shouldRemoveSourceFile = false
             do {
                 let data: Data
                 if FileManager.default.fileExists(atPath: path) {
                     data = try Data(contentsOf: url)
+                    shouldRemoveSourceFile = true
                 } else if let fallbackURL = URL(string: urlString), !urlString.isEmpty {
                     let (downloaded, response) = try await URLSession.shared.data(from: fallbackURL)
                     if let http = response as? HTTPURLResponse,
@@ -446,14 +520,17 @@ final class MoriExtensionBridge: NSObject {
                 try ExtensionStore.shared.installCRXData(
                     data,
                     expectedID: nil,
-                    name: url.lastPathComponent)
+                    name: url.lastPathComponent,
+                    userApproved: true)
                 NSLog("Mori Chrome CRX install queued path=%@", path as NSString)
+                if shouldRemoveSourceFile {
+                    try? FileManager.default.removeItem(at: url)
+                }
             } catch {
                 NSLog("Mori CRX install failed path=%@ error=%@",
                       path as NSString, error.localizedDescription as NSString)
                 ExtensionStore.shared.presentInstallError(error)
             }
-            try? FileManager.default.removeItem(at: url)
         }
     }
 }
