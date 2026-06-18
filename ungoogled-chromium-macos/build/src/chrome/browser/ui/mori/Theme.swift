@@ -227,12 +227,34 @@ enum Radius {
     static let window: CGFloat = 10  // the floating web-content card (Arc-style)
 }
 
+/// Spacing scale for padding/gaps. A small 4px-based ramp so container insets
+/// read from one vocabulary instead of scattered literals. Deliberately tuned,
+/// asymmetric one-offs (e.g. a row's leading/trailing pair sized around a close
+/// button) stay as literals — they're intent, not drift.
+enum Spacing {
+    static let xs: CGFloat = 2
+    static let sm: CGFloat = 4
+    static let md: CGFloat = 8
+    static let lg: CGFloat = 12
+    static let xl: CGFloat = 16
+    static let xxl: CGFloat = 24
+}
+
+/// Standard hairline/stroke opacity for 1px borders on chrome surfaces, so
+/// edges read consistently instead of drifting across 0.5/0.6/0.7.
+enum Stroke {
+    static let border: Double = 0.6
+}
+
 /// Type scale. Base interactive text is 13px; quiet labels 12px (per MASTER §2).
 enum Typography {
     static let base: CGFloat = 13
     static let label: CGFloat = 12
     static let small: CGFloat = 11
-    static let title: CGFloat = 13
+    /// Smallest tier — timestamps / dense metadata (was scattered raw `10`s).
+    static let caption: CGFloat = 10
+    /// Panel & section headings (was scattered raw `14`/`15`/`16`s).
+    static let title: CGFloat = 15
     static let bodyTracking: CGFloat = -0.011 * 13  // tracking-[-0.011em] at 13px
 
     /// Söhne in the webapp; the native default falls back to the system font.
@@ -312,19 +334,25 @@ private final class PressShrinkState: ObservableObject {
 /// `.onTapGesture`, and the shrink all coexist.
 struct PressShrink: ViewModifier {
     let action: () -> Void
+    var onPressChanged: (Bool) -> Void = { _ in }
     @StateObject private var state = PressShrinkState()
     @State private var monitor: Any?
 
     func body(content: Content) -> some View {
         content
             .scaleEffect(state.pressed ? TabSurface.pressScale : 1)
-            .animation(.easeOut(duration: 0.12), value: state.pressed)
+            // Same press curve as `PressShrinkButtonStyle` so every sidebar
+            // press affordance (rows, tiles, New Tab) shrinks identically.
+            .animation(Motion.snappy, value: state.pressed)
             .onTapGesture(perform: action)
             .onHover { inside in
                 state.hovering = inside
                 // Clear when the pointer leaves — covers the case where a drag
                 // session swallows the mouse-up that would otherwise reset it.
-                if !inside { state.pressed = false }
+                if !inside {
+                    state.pressed = false
+                    onPressChanged(false)
+                }
             }
             .onAppear {
                 guard monitor == nil else { return }
@@ -332,9 +360,13 @@ struct PressShrink: ViewModifier {
                     matching: [.leftMouseDown, .leftMouseUp]
                 ) { [state] event in
                     if event.type == .leftMouseDown {
-                        if state.hovering { state.pressed = true }
+                        if state.hovering {
+                            state.pressed = true
+                            onPressChanged(true)
+                        }
                     } else if state.pressed {
                         state.pressed = false
+                        onPressChanged(false)
                     }
                     return event   // never consume — let .onDrag / .onTapGesture run
                 }
@@ -349,8 +381,11 @@ struct PressShrink: ViewModifier {
 extension View {
     /// Select on tap with a Zen-style press-to-shrink while held. Use in place
     /// of `.onTapGesture(perform:)` on draggable rows.
-    func pressShrink(perform action: @escaping () -> Void) -> some View {
-        modifier(PressShrink(action: action))
+    func pressShrink(
+        perform action: @escaping () -> Void,
+        onPressChanged: @escaping (Bool) -> Void = { _ in }
+    ) -> some View {
+        modifier(PressShrink(action: action, onPressChanged: onPressChanged))
     }
 }
 
@@ -363,6 +398,10 @@ enum Motion {
     /// Tab close, matching Zen browser: a quick easeOut as the row fades, shrinks
     /// to 95%, and the rows below collapse up into the gap (Zen uses 0.1s easeOut).
     static let tabClose = Animation.easeOut(duration: 0.12)
+    /// Indeterminate "breathing" loop for loading dots / pulses.
+    static let pulse = Animation.easeInOut(duration: 0.72).repeatForever(autoreverses: true)
+    /// Indeterminate continuous rotation for ring/progress spinners.
+    static let spin = Animation.linear(duration: 0.9).repeatForever(autoreverses: false)
 }
 
 /// Zen-style tab removal: fade to 0 and scale to 95% while the surrounding stack
@@ -373,6 +412,38 @@ extension AnyTransition {
         insertion: .identity,
         removal: .scale(scale: 0.95).combined(with: .opacity)
     )
+}
+
+/// Elevation tokens for floating surfaces. The shadow color tracks the
+/// appearance so it reads on both light and dark chrome. Same-class surfaces
+/// (menus, toasts, the find bar) share one token instead of each hand-rolling
+/// its own radius/opacity/offset — which is how they drifted apart.
+struct Shadow {
+    var lightAlpha: Double
+    var darkAlpha: Double
+    var radius: CGFloat
+    var x: CGFloat = 0
+    var y: CGFloat
+
+    func color(_ s: ColorScheme) -> Color {
+        .black.opacity(s == .dark ? darkAlpha : lightAlpha)
+    }
+
+    /// The floating web-content card (Arc-style) — a quiet lift.
+    static let card = Shadow(lightAlpha: 0.12, darkAlpha: 0.40, radius: 8, y: 2)
+    /// Menus, popovers, toasts, the find bar — small floating chrome.
+    static let popover = Shadow(lightAlpha: 0.18, darkAlpha: 0.50, radius: 14, y: 5)
+    /// Peek cards and other large hovering surfaces.
+    static let overlay = Shadow(lightAlpha: 0.18, darkAlpha: 0.45, radius: 24, y: 8)
+    /// Command palette / launcher — the most elevated surface.
+    static let modal = Shadow(lightAlpha: 0.25, darkAlpha: 0.60, radius: 44, y: 22)
+}
+
+extension View {
+    /// Apply a scheme-aware elevation token. Pass the active `colorScheme`.
+    func elevation(_ shadow: Shadow, _ scheme: ColorScheme) -> some View {
+        self.shadow(color: shadow.color(scheme), radius: shadow.radius, x: shadow.x, y: shadow.y)
+    }
 }
 
 /// SwiftUI environment access to the active palette.
