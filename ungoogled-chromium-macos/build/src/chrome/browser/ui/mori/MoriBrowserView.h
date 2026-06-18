@@ -100,6 +100,11 @@ typedef void (^MoriJavaScriptResultHandler)(id _Nullable result,
 - (BOOL)evaluateJavaScript:(NSString *)source
                 completion:(MoriJavaScriptResultHandler)completion;
 
+/// Evaluate JavaScript in Mori's internal media-agent isolated world. Page
+/// scripts cannot read or replace globals created in this world.
+- (BOOL)evaluateMediaJavaScript:(NSString *)source
+                      completion:(MoriJavaScriptResultHandler)completion;
+
 /// Copy the image under a window-space point to the pasteboard using
 /// Chromium's native image pipeline. Operates on the already-decoded bitmap, so
 /// it works for cross-origin (CORS-restricted) images. Returns NO when there is

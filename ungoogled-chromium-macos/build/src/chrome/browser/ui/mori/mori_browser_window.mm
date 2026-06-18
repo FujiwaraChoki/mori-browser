@@ -4,7 +4,9 @@
 #include "chrome/browser/ui/mori/mori_browser_window.h"
 
 #import <Cocoa/Cocoa.h>
+#import <QuartzCore/QuartzCore.h>
 
+#include "base/strings/sys_string_conversions.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/mori/mori_chrome_hooks.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -44,6 +46,26 @@ bool HandleMoriShortcut(const input::NativeWebKeyboardEvent& event) {
     return false;
   }
   return [MoriRoot handleShortcutEvent:ns_event] == YES;
+}
+
+NSString* OriginDisclosureLabel(const url::Origin& origin) {
+  const std::string serialized_origin = origin.Serialize();
+  if (serialized_origin.empty() || serialized_origin == "null") {
+    return @"Mori Browser";
+  }
+  return base::SysUTF8ToNSString(serialized_origin);
+}
+
+void ConfigureDisclosureLabel(NSTextField* label,
+                              NSFont* font,
+                              NSColor* color) {
+  label.font = font;
+  label.textColor = color;
+  label.backgroundColor = NSColor.clearColor;
+  label.bordered = NO;
+  label.editable = NO;
+  label.selectable = NO;
+  label.lineBreakMode = NSLineBreakByTruncatingMiddle;
 }
 
 }  // namespace
@@ -230,7 +252,9 @@ LocationBarTesting* MoriLocationBar::GetLocationBarForTesting() {
 MoriExclusiveAccessContext::MoriExclusiveAccessContext(Browser* browser)
     : browser_(browser) {}
 
-MoriExclusiveAccessContext::~MoriExclusiveAccessContext() = default;
+MoriExclusiveAccessContext::~MoriExclusiveAccessContext() {
+  HideFullscreenDisclosure(ExclusiveAccessBubbleHideReason::kInterrupted);
+}
 
 Profile* MoriExclusiveAccessContext::GetProfile() {
   return browser_->profile();
@@ -249,9 +273,11 @@ void MoriExclusiveAccessContext::EnterFullscreen(
   if (window && !(window.styleMask & NSWindowStyleMaskFullScreen)) {
     [window toggleFullScreen:nil];
   }
+  ShowFullscreenDisclosure(origin);
 }
 
 void MoriExclusiveAccessContext::ExitFullscreen() {
+  HideFullscreenDisclosure(ExclusiveAccessBubbleHideReason::kInterrupted);
   NSWindow* window = mori::MoriMainWindow();
   if (window && (window.styleMask & NSWindowStyleMaskFullScreen)) {
     [window toggleFullScreen:nil];
@@ -261,17 +287,30 @@ void MoriExclusiveAccessContext::ExitFullscreen() {
 void MoriExclusiveAccessContext::UpdateExclusiveAccessBubble(
     const ExclusiveAccessBubbleParams& params,
     ExclusiveAccessBubbleHideCallback first_hide_callback) {
-  if (first_hide_callback) {
-    std::move(first_hide_callback)
-        .Run(ExclusiveAccessBubbleHideReason::kNotShown);
+  const bool should_close_bubble =
+      !params.has_download &&
+      params.type == EXCLUSIVE_ACCESS_BUBBLE_TYPE_NONE;
+  if (should_close_bubble) {
+    if (first_hide_callback) {
+      std::move(first_hide_callback)
+          .Run(ExclusiveAccessBubbleHideReason::kNotShown);
+    }
+    HideFullscreenDisclosure(ExclusiveAccessBubbleHideReason::kInterrupted);
+    return;
   }
+  ShowFullscreenDisclosure(params.origin, std::move(first_hide_callback));
 }
 
 bool MoriExclusiveAccessContext::IsExclusiveAccessBubbleDisplayed() const {
-  return false;
+  return exclusive_access_bubble_visible_;
 }
 
-void MoriExclusiveAccessContext::OnExclusiveAccessUserInput() {}
+void MoriExclusiveAccessContext::OnExclusiveAccessUserInput() {
+  NSPanel* panel = (__bridge NSPanel*)fullscreen_disclosure_;
+  if (panel) {
+    [panel orderFront:nil];
+  }
+}
 
 content::WebContents* MoriExclusiveAccessContext::GetWebContentsForExclusiveAccess() {
   return browser_->tab_strip_model()->GetActiveWebContents();
@@ -283,6 +322,103 @@ bool MoriExclusiveAccessContext::CanUserEnterFullscreen() const {
 
 bool MoriExclusiveAccessContext::CanUserExitFullscreen() const {
   return true;
+}
+
+void MoriExclusiveAccessContext::ShowFullscreenDisclosure(
+    const url::Origin& origin,
+    ExclusiveAccessBubbleHideCallback first_hide_callback) {
+  NSWindow* parent = mori::MoriMainWindow();
+  if (!parent) {
+    if (first_hide_callback) {
+      std::move(first_hide_callback)
+          .Run(ExclusiveAccessBubbleHideReason::kNotShown);
+    }
+    return;
+  }
+
+  HideFullscreenDisclosure(ExclusiveAccessBubbleHideReason::kInterrupted);
+
+  const NSRect parent_frame = parent.frame;
+  const CGFloat width = std::min<CGFloat>(
+      520.0, std::max<CGFloat>(320.0, parent_frame.size.width - 48.0));
+  const CGFloat height = 72.0;
+  const NSRect frame = NSMakeRect(NSMidX(parent_frame) - width / 2.0,
+                                  NSMaxY(parent_frame) - height - 28.0,
+                                  width, height);
+
+  NSPanel* panel =
+      [[NSPanel alloc] initWithContentRect:frame
+                                 styleMask:NSWindowStyleMaskBorderless |
+                                           NSWindowStyleMaskNonactivatingPanel
+                                   backing:NSBackingStoreBuffered
+                                     defer:NO];
+  panel.opaque = NO;
+  panel.backgroundColor = NSColor.clearColor;
+  panel.hasShadow = YES;
+  panel.ignoresMouseEvents = YES;
+  panel.level = parent.level + 1;
+  panel.collectionBehavior = NSWindowCollectionBehaviorFullScreenAuxiliary |
+                             NSWindowCollectionBehaviorCanJoinAllSpaces |
+                             NSWindowCollectionBehaviorTransient;
+
+  NSView* container =
+      [[NSView alloc] initWithFrame:NSMakeRect(0.0, 0.0, width, height)];
+  container.wantsLayer = YES;
+  container.layer.cornerRadius = 14.0;
+  container.layer.masksToBounds = YES;
+  container.layer.backgroundColor =
+      [[NSColor colorWithCalibratedWhite:0.06 alpha:0.86] CGColor];
+
+  NSTextField* title = [NSTextField labelWithString:@"Full screen"];
+  title.frame = NSMakeRect(20.0, 45.0, width - 40.0, 18.0);
+  ConfigureDisclosureLabel(
+      title, [NSFont systemFontOfSize:13.0 weight:NSFontWeightSemibold],
+      NSColor.whiteColor);
+
+  NSTextField* origin_label =
+      [NSTextField labelWithString:OriginDisclosureLabel(origin)];
+  origin_label.frame = NSMakeRect(20.0, 26.0, width - 40.0, 16.0);
+  ConfigureDisclosureLabel(origin_label,
+                           [NSFont systemFontOfSize:12.0
+                                             weight:NSFontWeightRegular],
+                           [NSColor colorWithCalibratedWhite:1.0 alpha:0.78]);
+
+  NSTextField* instruction =
+      [NSTextField labelWithString:@"Press Esc to exit full screen"];
+  instruction.frame = NSMakeRect(20.0, 10.0, width - 40.0, 15.0);
+  ConfigureDisclosureLabel(instruction,
+                           [NSFont systemFontOfSize:11.0
+                                             weight:NSFontWeightRegular],
+                           [NSColor colorWithCalibratedWhite:1.0 alpha:0.58]);
+
+  [container addSubview:title];
+  [container addSubview:origin_label];
+  [container addSubview:instruction];
+  panel.contentView = container;
+
+  [parent addChildWindow:panel ordered:NSWindowAbove];
+  [panel orderFront:nil];
+
+  fullscreen_disclosure_ = (__bridge_retained void*)panel;
+  fullscreen_disclosure_hide_callback_ = std::move(first_hide_callback);
+  exclusive_access_bubble_visible_ = true;
+}
+
+void MoriExclusiveAccessContext::HideFullscreenDisclosure(
+    ExclusiveAccessBubbleHideReason reason) {
+  NSPanel* panel = (__bridge_transfer NSPanel*)fullscreen_disclosure_;
+  fullscreen_disclosure_ = nullptr;
+  exclusive_access_bubble_visible_ = false;
+
+  if (panel) {
+    [panel.parentWindow removeChildWindow:panel];
+    [panel orderOut:nil];
+    [panel close];
+  }
+
+  if (fullscreen_disclosure_hide_callback_) {
+    std::move(fullscreen_disclosure_hide_callback_).Run(reason);
+  }
 }
 
 MoriBrowserWindow::~MoriBrowserWindow() {

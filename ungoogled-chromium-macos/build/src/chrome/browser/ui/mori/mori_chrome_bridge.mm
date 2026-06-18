@@ -15,6 +15,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
+#include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/values.h"
@@ -27,6 +28,7 @@
 #include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+#include "chrome/common/chrome_isolated_world_ids.h"
 #include "components/favicon/content/content_favicon_driver.h"
 #include "components/favicon/core/favicon_driver.h"
 #include "components/favicon/core/favicon_driver_observer.h"
@@ -86,6 +88,8 @@
 // Globals
 
 namespace {
+
+constexpr int kMoriMediaWorldId = ISOLATED_WORLD_ID_CHROME_INTERNAL;
 
 Browser* g_mori_browser = nullptr;
 // True while a MoriBrowserView is synchronously creating its own tab via
@@ -431,9 +435,8 @@ class TabBridge : public content::WebContentsObserver,
       find_observation_.Observe(helper);
     }
     // Chromium downloads and decodes the page's real favicon (any format) and
-    // notifies us here; without this the sidebar only ever sees the Swift-side
-    // /favicon.ico guess, which fails for many sites and falls back to a
-    // monogram.
+    // notifies us here; Swift-side favicon rendering never performs its own
+    // network fetch and falls back to a local brand glyph or monogram.
     if (auto* favicon_driver =
             favicon::ContentFaviconDriver::FromWebContents(contents)) {
       favicon_observation_.Observe(favicon_driver);
@@ -1201,12 +1204,13 @@ Browser* MoriBrowser() {
 // MARK: scripting
 
 - (BOOL)evaluateJavaScript:(NSString*)source
+                   worldID:(int)worldID
                 completion:(MoriJavaScriptResultHandler)completion {
   if (![NSThread isMainThread]) {
     NSString* sourceCopy = [source copy];
     MoriJavaScriptResultHandler handler = [completion copy];
     dispatch_async(dispatch_get_main_queue(), ^{
-      if (![self evaluateJavaScript:sourceCopy completion:handler]) {
+      if (![self evaluateJavaScript:sourceCopy worldID:worldID completion:handler]) {
         handler(nil, @"Browser unavailable");
       }
     });
@@ -1225,8 +1229,22 @@ Browser* MoriBrowser() {
       base::BindOnce(^(base::Value value) {
         handler(NSObjectFromValue(value), nil);
       }),
-      content::ISOLATED_WORLD_ID_GLOBAL);
+      worldID);
   return YES;
+}
+
+- (BOOL)evaluateJavaScript:(NSString*)source
+                completion:(MoriJavaScriptResultHandler)completion {
+  return [self evaluateJavaScript:source
+                          worldID:content::ISOLATED_WORLD_ID_GLOBAL
+                       completion:completion];
+}
+
+- (BOOL)evaluateMediaJavaScript:(NSString*)source
+                      completion:(MoriJavaScriptResultHandler)completion {
+  return [self evaluateJavaScript:source
+                          worldID:kMoriMediaWorldId
+                       completion:completion];
 }
 
 // MARK: image context-menu actions (native copy/save)
@@ -1546,9 +1564,115 @@ Browser* MoriBrowser() {
   return _browserIdentifier;
 }
 
-// Run media-agent JavaScript with a synthetic user activation so gated APIs
-// (requestPictureInPicture, play) succeed even though the call originates from
-// native chrome rather than a real page gesture.
+static BOOL MoriIsAllowedMediaAction(NSString* action) {
+  static NSSet<NSString*>* allowed;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    allowed = [NSSet setWithObjects:@"play", @"pause", @"toggle", @"seek",
+                                   @"seekBy", @"mute", @"pip", @"pipEnter",
+                                   @"pipExit", nil];
+  });
+  return [allowed containsObject:action];
+}
+
+static NSString* MoriMediaCommandScript(NSString* action, double value) {
+  std::string script = base::StringPrintf(R"JS(
+(() => {
+  const action = "%s";
+  const value = %.17g;
+  const closestElement = (target, selector) => {
+    for (let n = target; n; n = n.parentNode || (n.host || null)) {
+      if (n.nodeType === 1 && n.matches && n.matches(selector)) return n;
+    }
+    return null;
+  };
+  const hasAudibleTrack = (el) =>
+    !el.muted && (typeof el.volume !== 'number' || el.volume > 0);
+  const isYouTubePreview = (el) => {
+    const host = location.hostname.replace(/^www\./, '');
+    if (host !== 'youtube.com' && host !== 'm.youtube.com') return false;
+    if (!el.muted) return false;
+    return !closestElement(el, '#movie_player, ytd-player, #shorts-player');
+  };
+  const eligible = (el) => {
+    if (!el || isYouTubePreview(el)) return false;
+    // These markers are written by Mori's media agent in the same isolated
+    // world; page scripts cannot spoof them with main-world expandos.
+    if (el.__moriMediaEligible || el.__moriMediaUserSelected) return true;
+    return !el.paused && hasAudibleTrack(el);
+  };
+  const pick = () => {
+    const els = Array.from(document.querySelectorAll('video,audio')).filter((m) =>
+      (m.currentSrc || m.src) && eligible(m));
+    if (!els.length) return null;
+    els.sort((a, b) => {
+      const ap = a.paused ? 0 : 1;
+      const bp = b.paused ? 0 : 1;
+      if (ap !== bp) return bp - ap;
+      const aa = (a.videoWidth || 0) * (a.videoHeight || 0);
+      const ba = (b.videoWidth || 0) * (b.videoHeight || 0);
+      return ba - aa;
+    });
+    return els[0];
+  };
+  const pickVideo = () => {
+    const el = pick();
+    return el && el.tagName === 'VIDEO' ? el : null;
+  };
+  const pipEnter = () => {
+    try {
+      if (document.pictureInPictureElement) return;
+      const el = pickVideo();
+      if (el && el.requestPictureInPicture) el.requestPictureInPicture().catch(() => {});
+    } catch (e) {}
+  };
+  const pipExit = () => {
+    try {
+      if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+    } catch (e) {}
+  };
+  if (action === 'pip') {
+    try {
+      if (document.pictureInPictureElement) {
+        document.exitPictureInPicture().catch(() => {});
+      } else {
+        pipEnter();
+      }
+    } catch (e) {}
+    return;
+  }
+  if (action === 'pipEnter') { pipEnter(); return; }
+  if (action === 'pipExit') { pipExit(); return; }
+  const el = pick();
+  if (!el) return;
+  switch (action) {
+    case 'play':
+      if (el.play) el.play();
+      break;
+    case 'pause':
+      if (el.pause) el.pause();
+      break;
+    case 'toggle':
+      el.paused ? (el.play && el.play()) : (el.pause && el.pause());
+      break;
+    case 'seek':
+      el.currentTime = value;
+      break;
+    case 'seekBy':
+      el.currentTime = Math.max(0, (el.currentTime || 0) + value);
+      break;
+    case 'mute':
+      el.muted = !el.muted;
+      break;
+  }
+})()
+)JS",
+      base::SysNSStringToUTF8(action).c_str(), value);
+  return base::SysUTF8ToNSString(script);
+}
+
+// Run fixed media-command JavaScript with a synthetic user activation so gated
+// media APIs succeed without calling any page-overwritable function.
 - (void)runMediaScriptWithUserGesture:(NSString*)source {
   if (!_webContents) {
     return;
@@ -1559,7 +1683,7 @@ Browser* MoriBrowser() {
   }
   frame->ExecuteJavaScriptWithUserGestureForTests(
       base::SysNSStringToUTF16(source), base::BindOnce(^(base::Value) {}),
-      content::ISOLATED_WORLD_ID_GLOBAL);
+      kMoriMediaWorldId);
 }
 
 - (void)sendMediaCommand:(NSString*)action value:(double)value {
@@ -1573,12 +1697,10 @@ Browser* MoriBrowser() {
   if (action.length == 0) {
     return;
   }
-  // `action` is always one of our fixed command tokens, so a plain quoted
-  // literal is safe; `value` is numeric.
-  NSString* js = [NSString
-      stringWithFormat:@"window.__moriMedia && window.__moriMedia('%@', %f)",
-                       action, value];
-  [self runMediaScriptWithUserGesture:js];
+  if (!MoriIsAllowedMediaAction(action)) {
+    return;
+  }
+  [self runMediaScriptWithUserGesture:MoriMediaCommandScript(action, value)];
 }
 
 - (void)setPageHidden:(BOOL)hidden {
@@ -1591,14 +1713,12 @@ Browser* MoriBrowser() {
     // synthetic user gesture is what lets this clear the activation gate, so
     // no Chromium auto-PiP feature flag is required.
     if (g_mori_auto_pip) {
-      [self runMediaScriptWithUserGesture:
-                @"window.__moriMedia && window.__moriMedia('pipEnter')"];
+      [self runMediaScriptWithUserGesture:MoriMediaCommandScript(@"pipEnter", 0)];
     }
   } else {
     _webContents->WasShown();
     // Returning to the tab brings the video back inline.
-    [self runMediaScriptWithUserGesture:
-              @"window.__moriMedia && window.__moriMedia('pipExit')"];
+    [self runMediaScriptWithUserGesture:MoriMediaCommandScript(@"pipExit", 0)];
   }
 }
 

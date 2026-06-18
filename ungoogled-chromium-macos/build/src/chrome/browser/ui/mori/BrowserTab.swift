@@ -223,10 +223,11 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     }
 
     /// Install the media agent that powers the sidebar player and PiP. Idempotent
-    /// per document; `BrowserStore` polls `window.__moriMediaState()` afterwards.
+    /// per document in Mori's isolated media world; `BrowserStore` polls
+    /// `window.__moriMediaState()` from that same world afterwards.
     func installMediaAgent() {
         guard isRealized else { return }
-        Task { @MainActor in _ = try? await evaluateJavaScript(MediaAgentScripts.agent) }
+        Task { @MainActor in _ = try? await evaluateMediaJavaScript(MediaAgentScripts.agent) }
     }
 
     /// Read (and clear) the most recent right-click target, if it was a link or
@@ -265,6 +266,16 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
 
     @MainActor
     func evaluateJavaScript(_ source: String) async throws -> Any {
+        try await evaluateJavaScript(source, inMediaWorld: false)
+    }
+
+    @MainActor
+    func evaluateMediaJavaScript(_ source: String) async throws -> Any {
+        try await evaluateJavaScript(source, inMediaWorld: true)
+    }
+
+    @MainActor
+    private func evaluateJavaScript(_ source: String, inMediaWorld: Bool) async throws -> Any {
         let view = realize()
         return try await withCheckedThrowingContinuation { continuation in
             var didResume = false
@@ -279,12 +290,18 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
                 }
             }
 
-            let started = view.evaluateJavaScript(source) { result, errorMessage in
+            let completion: (Any?, String?) -> Void = { result, errorMessage in
                 if let errorMessage, !errorMessage.isEmpty {
                     resumeOnce(.failure(BrowserAutomationError.pageScriptFailed(errorMessage)))
                     return
                 }
                 resumeOnce(.success(result ?? NSNull()))
+            }
+            let started: Bool
+            if inMediaWorld {
+                started = view.evaluateMediaJavaScript(source, completion: completion)
+            } else {
+                started = view.evaluateJavaScript(source, completion: completion)
             }
             if !started {
                 resumeOnce(.failure(BrowserAutomationError.browserUnavailable))

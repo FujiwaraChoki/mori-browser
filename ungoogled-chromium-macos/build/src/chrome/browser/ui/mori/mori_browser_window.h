@@ -115,7 +115,15 @@ class MoriExclusiveAccessContext : public ExclusiveAccessContext {
   bool CanUserExitFullscreen() const override;
 
  private:
+  void ShowFullscreenDisclosure(
+      const url::Origin& origin,
+      ExclusiveAccessBubbleHideCallback first_hide_callback = {});
+  void HideFullscreenDisclosure(ExclusiveAccessBubbleHideReason reason);
+
   Browser* browser_;
+  void* fullscreen_disclosure_ = nullptr;
+  ExclusiveAccessBubbleHideCallback fullscreen_disclosure_hide_callback_;
+  bool exclusive_access_bubble_visible_ = false;
 };
 
 // Hosts Chrome's constrained (tab-modal) dialogs — JS alerts, HTTP auth,

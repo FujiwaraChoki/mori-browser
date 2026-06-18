@@ -5,13 +5,13 @@ import Foundation
 /// `console.debug` channel), this overlay uses a pull model:
 ///
 ///   • `window.__moriMediaState()` returns a JSON snapshot of the page's
-///     primary media element. `BrowserStore` polls it once a second and
-///     rebroadcasts it as the `MoriMediaUpdated` notification that
-///     `MediaController` already listens for.
-///   • `window.__moriMedia(action, value)` performs a transport/PiP action.
-///     Native callers run it through `ExecuteJavaScriptWithUserGestureForTests`
-///     so `requestPictureInPicture()` (and autoplay) clear the user-activation
-///     gate — which is why auto-PiP needs no Chromium feature flag here.
+///     primary media element from Mori's isolated media world. `BrowserStore`
+///     polls it once a second and rebroadcasts it as the `MoriMediaUpdated`
+///     notification that `MediaController` already listens for.
+///
+/// Native media commands are intentionally not exposed as page globals: they are
+/// generated as fixed scripts in the Chromium bridge so page JavaScript cannot
+/// replace a mutable function and inherit Mori's synthetic user activation.
 ///
 /// "Primary media" is whichever video/audio looks like a real playback session
 /// (playing with audio, or directly clicked by the user), preferring the
@@ -64,6 +64,8 @@ enum MediaAgentScripts {
       }
 
       function markIfEligible(el){
+        // These markers live in Mori's isolated media world, not in the page's
+        // JavaScript world, so page scripts cannot spoof them.
         if (eligible(el)) { el.__moriMediaEligible = true; }
       }
 
@@ -93,11 +95,6 @@ enum MediaAgentScripts {
           return ba - aa;
         });
         return els[0];
-      }
-
-      function pickVideo(){
-        var el = pick();
-        return (el && el.tagName === 'VIDEO') ? el : null;
       }
 
       function meta(){
@@ -130,47 +127,11 @@ enum MediaAgentScripts {
         };
       }
 
-      function pipToggle(){
-        try {
-          if (document.pictureInPictureElement) { document.exitPictureInPicture(); return; }
-          var el = pickVideo();
-          if (el && el.requestPictureInPicture) { el.requestPictureInPicture().catch(function(){}); }
-        } catch(e){}
-      }
-      function pipEnter(){
-        try {
-          if (document.pictureInPictureElement) { return; }
-          var el = pickVideo();
-          if (el && el.requestPictureInPicture) { el.requestPictureInPicture().catch(function(){}); }
-        } catch(e){}
-      }
-      function pipExit(){
-        try {
-          if (document.pictureInPictureElement) { document.exitPictureInPicture().catch(function(){}); }
-        } catch(e){}
-      }
-
       // Pull entry point: returns a JSON string snapshot, or '' on failure.
       window.__moriMediaState = function(){
         try { return JSON.stringify(buildState()); } catch(e){ return ''; }
       };
 
-      // Command entry point, driven from native (with a synthetic user gesture).
-      window.__moriMedia = function(action, value){
-        if (action === 'pip')      { pipToggle(); return; }
-        if (action === 'pipEnter') { pipEnter();  return; }
-        if (action === 'pipExit')  { pipExit();   return; }
-        var el = pick();
-        if (!el) { return; }
-        switch(action){
-          case 'play':   if (el.play)  { el.play(); }  break;
-          case 'pause':  if (el.pause) { el.pause(); } break;
-          case 'toggle': el.paused ? (el.play && el.play()) : (el.pause && el.pause()); break;
-          case 'seek':   el.currentTime = value; break;
-          case 'seekBy': el.currentTime = Math.max(0, (el.currentTime||0) + value); break;
-          case 'mute':   el.muted = !el.muted; break;
-        }
-      };
     })();
     """#
 }
