@@ -34,18 +34,76 @@ final class MoriRoot: NSObject {
     /// "only toggles when you take an action." Driving layout/display here
     /// commits it immediately, matching the click-the-button path that works.
     private static func flushChrome() {
+        flushChromeNow()
+        // A keyboard shortcut mutates the store from outside SwiftUI's own event
+        // handling, so SwiftUI commits the change and advances its animation off
+        // the main run loop's update observer + animation timer — both of which
+        // only fire when the loop iterates. Under Chromium's custom Mac message
+        // pump the loop parks immediately after consuming the key event, so the
+        // toggle and its 0.15–0.25s animation stall until some *later* event
+        // pumps the loop again ("needs two presses"). A single forced redraw only
+        // lands the animation's first frame (≈ no visible change) and then stalls
+        // again. Instead, pulse a redraw across the animation window: each pulse
+        // wakes the loop and re-evaluates the in-progress animation against the
+        // current clock, so the toggle lands and animates through on the first
+        // press, matching the click-the-button path. Overlapping pulses (held
+        // repeats) coalesce into one bounded loop via the shared deadline.
+        flushPulseDeadline = ProcessInfo.processInfo.systemUptime + flushSettleDuration
+        scheduleFlushPulseIfNeeded()
+    }
+
+    /// ~0.25s Motion.reveal (the longest toggle animation) plus a small buffer.
+    private static let flushSettleDuration: TimeInterval = 0.35
+    private static var flushPulseDeadline: TimeInterval = 0
+    private static var flushPulseScheduled = false
+
+    private static func scheduleFlushPulseIfNeeded() {
+        guard !flushPulseScheduled,
+              ProcessInfo.processInfo.systemUptime < flushPulseDeadline else {
+            return
+        }
+        flushPulseScheduled = true
+        // ~60fps; libdispatch wakes the parked run loop at each deadline.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0 / 60.0) {
+            flushPulseScheduled = false
+            flushChromeNow()
+            scheduleFlushPulseIfNeeded()
+        }
+    }
+
+    private static func flushChromeNow() {
         guard let view = chromeView else { return }
+        let contentView = view.window?.contentView
+
+        contentView?.needsLayout = true
+        contentView?.needsDisplay = true
+        contentView?.layoutSubtreeIfNeeded()
+
         view.needsLayout = true
+        view.needsDisplay = true
         view.layoutSubtreeIfNeeded()
+        contentView?.displayIfNeeded()
         view.displayIfNeeded()
-        NSLog("MORI-KEY flushChrome did layout")
+        view.window?.viewsNeedDisplay = true
+        view.window?.displayIfNeeded()
     }
 
     @objc static func prepareForTermination() {
         shared?.store.prepareForTermination()
     }
 
+    @objc static func shouldAutoFocusWebContent() -> Bool {
+        shared?.store.shouldAutoFocusWebContent ?? false
+    }
+
     @objc static func handleShortcutEvent(_ event: NSEvent) -> Bool {
+        guard Thread.isMainThread else {
+            var handled = false
+            DispatchQueue.main.sync {
+                handled = handleShortcutEvent(event)
+            }
+            return handled
+        }
         guard let store = shared?.store else { return false }
         let handled = MoriCommands.handle(event, store: store)
         if handled { flushChrome() }
@@ -53,7 +111,19 @@ final class MoriRoot: NSObject {
     }
 
     @objc static func releaseShortcutEvent(_ event: NSEvent) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.sync {
+                releaseShortcutEvent(event)
+            }
+            return
+        }
         MoriCommands.release(event)
+    }
+
+    @objc(isReservedShortcutKeyEquivalent:modifierMask:)
+    static func isReservedShortcut(keyEquivalent: String, modifierMask: UInt) -> Bool {
+        MoriCommands.reservesChromiumShortcut(keyEquivalent: keyEquivalent,
+                                              modifierMask: modifierMask)
     }
 
     @objc(handleShortcutWithKeyCode:charactersIgnoringModifiers:modifierMask:)
@@ -71,18 +141,38 @@ final class MoriRoot: NSObject {
                                charactersIgnoringModifiers: String?,
                                modifierMask: UInt,
                                isRepeat: Bool) -> Bool {
+        guard Thread.isMainThread else {
+            var handled = false
+            DispatchQueue.main.sync {
+                handled = handleShortcut(keyCode: keyCode,
+                                         charactersIgnoringModifiers: charactersIgnoringModifiers,
+                                         modifierMask: modifierMask,
+                                         isRepeat: isRepeat)
+            }
+            return handled
+        }
         guard let store = shared?.store else { return false }
-        return MoriCommands.handle(keyCode: keyCode,
-                                   charactersIgnoringModifiers: charactersIgnoringModifiers,
-                                   modifierMask: modifierMask,
-                                   isRepeat: isRepeat,
-                                   store: store)
+        let handled = MoriCommands.handle(keyCode: keyCode,
+                                          charactersIgnoringModifiers: charactersIgnoringModifiers,
+                                          modifierMask: modifierMask,
+                                          isRepeat: isRepeat,
+                                          store: store)
+        if handled { flushChrome() }
+        return handled
     }
 
     @objc(releaseShortcutWithKeyCode:charactersIgnoringModifiers:modifierMask:)
     static func releaseShortcut(keyCode: UInt16,
                                 charactersIgnoringModifiers: String?,
                                 modifierMask: UInt) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.sync {
+                releaseShortcut(keyCode: keyCode,
+                                charactersIgnoringModifiers: charactersIgnoringModifiers,
+                                modifierMask: modifierMask)
+            }
+            return
+        }
         MoriCommands.release(keyCode: keyCode,
                              charactersIgnoringModifiers: charactersIgnoringModifiers,
                              modifierMask: modifierMask)

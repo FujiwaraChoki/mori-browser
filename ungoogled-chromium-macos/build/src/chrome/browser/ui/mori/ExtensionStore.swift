@@ -244,7 +244,7 @@ final class ExtensionStore: ObservableObject {
         }
 
         guard let key else { return false }
-        return trigger.modifiers == required && trigger.key == key
+        return trigger.modifiers == required && trigger.matchesKey(key)
     }
 
     // MARK: - Installing

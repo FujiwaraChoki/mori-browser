@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 /// The new-tab launcher — a Spotlight-style command palette floated above the
 /// web content. Triggered by ⌘T / the sidebar's "New Tab" row instead of
@@ -34,6 +35,15 @@ final class LauncherContainerView: NSView {
     private var palette: ThemePalette = .light
     private var scheme: ColorScheme = .light
     private var visible = false
+    /// Drives show/hide straight off `launcherVisible` instead of SwiftUI's
+    /// `updateNSView` pass. A keyboard ⌘T mutates the store from outside SwiftUI,
+    /// and the chrome flush forces synchronous layouts; that racing of forced
+    /// layout against SwiftUI's representable reconcile made `updateNSView` read
+    /// a *stale* `launcherVisible` on rapid toggles (open then close inside the
+    /// ~0.35s flush window), so the palette got stuck open. The publisher always
+    /// carries the authoritative new value synchronously on `willSet`, making
+    /// the toggle reliable regardless of flush/layout timing.
+    private var visibilityObserver: AnyCancellable?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -50,50 +60,54 @@ final class LauncherContainerView: NSView {
     override var isFlipped: Bool { true }
 
     func update(store: BrowserStore, palette: ThemePalette, scheme: ColorScheme) {
+        let storeChanged = self.store !== store
         self.store = store
+        // Keep palette/scheme current so the *next* open is styled correctly;
+        // visibility transitions are owned by the publisher subscription below,
+        // not this (frequently re-invoked, and timing-racy) update pass.
         self.palette = palette
         self.scheme = scheme
-        rebuild()
 
-        let nowVisible = store.launcherVisible
-        if nowVisible != visible {
-            visible = nowVisible
-            if nowVisible {
-                // Pull keyboard focus away from the CEF page so the search field
-                // receives typing the moment the palette appears.
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, let host = self.hosting else { return }
-                    self.window?.makeFirstResponder(host)
-                }
-            }
+        guard storeChanged else { return }
+        // Subscribe once: a @Published publisher emits the current value on
+        // subscribe, then the new value on every change — synchronously, so the
+        // launcher can never be left out of sync with the store.
+        visibilityObserver = store.$launcherVisible.sink { [weak self] newVisible in
+            self?.applyVisible(newVisible)
         }
     }
 
-    private func rebuild() {
+    private func applyVisible(_ nowVisible: Bool) {
+        guard nowVisible != visible else { return }
+        visible = nowVisible
+        rebuild(visible: nowVisible)
+    }
+
+    private func rebuild(visible: Bool) {
         guard let store else { return }
         hosting?.rootView = AnyView(
             Group {
-                if store.launcherVisible {
+                if visible {
                     LauncherView(store: store, scheme: scheme)
                         .environment(\.palette, palette)
-                        .frame(width: max(bounds.width, 1),
-                               height: max(bounds.height, 1),
-                               alignment: .top)
                 }
             }
         )
+        // The toggle came from outside SwiftUI; draw the change now rather than
+        // waiting for the next event to pump the run loop.
+        needsLayout = true
+        needsDisplay = true
     }
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         // Modal while open; otherwise let every click reach the web view.
-        guard store?.launcherVisible == true else { return nil }
+        guard visible else { return nil }
         return super.hitTest(point)
     }
 
     override func layout() {
         super.layout()
         hosting?.frame = bounds
-        if visible { rebuild() }
     }
 }
 
@@ -106,7 +120,6 @@ private struct LauncherView: View {
 
     @State private var query = ""
     @State private var highlighted = 0
-    @FocusState private var fieldFocused: Bool
 
     private var items: [LauncherItem] { LauncherItem.build(query: query, store: store) }
 
@@ -131,26 +144,20 @@ private struct LauncherView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .onAppear {
-            // Seed from the address bar (current URL) when invoked there; blank
-            // for a ⌘T launcher. Pre-select so the first keystroke replaces it.
-            query = store.launcherPrefill
-            highlighted = 0
-            DispatchQueue.main.async {
-                fieldFocused = true
-                if !query.isEmpty {
-                    DispatchQueue.main.async { selectAllField() }
-                }
-            }
+            resetForPresentation()
+        }
+        .onChange(of: store.launcherFocusRequest) { _, _ in
+            resetForPresentation()
         }
         .onChange(of: query) { _, _ in highlighted = 0 }
     }
 
-    /// Select the launcher field's text so a pre-filled URL is replaced wholesale
-    /// on the first keystroke (matching the old omnibox focus behavior).
-    private func selectAllField() {
-        if let editor = NSApp.keyWindow?.firstResponder as? NSTextView {
-            editor.selectAll(nil)
-        }
+    private func resetForPresentation() {
+        // Seed from the address bar (current URL) when invoked there; blank
+        // for a Cmd-T launcher. Address-bar text is selected by the AppKit
+        // field so the first keystroke replaces it wholesale.
+        query = store.launcherPrefill
+        highlighted = 0
     }
 
     private var card: some View {
@@ -168,7 +175,7 @@ private struct LauncherView: View {
         .background(
             RoundedRectangle(cornerRadius: LauncherMetrics.cornerRadius, style: .continuous)
                 .fill(p.popover.color)
-                .shadow(color: .black.opacity(scheme == .dark ? 0.6 : 0.25), radius: 44, y: 22)
+                .elevation(.modal, scheme)
         )
         .overlay(
             RoundedRectangle(cornerRadius: LauncherMetrics.cornerRadius, style: .continuous)
@@ -198,16 +205,18 @@ private struct LauncherView: View {
             ZStack(alignment: .leading) {
                 if query.isEmpty {
                     Text("Search or Enter URL…")
-                        .font(Typography.ui(15))
+                        .font(Typography.ui(Typography.title))
                         .foregroundStyle(p.mutedForeground.color.opacity(0.65))
                 }
-                TextField("", text: $query)
-                    .textFieldStyle(.plain)
-                    .font(Typography.ui(15))
-                    .foregroundStyle(p.foreground.color)
-                    .tint(p.primary.color)
-                    .focused($fieldFocused)
-                    .onSubmit(commit)
+                LauncherSearchField(text: $query,
+                                    focusRequest: store.launcherFocusRequest,
+                                    selectAllOnFocus: !store.launcherPrefill.isEmpty,
+                                    foregroundColor: p.foreground.nsColor,
+                                    insertionColor: p.primary.nsColor,
+                                    onMove: move,
+                                    onEscape: store.dismissLauncher,
+                                    onSubmit: commit)
+                    .frame(height: 24)
             }
         }
         .padding(.horizontal, LauncherMetrics.headerPadding)
@@ -245,7 +254,9 @@ private struct LauncherView: View {
     }
 
     private func activate(_ item: LauncherItem) {
-        if let id = item.tabID {
+        if let run = item.run {
+            run()
+        } else if let id = item.tabID {
             store.launcherSwitch(to: id)
         } else {
             store.launcherOpen(url: item.url)
@@ -280,6 +291,132 @@ private enum LauncherMetrics {
     }
 }
 
+/// AppKit-backed launcher input. SwiftUI `@FocusState` is timing-sensitive when
+/// hosted above Chromium's native view; the field editor here can claim first
+/// responder directly on each presentation and keep normal palette keys working.
+private struct LauncherSearchField: NSViewRepresentable {
+    @Binding var text: String
+    let focusRequest: Int
+    let selectAllOnFocus: Bool
+    let foregroundColor: NSColor
+    let insertionColor: NSColor
+    let onMove: (Int) -> Void
+    let onEscape: () -> Void
+    let onSubmit: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField(frame: .zero)
+        field.isBordered = false
+        field.drawsBackground = false
+        field.backgroundColor = .clear
+        field.focusRingType = .none
+        field.usesSingleLineMode = true
+        field.isEditable = true
+        field.isSelectable = true
+        field.font = Self.font
+        field.textColor = foregroundColor
+        field.delegate = context.coordinator
+        field.cell?.wraps = false
+        field.cell?.isScrollable = true
+        field.cell?.lineBreakMode = .byClipping
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        context.coordinator.parent = self
+        if field.stringValue != text {
+            field.stringValue = text
+        }
+        field.font = Self.font
+        field.textColor = foregroundColor
+        field.backgroundColor = .clear
+        context.coordinator.focusIfNeeded(field)
+    }
+
+    private static var font: NSFont {
+        if let family = FontRegistry.soehneFamily,
+           let font = NSFont(name: family, size: 15) {
+            return font
+        }
+        return .systemFont(ofSize: 15)
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: LauncherSearchField
+        private var appliedFocusRequest: Int?
+
+        init(_ parent: LauncherSearchField) {
+            self.parent = parent
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            parent.text = field.stringValue
+        }
+
+        func control(_ control: NSControl,
+                     textView: NSTextView,
+                     doCommandBy commandSelector: Selector) -> Bool {
+            switch commandSelector {
+            case #selector(NSResponder.insertNewline(_:)):
+                parent.onSubmit()
+                return true
+            case #selector(NSResponder.moveDown(_:)):
+                parent.onMove(1)
+                return true
+            case #selector(NSResponder.moveUp(_:)):
+                parent.onMove(-1)
+                return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                parent.onEscape()
+                return true
+            default:
+                return false
+            }
+        }
+
+        func focusIfNeeded(_ field: NSTextField) {
+            let request = parent.focusRequest
+            guard appliedFocusRequest != request else {
+                applyInsertionColor(field)
+                return
+            }
+
+            applyFocus(field, request: request)
+            DispatchQueue.main.async { [weak self, weak field] in
+                guard let self, let field else { return }
+                self.applyFocus(field, request: request)
+                DispatchQueue.main.async { [weak self, weak field] in
+                    guard let self, let field else { return }
+                    self.applyFocus(field, request: request)
+                }
+            }
+        }
+
+        private func applyFocus(_ field: NSTextField, request: Int) {
+            guard let window = field.window else { return }
+            window.makeFirstResponder(field)
+            applyInsertionColor(field)
+
+            guard field.currentEditor() != nil || window.firstResponder === field else {
+                return
+            }
+            if parent.selectAllOnFocus {
+                field.currentEditor()?.selectAll(nil)
+            }
+            appliedFocusRequest = request
+        }
+
+        private func applyInsertionColor(_ field: NSTextField) {
+            (field.currentEditor() as? NSTextView)?.insertionPointColor = parent.insertionColor
+        }
+    }
+}
+
 /// One launcher result: either an open tab (offers "Switch to Tab") or a history
 /// entry (opens in a fresh tab).
 private struct LauncherItem: Identifiable {
@@ -291,6 +428,11 @@ private struct LauncherItem: Identifiable {
     let tabID: BrowserTab.ID?
     /// Trailing affordance label ("Switch to Tab", "Open", "Search").
     let action: String
+    /// For command results: the SF Symbol to show in place of a favicon.
+    var iconSystemName: String? = nil
+    /// For command results: the action to run on activation. Command closures
+    /// dismiss the launcher themselves.
+    var run: (() -> Void)? = nil
 
     static func build(query: String, store: BrowserStore) -> [LauncherItem] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -319,6 +461,9 @@ private struct LauncherItem: Identifiable {
                                     tabID: nil,
                                     action: isAddress ? "Open" : "Search"))
         }
+
+        // Commands (actions), matched while typing — surfaced near the top.
+        out.append(contentsOf: commands(query: q, store: store))
 
         // Open tabs first — all of them when idle, filtered while typing. In
         // address-bar mode the current tab is the one being edited, so offering
@@ -353,7 +498,64 @@ private struct LauncherItem: Identifiable {
                                     action: "Open"))
         }
 
-        return Array(out.prefix(7))
+        return Array(out.prefix(8))
+    }
+
+    /// Build the matching command (action) results for the current query.
+    private static func commands(query q: String, store: BrowserStore) -> [LauncherItem] {
+        guard !q.isEmpty else { return [] }
+        struct Cmd { let title: String; let icon: String; let keywords: String; let run: () -> Void }
+        var defs: [Cmd] = [
+            Cmd(title: "New Tab", icon: "plus.square", keywords: "new tab open") {
+                store.dismissLauncher(); store.newTab() },
+            Cmd(title: "New Split", icon: "rectangle.split.2x1", keywords: "split view side") {
+                store.dismissLauncher(); store.newSplit() },
+            Cmd(title: "Reader View", icon: "doc.plaintext", keywords: "reader read article") {
+                store.dismissLauncher(); store.toggleReader() },
+            Cmd(title: "Capture Region", icon: "camera.viewfinder", keywords: "screenshot capture region snip crop") {
+                store.dismissLauncher(); store.startRegionCapture() },
+            Cmd(title: "Capture Visible Tab", icon: "camera", keywords: "screenshot capture visible page") {
+                store.dismissLauncher(); store.captureVisibleArea() },
+            Cmd(title: "Boost This Site", icon: "wand.and.stars", keywords: "boost custom css js") {
+                store.dismissLauncher(); store.presentBoostEditor() },
+            Cmd(title: "Zap an Element", icon: "scope", keywords: "zap hide remove element") {
+                store.dismissLauncher(); store.startZapMode() },
+            Cmd(title: "Peek a Link", icon: "eye", keywords: "peek preview clipboard little arc") {
+                store.dismissLauncher(); store.peekFromClipboardOrCurrent() },
+            Cmd(title: "Open Assistant", icon: "sparkles", keywords: "ai assistant codex chat ask") {
+                store.dismissLauncher(); store.aiPanelVisible = true },
+            Cmd(title: "Sleep Background Tabs", icon: "moon.zzz", keywords: "sleep memory tabs free") {
+                store.dismissLauncher(); store.sleepBackgroundTabs() },
+            Cmd(title: "Reopen Closed Tab", icon: "arrow.uturn.left", keywords: "reopen closed restore tab") {
+                store.dismissLauncher(); store.reopenClosedTab() },
+            Cmd(title: "Find in Page", icon: "magnifyingglass", keywords: "find search page text") {
+                store.dismissLauncher(); store.showFindBar() },
+            Cmd(title: "Toggle Sidebar", icon: "sidebar.right", keywords: "sidebar hide show") {
+                store.dismissLauncher(); store.toggleSidebar() },
+            Cmd(title: "Settings", icon: "gearshape", keywords: "settings preferences options") {
+                store.dismissLauncher(); store.settingsVisible = true },
+            Cmd(title: "New Space", icon: "square.grid.2x2", keywords: "space context new create") {
+                store.dismissLauncher(); store.contextCreationVisible = true }
+        ]
+        for ctx in store.contexts where ctx.id != store.activeContextID {
+            defs.append(Cmd(title: "Switch to \(ctx.name)",
+                            icon: "arrow.right.circle",
+                            keywords: "space context switch go \(ctx.name)") {
+                store.dismissLauncher(); store.switchContext(to: ctx.id)
+            })
+        }
+
+        let needles = q.split(separator: " ").map(String.init)
+        return defs.filter { cmd in
+            let hay = (cmd.title + " " + cmd.keywords).lowercased()
+            return needles.allSatisfy { hay.contains($0) }
+        }
+        .prefix(5)
+        .map { cmd in
+            LauncherItem(id: "cmd-\(cmd.title)", title: cmd.title, url: "",
+                         faviconURL: nil, tabID: nil, action: "Run",
+                         iconSystemName: cmd.icon, run: cmd.run)
+        }
     }
 }
 
@@ -375,10 +577,16 @@ private struct LauncherRow: View {
     var body: some View {
         Button(action: action) {
             HStack(spacing: 11) {
-                Favicon(icon: item.faviconURL, page: item.url, size: 18)
+                if let sys = item.iconSystemName {
+                    Icon(name: sys, size: 16)
+                        .foregroundStyle(p.foreground.color.opacity(0.85))
+                        .frame(width: 18, height: 18)
+                } else {
+                    Favicon(icon: item.faviconURL, page: item.url, size: 18)
+                }
 
                 Text(item.title.isEmpty ? item.url : item.title)
-                    .font(Typography.ui(13, weight: .medium))
+                    .font(Typography.ui(Typography.base, weight: .medium))
                     .foregroundStyle(p.foreground.color)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -397,19 +605,20 @@ private struct LauncherRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .animation(Motion.state, value: isHighlighted)
     }
 
     private var trailing: some View {
         HStack(spacing: 7) {
             Text(item.action)
-                .font(Typography.ui(11, weight: .medium))
+                .font(Typography.ui(Typography.small, weight: .medium))
                 .foregroundStyle(isHighlighted ? p.foreground.color : p.mutedForeground.color.opacity(0.7))
 
             Icon(name: "arrow.right", size: 11, weight: .semibold)
                 .foregroundStyle(isHighlighted ? p.popover.color : p.mutedForeground.color.opacity(0.7))
                 .frame(width: 20, height: 20)
                 .background(
-                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
                         .fill(isHighlighted ? p.foreground.color : p.foreground.color.opacity(0.07))
                 )
         }

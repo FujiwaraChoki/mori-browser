@@ -1,19 +1,22 @@
 import AppKit
 
 struct MoriShortcutTrigger {
-    private static let shortcutModifierMask: NSEvent.ModifierFlags = [
+    static let shortcutModifierMask: NSEvent.ModifierFlags = [
         .command, .shift, .option, .control
     ]
 
     let modifiers: NSEvent.ModifierFlags
     let key: String
+    let keyAliases: Set<String>
     let keyCode: UInt16
     let isRepeat: Bool
 
     init(event: NSEvent) {
         keyCode = event.keyCode
         modifiers = event.modifierFlags.intersection(Self.shortcutModifierMask)
-        key = Self.normalizedAppKitKey(for: event)
+        let keys = Self.normalizedAppKitKeys(for: event)
+        key = keys.primary
+        keyAliases = keys.aliases
         isRepeat = event.isARepeat
     }
 
@@ -24,13 +27,36 @@ struct MoriShortcutTrigger {
         self.keyCode = keyCode
         modifiers = NSEvent.ModifierFlags(rawValue: modifierMask)
             .intersection(Self.shortcutModifierMask)
-        key = Self.normalizedCEFKey(keyCode: keyCode,
-                                    charactersIgnoringModifiers: charactersIgnoringModifiers)
+        let keys = Self.normalizedCEFKeys(
+            keyCode: keyCode,
+            charactersIgnoringModifiers: charactersIgnoringModifiers)
+        key = keys.primary
+        keyAliases = keys.aliases
         self.isRepeat = isRepeat
     }
 
-    private static func normalizedAppKitKey(for event: NSEvent) -> String {
-        switch event.keyCode {
+    func matchesKey(_ key: String) -> Bool {
+        keyAliases.contains(key)
+    }
+
+    private static func normalizedAppKitKeys(for event: NSEvent)
+        -> (primary: String, aliases: Set<String>) {
+        if let special = normalizedSpecialAppKitKey(keyCode: event.keyCode) {
+            return (special, [special])
+        }
+
+        let logical = normalizedPrintableKey(event.charactersIgnoringModifiers ?? "")
+        let physical = normalizedPhysicalAppKitKey(keyCode: event.keyCode)
+        var aliases = Set<String>()
+        if !logical.isEmpty { aliases.insert(logical) }
+        if let physical, !physical.isEmpty { aliases.insert(physical) }
+        let primary = !logical.isEmpty ? logical : (physical ?? "")
+        if !primary.isEmpty { aliases.insert(primary) }
+        return (primary, aliases)
+    }
+
+    private static func normalizedSpecialAppKitKey(keyCode: UInt16) -> String? {
+        switch keyCode {
         case 48: return "tab"
         case 53: return "escape"
         case 116: return "pageup"
@@ -39,44 +65,94 @@ struct MoriShortcutTrigger {
         case 124: return "right"
         case 125: return "down"
         case 126: return "up"
-        default:
-            break
+        default: return nil
         }
-
-        guard let chars = event.charactersIgnoringModifiers, !chars.isEmpty else {
-            return ""
-        }
-
-        return normalizedPrintableKey(chars)
     }
 
-    private static func normalizedCEFKey(keyCode: UInt16,
-                                         charactersIgnoringModifiers: String?) -> String {
+    private static func normalizedPhysicalAppKitKey(keyCode: UInt16) -> String? {
         switch keyCode {
-        case 9: return "tab"
-        case 27: return "escape"
-        case 33: return "pageup"
-        case 34: return "pagedown"
-        case 37: return "left"
-        case 38: return "up"
-        case 39: return "right"
-        case 40: return "down"
-        case 48...57:
-            return String(UnicodeScalar(Int(keyCode))!)
-        case 65...90:
-            return String(UnicodeScalar(Int(keyCode) + 32)!)
-        case 96...105:
-            return String(Int(keyCode - 96))
-        case 107: return "+"
-        case 109, 189: return "-"
-        case 187: return "="
-        case 188: return ","
-        case 190: return "."
-        case 219: return "["
-        case 221: return "]"
-        default:
-            return normalizedPrintableKey(charactersIgnoringModifiers ?? "")
+        case 0: return "a"
+        case 1: return "s"
+        case 2: return "d"
+        case 3: return "f"
+        case 4: return "h"
+        case 5: return "g"
+        case 6: return "z"
+        case 7: return "x"
+        case 8: return "c"
+        case 9: return "v"
+        case 11: return "b"
+        case 12: return "q"
+        case 13: return "w"
+        case 14: return "e"
+        case 15: return "r"
+        case 16: return "y"
+        case 17: return "t"
+        case 18: return "1"
+        case 19: return "2"
+        case 20: return "3"
+        case 21: return "4"
+        case 22: return "6"
+        case 23: return "5"
+        case 24: return "="
+        case 25: return "9"
+        case 26: return "7"
+        case 27: return "-"
+        case 28: return "8"
+        case 29: return "0"
+        case 30: return "]"
+        case 31: return "o"
+        case 32: return "u"
+        case 33: return "["
+        case 34: return "i"
+        case 35: return "p"
+        case 37: return "l"
+        case 38: return "j"
+        case 40: return "k"
+        case 43: return ","
+        case 45: return "n"
+        case 46: return "m"
+        case 47: return "."
+        default: return nil
         }
+    }
+
+    private static func normalizedCEFKeys(keyCode: UInt16,
+                                          charactersIgnoringModifiers: String?)
+        -> (primary: String, aliases: Set<String>) {
+        let logical = normalizedPrintableKey(charactersIgnoringModifiers ?? "")
+        let physical: String?
+        switch keyCode {
+        case 9: physical = "tab"
+        case 27: physical = "escape"
+        case 33: physical = "pageup"
+        case 34: physical = "pagedown"
+        case 37: physical = "left"
+        case 38: physical = "up"
+        case 39: physical = "right"
+        case 40: physical = "down"
+        case 48...57:
+            physical = String(UnicodeScalar(Int(keyCode))!)
+        case 65...90:
+            physical = String(UnicodeScalar(Int(keyCode) + 32)!)
+        case 96...105:
+            physical = String(Int(keyCode - 96))
+        case 107: physical = "+"
+        case 109, 189: physical = "-"
+        case 187: physical = "="
+        case 188: physical = ","
+        case 190: physical = "."
+        case 219: physical = "["
+        case 221: physical = "]"
+        default: physical = nil
+        }
+
+        var aliases = Set<String>()
+        if !logical.isEmpty { aliases.insert(logical) }
+        if let physical, !physical.isEmpty { aliases.insert(physical) }
+        let primary = !logical.isEmpty ? logical : (physical ?? "")
+        if !primary.isEmpty { aliases.insert(primary) }
+        return (primary, aliases)
     }
 
     static func normalizedPrintableKey(_ raw: String) -> String {
@@ -109,6 +185,7 @@ private struct MoriShortcut {
     let modifiers: NSEvent.ModifierFlags
     let keys: Set<String>
     let acceptsRepeats: Bool
+    let reservesChromiumShortcut: Bool
     let isEnabled: (BrowserStore, MoriShortcutTrigger) -> Bool
     let perform: (BrowserStore) -> Void
 
@@ -116,12 +193,14 @@ private struct MoriShortcut {
          modifiers: NSEvent.ModifierFlags,
          key: String,
          acceptsRepeats: Bool = false,
+         reservesChromiumShortcut: Bool = false,
          isEnabled: @escaping (BrowserStore, MoriShortcutTrigger) -> Bool = { _, _ in true },
          perform: @escaping (BrowserStore) -> Void) {
         self.init(id,
                   modifiers: modifiers,
                   keys: [key],
                   acceptsRepeats: acceptsRepeats,
+                  reservesChromiumShortcut: reservesChromiumShortcut,
                   isEnabled: isEnabled,
                   perform: perform)
     }
@@ -130,19 +209,21 @@ private struct MoriShortcut {
          modifiers: NSEvent.ModifierFlags,
          keys: Set<String>,
          acceptsRepeats: Bool = false,
+         reservesChromiumShortcut: Bool = false,
          isEnabled: @escaping (BrowserStore, MoriShortcutTrigger) -> Bool = { _, _ in true },
          perform: @escaping (BrowserStore) -> Void) {
         self.id = id
         self.modifiers = modifiers
         self.keys = keys
         self.acceptsRepeats = acceptsRepeats
+        self.reservesChromiumShortcut = reservesChromiumShortcut
         self.isEnabled = isEnabled
         self.perform = perform
     }
 
     func matches(_ trigger: MoriShortcutTrigger, store: BrowserStore) -> Bool {
         modifiers == trigger.modifiers &&
-            keys.contains(trigger.key) &&
+            !keys.isDisjoint(with: trigger.keyAliases) &&
             isEnabled(store, trigger)
     }
 }
@@ -153,39 +234,35 @@ private struct MoriShortcut {
 /// key events and CEF key events normalize into `MoriShortcutTrigger`, so a
 /// shortcut registered here works from chrome focus and web-content focus.
 enum MoriCommands {
-    private struct ShortcutPress: Hashable {
+    private struct ShortcutEventIdentity: Equatable {
+        let timestamp: TimeInterval
+        let keyCode: UInt16
         let key: String
         let modifiersRawValue: UInt
 
-        init(_ trigger: MoriShortcutTrigger) {
+        init(event: NSEvent, trigger: MoriShortcutTrigger) {
+            timestamp = event.timestamp
+            keyCode = event.keyCode
             key = trigger.key
             modifiersRawValue = trigger.modifiers.rawValue
         }
     }
 
-    private static var activeShortcutPresses: [ShortcutPress: TimeInterval] = [:]
-    private static var lastHandledShortcut: (id: String, key: String, modifiers: NSEvent.ModifierFlags, time: TimeInterval)?
-    private static let duplicateShortcutInterval: TimeInterval = 0.08
-    private static let staleShortcutPressInterval: TimeInterval = 1.2
+    private static var lastHandledEvent: ShortcutEventIdentity?
 
     static func handle(_ event: NSEvent, store: BrowserStore) -> Bool {
         guard event.type == .keyDown else { return false }
-        return handle(MoriShortcutTrigger(event: event), store: store)
+        let trigger = MoriShortcutTrigger(event: event)
+        let eventIdentity = ShortcutEventIdentity(event: event, trigger: trigger)
+        return handle(trigger, eventIdentity: eventIdentity, store: store)
     }
 
     static func release(_ event: NSEvent) {
-        guard event.type == .keyUp else { return }
-        release(MoriShortcutTrigger(event: event))
     }
 
     static func release(keyCode: UInt16,
                         charactersIgnoringModifiers: String?,
                         modifierMask: UInt) {
-        release(MoriShortcutTrigger(
-            keyCode: keyCode,
-            charactersIgnoringModifiers: charactersIgnoringModifiers,
-            modifierMask: modifierMask,
-            isRepeat: false))
     }
 
     static func handle(keyCode: UInt16,
@@ -198,37 +275,42 @@ enum MoriCommands {
             charactersIgnoringModifiers: charactersIgnoringModifiers,
             modifierMask: modifierMask,
             isRepeat: isRepeat)
-        return handle(trigger, store: store)
+        return handle(trigger, eventIdentity: nil, store: store)
+    }
+
+    static func reservesChromiumShortcut(keyEquivalent: String,
+                                         modifierMask: UInt) -> Bool {
+        let trigger = MoriShortcutTrigger(
+            keyCode: 0,
+            charactersIgnoringModifiers: keyEquivalent,
+            modifierMask: modifierMask,
+            isRepeat: false)
+        return shortcuts.contains {
+            $0.reservesChromiumShortcut &&
+                $0.modifiers == trigger.modifiers &&
+                !$0.keys.isDisjoint(with: trigger.keyAliases)
+        }
     }
 
     private static func handle(_ trigger: MoriShortcutTrigger,
+                               eventIdentity: ShortcutEventIdentity?,
                                store: BrowserStore) -> Bool {
-        pruneStaleShortcutPresses()
+        if let eventIdentity, eventIdentity == lastHandledEvent {
+            return true
+        }
 
         if let shortcut = shortcuts.first(where: { $0.matches(trigger, store: store) }) {
-            NSLog("MORI-KEY handle MATCH id=%@ key=%@ isRepeat=%d main=%d",
-                  shortcut.id, trigger.key, trigger.isRepeat ? 1 : 0,
-                  Thread.isMainThread ? 1 : 0)
-            if shouldSuppressActivePress(shortcut, trigger: trigger) {
-                NSLog("MORI-KEY handle SUPPRESS-ACTIVE id=%@", shortcut.id)
-                return true
-            }
-            if isDuplicate(shortcut, trigger: trigger) {
-                NSLog("MORI-KEY handle SUPPRESS-DUPLICATE id=%@", shortcut.id)
-                return true
-            }
             if trigger.isRepeat && !shortcut.acceptsRepeats {
-                rememberActivePress(trigger)
+                remember(eventIdentity)
                 return true
             }
-            NSLog("MORI-KEY handle PERFORM id=%@", shortcut.id)
             // Perform synchronously so the store mutation is done by the time
             // the caller (MoriRoot.handleShortcutEvent) forces the chrome to
-            // repaint — see flushChrome(). The earlier dedup checks already
-            // collapsed any duplicate delivery of this keypress.
+            // repaint — see flushChrome(). AppKit and Chromium can both report
+            // the same physical key event, so exact event identity collapses
+            // duplicate delivery without blocking a later fresh press.
             shortcut.perform(store)
-            remember(shortcut, trigger: trigger)
-            rememberActivePress(trigger)
+            remember(eventIdentity)
             return true
         }
 
@@ -244,67 +326,44 @@ enum MoriCommands {
         return false
     }
 
-    private static func shouldSuppressActivePress(_ shortcut: MoriShortcut,
-                                                  trigger: MoriShortcutTrigger) -> Bool {
-        guard activeShortcutPresses[ShortcutPress(trigger)] != nil else { return false }
-        // Only auto-repeat events (a physically held key) are suppressed here.
-        // A genuine fresh press must always be allowed through, even if a prior
-        // key-up was never delivered — macOS routinely drops the key-up for a
-        // letter key while Command is still held, which would otherwise leave a
-        // stale "active press" wedged in place and silently swallow the next
-        // press. Same-event double delivery is handled by isDuplicate() instead.
-        guard trigger.isRepeat else { return false }
-        return !shortcut.acceptsRepeats
-    }
-
-    private static func rememberActivePress(_ trigger: MoriShortcutTrigger) {
-        activeShortcutPresses[ShortcutPress(trigger)] = ProcessInfo.processInfo.systemUptime
-    }
-
-    private static func release(_ trigger: MoriShortcutTrigger) {
-        pruneStaleShortcutPresses()
-        let press = ShortcutPress(trigger)
-        if activeShortcutPresses.removeValue(forKey: press) != nil {
-            return
+    private static func remember(_ eventIdentity: ShortcutEventIdentity?) {
+        if let eventIdentity {
+            lastHandledEvent = eventIdentity
         }
-
-        // Key-up events can arrive after the modifier key has already been
-        // released, so fall back to clearing active entries for the same key.
-        let matchingPresses = activeShortcutPresses.keys.filter { $0.key == trigger.key }
-        for activePress in matchingPresses {
-            activeShortcutPresses.removeValue(forKey: activePress)
-        }
-    }
-
-    private static func pruneStaleShortcutPresses() {
-        guard !activeShortcutPresses.isEmpty else { return }
-        let now = ProcessInfo.processInfo.systemUptime
-        activeShortcutPresses = activeShortcutPresses.filter {
-            now - $0.value < staleShortcutPressInterval
-        }
-    }
-
-    private static func isDuplicate(_ shortcut: MoriShortcut,
-                                    trigger: MoriShortcutTrigger) -> Bool {
-        guard let last = lastHandledShortcut else { return false }
-        let now = ProcessInfo.processInfo.systemUptime
-        return last.id == shortcut.id &&
-            last.key == trigger.key &&
-            last.modifiers == trigger.modifiers &&
-            now - last.time < duplicateShortcutInterval
-    }
-
-    private static func remember(_ shortcut: MoriShortcut,
-                                 trigger: MoriShortcutTrigger) {
-        lastHandledShortcut = (
-            id: shortcut.id,
-            key: trigger.key,
-            modifiers: trigger.modifiers,
-            time: ProcessInfo.processInfo.systemUptime)
     }
 
     private static let shortcuts: [MoriShortcut] = {
         var result: [MoriShortcut] = [
+            MoriShortcut("finishZapMode",
+                         modifiers: [],
+                         key: "escape",
+                         isEnabled: { store, _ in store.zapModeActive }) {
+                $0.finishZapMode()
+            },
+            MoriShortcut("dismissBoostEditor",
+                         modifiers: [],
+                         key: "escape",
+                         isEnabled: { store, _ in store.boostEditorVisible }) {
+                $0.dismissBoostEditor()
+            },
+            MoriShortcut("dismissPeek",
+                         modifiers: [],
+                         key: "escape",
+                         isEnabled: { store, _ in store.peekTab != nil }) {
+                $0.closePeek()
+            },
+            MoriShortcut("dismissWebContextMenu",
+                         modifiers: [],
+                         key: "escape",
+                         isEnabled: { store, _ in store.contextMenu != nil }) {
+                $0.dismissWebContextMenu()
+            },
+            MoriShortcut("cancelCapture",
+                         modifiers: [],
+                         key: "escape",
+                         isEnabled: { store, _ in store.captureMode }) {
+                $0.cancelRegionCapture()
+            },
             MoriShortcut("dismissLauncher",
                          modifiers: [],
                          key: "escape",
@@ -328,6 +387,15 @@ enum MoriCommands {
                          key: "escape",
                          isEnabled: { store, _ in store.contextCreationVisible }) {
                 $0.contextCreationVisible = false
+            },
+            MoriShortcut("dismissErrorOverlay",
+                         modifiers: [],
+                         key: "escape",
+                         isEnabled: { store, _ in (store.selectedTab ?? store.tabs.first)?.didFail == true }) {
+                if let tab = $0.selectedTab ?? $0.tabs.first {
+                    tab.didFail = false
+                    tab.failError = ""
+                }
             },
             MoriShortcut("newSplit", modifiers: [.control, .shift], keys: ["=", "+"]) {
                 $0.newSplit()
@@ -364,6 +432,15 @@ enum MoriCommands {
             },
             MoriShortcut("reopenClosedTab", modifiers: [.command, .shift], key: "t") {
                 $0.reopenClosedTab()
+            },
+            MoriShortcut("peek", modifiers: [.command, .shift], key: "o") {
+                $0.peekFromClipboardOrCurrent()
+            },
+            MoriShortcut("boostSite", modifiers: [.command, .shift], key: "b") {
+                $0.presentBoostEditor()
+            },
+            MoriShortcut("sleepBackgroundTabs", modifiers: [.command, .control], key: "s") {
+                $0.sleepBackgroundTabs()
             },
             MoriShortcut("copyCurrentURL", modifiers: [.command, .shift], key: "c") {
                 $0.copyCurrentTabURL()
@@ -416,19 +493,28 @@ enum MoriCommands {
                          acceptsRepeats: true) {
                 $0.selectPreviousTab()
             },
-            MoriShortcut("toggleSidebar", modifiers: .command, key: "s") {
+            MoriShortcut("toggleSidebar",
+                         modifiers: .command,
+                         key: "s",
+                         reservesChromiumShortcut: true) {
                 $0.toggleSidebar()
             },
             MoriShortcut("toggleSidebarControl", modifiers: .control, key: "s") {
                 $0.toggleSidebar()
             },
-            MoriShortcut("toggleOmnibox", modifiers: .command, key: "t") {
+            MoriShortcut("toggleOmnibox",
+                         modifiers: .command,
+                         key: "t",
+                         reservesChromiumShortcut: true) {
                 $0.toggleLauncher()
             },
             MoriShortcut("closeTab", modifiers: .command, key: "w") {
                 if let id = $0.selectedTabID { $0.closeTab(id) }
             },
-            MoriShortcut("focusOmnibox", modifiers: .command, key: "l") {
+            MoriShortcut("focusOmnibox",
+                         modifiers: .command,
+                         key: "l",
+                         reservesChromiumShortcut: true) {
                 $0.presentLauncherForCurrentTab()
             },
             MoriShortcut("reload", modifiers: .command, key: "r") {
@@ -487,14 +573,24 @@ enum MoriCommands {
             })
         }
 
+        for ordinal in 1...9 {
+            result.append(MoriShortcut("switchContext\(ordinal)",
+                                       modifiers: .control,
+                                       key: String(ordinal)) {
+                $0.switchContext(atOrdinal: ordinal)
+            })
+        }
+
         return result
     }()
 
     private static func isTextEditingShortcut(_ trigger: MoriShortcutTrigger) -> Bool {
         if trigger.modifiers == .command {
-            return ["a", "c", "v", "x", "z"].contains(trigger.key)
+            return ["a", "c", "v", "x", "z"].contains {
+                trigger.matchesKey($0)
+            }
         }
-        if trigger.modifiers == [.command, .shift], trigger.key == "z" {
+        if trigger.modifiers == [.command, .shift], trigger.matchesKey("z") {
             return true
         }
         return false
