@@ -39,6 +39,9 @@ final class CodexBrowserAssistant: ObservableObject {
     @Published var conversationHistory: [CodexConversationSummary] = []
     @Published var isLoadingHistory: Bool = false
     @Published var historyError: String?
+    /// Non-nil when the local Codex server can't be reached to load the model
+    /// catalog — surfaced as an inline banner so the panel isn't silently dead.
+    @Published var modelLoadError: String?
 
     private static let codexHistorySourceKinds = ["cli", "vscode", "appServer"]
 
@@ -71,6 +74,7 @@ final class CodexBrowserAssistant: ObservableObject {
         guard isEnabled else { return }
         guard modelOptions.isEmpty, !isLoadingModels else { return }
         isLoadingModels = true
+        modelLoadError = nil
         defer { isLoadingModels = false }
         do {
             try await refreshModelCatalog()
@@ -78,6 +82,7 @@ final class CodexBrowserAssistant: ObservableObject {
             if statusText == "Local Codex" {
                 statusText = "Models unavailable"
             }
+            modelLoadError = "Couldn't reach the local Codex server. The assistant is unavailable — make sure Codex is running, then reopen this panel."
         }
     }
 
@@ -516,10 +521,10 @@ final class CodexBrowserAssistant: ObservableObject {
         To answer, return:
         {"kind":"final","text":"..."}
 
-        To ask Mori to perform a browser action, return:
-        {"kind":"tool","tool":"mori_browser_action","arguments":{...},"reason":"..."}
+        To ask Mori to use a browser tool, return:
+        {"kind":"tool","tool":"<tool name>","arguments":{...},"reason":"..."}
 
-        Available action arguments match this tool list:
+        Available tools — use the exact name and the arguments shown:
         \(BrowserAutomation.dynamicTools)
 
         Current browser snapshot:
@@ -1093,6 +1098,13 @@ final class CodexAppServerConnection {
                 socket?.cancel(with: .goingAway, reason: nil)
                 socket = nil
                 receiveTask?.cancel()
+                receiveTask = nil
+                // Each socket needs its own `initialize`; a fresh attempt must
+                // re-handshake rather than assume the dead socket's state.
+                initialized = false
+                // Resolve any requests still parked on the dead socket so their
+                // awaiters fail fast instead of hanging on a leaked continuation.
+                failPending(CodexAppServerError.connectionFailed)
                 try await Task.sleep(nanoseconds: 150_000_000)
             }
         }
@@ -1198,7 +1210,11 @@ final class CodexAppServerConnection {
 
         if let method, let id {
             let result = await onServerRequest?(method, params) ?? [:]
-            try await send(["id": id, "result": result], on: socket!)
+            // The socket can be torn down while the tool call above is awaited
+            // (reconnect, app quit). Re-read it and bail rather than force-
+            // unwrapping a now-nil socket, which used to crash the process.
+            guard let liveSocket = socket else { return }
+            try await send(["id": id, "result": result], on: liveSocket)
             return
         }
 

@@ -21,6 +21,9 @@ struct AIPanel: View {
         VStack(spacing: 0) {
             header
             Divider().opacity(0.6)
+            if let error = assistant.modelLoadError {
+                errorBanner(error)
+            }
             transcript
             modelSelectors
             composer
@@ -37,7 +40,7 @@ struct AIPanel: View {
                 .foregroundStyle(.secondary)
 
             Text("Assistant")
-                .font(Typography.ui(15, weight: .semibold))
+                .font(Typography.ui(Typography.title, weight: .semibold))
                 .foregroundStyle(.primary)
 
             Spacer()
@@ -73,25 +76,113 @@ struct AIPanel: View {
         .frame(height: 48)
     }
 
+    /// Inline banner shown when the local Codex server can't be reached, with a
+    /// one-tap retry so the user isn't stuck staring at an empty panel.
+    private func errorBanner(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Icon(name: "exclamationmark.triangle", size: 13, weight: .medium)
+                .foregroundStyle(p.statusWarningFg.color)
+            Text(message)
+                .font(Typography.ui(Typography.small))
+                .foregroundStyle(p.foreground.color.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 6)
+            Button("Retry") {
+                Task { await assistant.loadModelCatalogIfNeeded() }
+            }
+            .font(Typography.ui(Typography.small, weight: .medium))
+            .buttonStyle(.plain)
+            .foregroundStyle(p.accent.color)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(p.statusWarningFg.color.opacity(0.10))
+        .overlay(alignment: .bottom) { Hairline().opacity(0.6) }
+    }
+
+    @ViewBuilder
     private var transcript: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(assistant.messages) { msg in
-                        AIBubble(message: msg)
-                            .id(msg.id)
+        if assistant.messages.isEmpty {
+            emptyState
+        } else {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        ForEach(assistant.messages) { msg in
+                            AIBubble(message: msg)
+                                .id(msg.id)
+                        }
                     }
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .padding(16)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .onChange(of: assistant.messages.count) { _, _ in
-                scrollToBottom(proxy)
-            }
-            .onChange(of: assistant.messages.last?.text ?? "") { _, _ in
-                scrollToBottom(proxy)
+                .onChange(of: assistant.messages.count) { _, _ in
+                    scrollToBottom(proxy)
+                }
+                .onChange(of: assistant.messages.last?.text ?? "") { _, _ in
+                    scrollToBottom(proxy)
+                }
             }
         }
+    }
+
+    /// Welcome state shown before the first message: a short prompt plus the
+    /// one-tap page-grounded suggestions, centered in the conversation area so
+    /// they read as an invitation rather than clutter wedged above the input.
+    private var emptyState: some View {
+        VStack(spacing: 16) {
+            Icon(name: "sparkles", size: 30)
+                .foregroundStyle(p.accent.color)
+            VStack(spacing: 4) {
+                Text("Ask about this page")
+                    .font(Typography.ui(Typography.title, weight: .semibold))
+                    .foregroundStyle(p.foreground.color)
+                Text("Summarize it, pull the key points, or tidy your tabs.")
+                    .font(Typography.ui(Typography.small))
+                    .foregroundStyle(p.mutedForeground.color)
+                    .multilineTextAlignment(.center)
+            }
+            FlowLayout(spacing: 7, lineSpacing: 7) {
+                quickChip("Summarize", icon: "doc.text") {
+                    runQuick("Summarize the current page concisely in a few sentences.")
+                }
+                quickChip("Key points", icon: "list.bullet") {
+                    runQuick("List the key points of the current page as concise bullet points.")
+                }
+                quickChip("Tidy tabs", icon: "rectangle.3.group") {
+                    runQuick("Look at all my open tabs and organize them into sensible, "
+                             + "short-named sidebar folders using the mori_organize_tabs tool. "
+                             + "Group by topic or site.")
+                }
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .opacity(assistant.isWorking ? 0.5 : 1)
+        .disabled(assistant.isWorking)
+    }
+
+    private func quickChip(_ title: String, icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Icon(name: icon, size: 11, weight: .medium)
+                Text(title).font(Typography.ui(Typography.small, weight: .medium))
+            }
+            .foregroundStyle(p.foreground.color.opacity(0.85))
+            .padding(.horizontal, 9)
+            .frame(height: 24)
+            .background(.regularMaterial,
+                        in: Capsule())
+            .overlay(Capsule().strokeBorder(p.border.color.opacity(0.4), lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func runQuick(_ prompt: String) {
+        guard !assistant.isWorking else { return }
+        store.aiPanelVisible = true
+        assistant.send(prompt)
     }
 
     private var modelSelectors: some View {
@@ -152,7 +243,7 @@ struct AIPanel: View {
     private func selectorLabel(_ title: String) -> some View {
         HStack(spacing: 4) {
             Text(title)
-                .font(Typography.ui(16))
+                .font(Typography.ui(Typography.base))
                 .foregroundStyle(.primary)
                 .lineLimit(1)
             Image(systemName: "chevron.down")
@@ -211,6 +302,60 @@ struct AIPanel: View {
     }
 }
 
+/// A simple wrapping row layout that center-aligns each line — used for the
+/// assistant's suggestion chips so they reflow instead of clipping in the
+/// fixed-width panel.
+private struct FlowLayout: Layout {
+    var spacing: CGFloat = 7
+    var lineSpacing: CGFloat = 7
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        let rows = rows(maxWidth: maxWidth, subviews: subviews)
+        let width = rows.map(\.width).max() ?? 0
+        let height = rows.map(\.height).reduce(0, +)
+            + lineSpacing * CGFloat(max(0, rows.count - 1))
+        return CGSize(width: min(width, maxWidth), height: height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        var y = bounds.minY
+        for row in rows(maxWidth: bounds.width, subviews: subviews) {
+            var x = bounds.minX + (bounds.width - row.width) / 2
+            for index in row.indices {
+                let size = subviews[index].sizeThatFits(.unspecified)
+                subviews[index].place(at: CGPoint(x: x, y: y),
+                                      anchor: .topLeading,
+                                      proposal: ProposedViewSize(size))
+                x += size.width + spacing
+            }
+            y += row.height + lineSpacing
+        }
+    }
+
+    private struct Row { var indices: [Int] = []; var width: CGFloat = 0; var height: CGFloat = 0 }
+
+    private func rows(maxWidth: CGFloat, subviews: Subviews) -> [Row] {
+        var rows: [Row] = []
+        var current = Row()
+        for index in subviews.indices {
+            let size = subviews[index].sizeThatFits(.unspecified)
+            let projected = current.indices.isEmpty ? size.width : current.width + spacing + size.width
+            if projected > maxWidth, !current.indices.isEmpty {
+                rows.append(current)
+                current = Row(indices: [index], width: size.width, height: size.height)
+            } else {
+                if !current.indices.isEmpty { current.width += spacing }
+                current.indices.append(index)
+                current.width += size.width
+                current.height = max(current.height, size.height)
+            }
+        }
+        if !current.indices.isEmpty { rows.append(current) }
+        return rows
+    }
+}
+
 private struct AIHistoryPopover: View {
     @ObservedObject var assistant: CodexBrowserAssistant
     var onSelect: () -> Void
@@ -233,11 +378,11 @@ private struct AIHistoryPopover: View {
             .padding(.horizontal, 9)
             .padding(.vertical, 7)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
                     .fill(p.muted.color.opacity(0.55))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
                     .strokeBorder(p.border.color.opacity(0.55), lineWidth: 1)
             )
 
@@ -301,13 +446,13 @@ private struct AIHistoryRow: View {
                     .lineLimit(1)
                 Spacer(minLength: 8)
                 Text(conversation.updatedAt.formatted(date: .abbreviated, time: .shortened))
-                    .font(Typography.ui(10))
+                    .font(Typography.ui(Typography.caption))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             if !conversation.preview.isEmpty && conversation.preview != conversation.title {
                 Text(conversation.preview)
-                    .font(Typography.ui(11))
+                    .font(Typography.ui(Typography.small))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
@@ -315,9 +460,9 @@ private struct AIHistoryRow: View {
         .padding(.horizontal, 9)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
                 .fill(Color.primary.opacity(0.0001))
         )
     }
@@ -502,10 +647,10 @@ private struct AIToolCallPopover: View {
     private func detailBlock(title: String, text: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(title)
-                .font(Typography.ui(10, weight: .semibold))
+                .font(Typography.ui(Typography.caption, weight: .semibold))
                 .foregroundStyle(.secondary)
             Text(text)
-                .font(Typography.ui(11))
+                .font(Typography.ui(Typography.small))
                 .foregroundStyle(.primary)
                 .lineLimit(8)
                 .textSelection(.enabled)
@@ -607,8 +752,7 @@ private struct AILoadingDot: View {
             .frame(width: 7, height: 7)
             .scaleEffect(isPulsing ? 1.35 : 0.72)
             .frame(width: 18, height: 18)
-            .animation(reduceMotion ? nil : .easeInOut(duration: 0.72).repeatForever(autoreverses: true),
-                       value: isPulsing)
+            .animation(reduceMotion ? nil : Motion.pulse, value: isPulsing)
             .onAppear {
                 guard !reduceMotion else { return }
                 isPulsing = true

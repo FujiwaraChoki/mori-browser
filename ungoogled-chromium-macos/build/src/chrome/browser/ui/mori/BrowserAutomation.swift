@@ -148,6 +148,31 @@ enum BrowserAutomation {
                     ]
                 ]
             ]
+        ],
+        [
+            "name": "mori_organize_tabs",
+            "description": "Tidy the user's open tabs into named sidebar folders (groups). Use the tab IDs reported by mori_browser_snapshot. Each tab should appear in at most one group; tabs you omit are left where they are.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "groups": [
+                        "type": "array",
+                        "description": "The folders to create, each with a short descriptive name and the tab IDs that belong in it.",
+                        "items": [
+                            "type": "object",
+                            "properties": [
+                                "name": ["type": "string"],
+                                "tabIds": [
+                                    "type": "array",
+                                    "items": ["type": "string"]
+                                ]
+                            ],
+                            "required": ["name", "tabIds"]
+                        ]
+                    ]
+                ],
+                "required": ["groups"]
+            ]
         ]
     ]
 
@@ -167,6 +192,8 @@ enum BrowserAutomation {
                 return BrowserToolResult(text: text, success: true)
             case "mori_update_settings":
                 return try updateSettings(arguments: arguments, store: store)
+            case "mori_organize_tabs":
+                return try organizeTabs(arguments: arguments, store: store)
             default:
                 throw BrowserAutomationError.unsupportedAction(tool)
             }
@@ -351,6 +378,43 @@ enum BrowserAutomation {
             )
         }
         return BrowserToolResult(text: "Updated settings: " + changes.joined(separator: ", ") + ".", success: true)
+    }
+
+    @MainActor
+    private static func organizeTabs(arguments: [String: Any],
+                                     store: BrowserStore) throws -> BrowserToolResult {
+        guard let groups = arguments["groups"] as? [[String: Any]] else {
+            throw BrowserAutomationError.missingArgument("groups")
+        }
+        var foldersCreated = 0
+        var tabsMoved = 0
+        for group in groups {
+            guard let name = string(group["name"]),
+                  !name.trimmingCharacters(in: .whitespaces).isEmpty,
+                  let rawIDs = group["tabIds"] as? [Any]
+            else { continue }
+            let ids = rawIDs
+                .compactMap { string($0) }
+                .compactMap { idStr in
+                    store.tabs.first {
+                        $0.id.uuidString == idStr || $0.id.uuidString.hasPrefix(idStr)
+                    }?.id
+                }
+            guard !ids.isEmpty else { continue }
+            let folder = store.addFolder(name: name)
+            for id in ids {
+                store.addTab(id, toFolder: folder.id)
+                tabsMoved += 1
+            }
+            foldersCreated += 1
+        }
+        guard foldersCreated > 0 else {
+            return BrowserToolResult(text: "No tab groups were created (no matching tabs).",
+                                     success: false)
+        }
+        return BrowserToolResult(
+            text: "Organized \(tabsMoved) tab(s) into \(foldersCreated) folder(s).",
+            success: true)
     }
 
     @MainActor
