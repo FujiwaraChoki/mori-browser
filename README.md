@@ -35,7 +35,6 @@ checkout. Chromium owns the web; Mori owns everything around it.
 
 ## Highlights
 
-| | |
 |---|---|
 | 🗂️ **Spaces & folders** | Arc-style contexts and tab folders with custom glyph icons. |
 | ✈️ **Air Traffic Control** | Routing rules auto-file tabs into the space that matches their host. |
