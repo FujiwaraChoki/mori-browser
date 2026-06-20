@@ -68,22 +68,24 @@ struct IconButton: View {
     }
 }
 
-/// A favicon with Mori's compact browser styling: Chromium-decoded favicons,
-/// curated brand glyphs, a domain-tinted monogram when no icon is available,
-/// and a subtle desaturation when its tab is inactive. `icon` is retained for
-/// metadata compatibility; rendering never fetches it from native UI.
+/// A favicon with Mori's compact browser styling: a curated brand glyph for
+/// known sites, otherwise the Chromium-decoded site favicon, and a neutral web
+/// globe as the final fallback when a page has no favicon at all — plus a subtle
+/// desaturation when its tab is inactive. `icon` is retained for metadata
+/// compatibility; rendering never fetches it from native UI.
 struct Favicon: View {
     let icon: String?
     var page: String? = nil
-    /// The real site favicon decoded by Chromium. When present it is preferred
-    /// over local brand glyphs and the monogram.
+    /// The real site favicon decoded by Chromium. Used whenever the site isn't
+    /// one of the curated brands.
     var image: NSImage? = nil
     var size: CGFloat = 15
     /// Inactive tabs render slightly desaturated so the active tab reads first.
     var active: Bool = true
 
     private var corner: CGFloat { size * 0.27 }
-    private var source: FaviconSource { FaviconSource.resolve(icon: icon, page: page) }
+    /// Curated brand glyph for this page's host, if Mori bundles one.
+    private var brandAsset: String? { SiteBrand.asset(forPage: page) }
 
     var body: some View {
         // Loading is shown by the LoadingBar (loader line) at the bottom of the
@@ -96,7 +98,7 @@ struct Favicon: View {
     }
 
     /// Mori's internal pages (the new-tab page) have no real favicon; show a
-    /// neutral glyph instead of a host-derived monogram.
+    /// search glyph rather than the generic web globe.
     private var isInternal: Bool { (page ?? "").hasPrefix("mori://") }
 
     @ViewBuilder private var content: some View {
@@ -111,8 +113,9 @@ struct Favicon: View {
     }
 
     @ViewBuilder private var resolvedContent: some View {
-        if case .brand(let asset) = source {
-            Image(asset)
+        if let brandAsset {
+            // A curated brand glyph for a known site.
+            Image(brandAsset)
                 .resizable()
                 .interpolation(.high)
                 .frame(width: size, height: size)
@@ -125,22 +128,13 @@ struct Favicon: View {
                 .frame(width: size, height: size)
                 .clipShape(RoundedRectangle(cornerRadius: corner, style: .continuous))
         } else {
-            switch source {
-            case .monogram(let letter, let color):
-                FaviconMonogram(letter: letter, color: color, size: size)
-            case .brand:
-                EmptyView()  // handled above
-            }
+            // No brand glyph and no decoded favicon — the page has none, or it
+            // hasn't resolved yet: a neutral web globe, never a letter tile.
+            Image(systemName: "globe")
+                .font(.system(size: size * 0.82, weight: .regular))
+                .foregroundStyle(.secondary)
+                .frame(width: size, height: size)
         }
-    }
-
-    /// Monogram for the broken-image case, derived from the page host.
-    private var monogram: some View {
-        let m = FaviconSource.monogram(for: FaviconSource.host(from: page))
-        if case .monogram(let letter, let color) = m {
-            return AnyView(FaviconMonogram(letter: letter, color: color, size: size))
-        }
-        return AnyView(Color.clear)
     }
 }
 

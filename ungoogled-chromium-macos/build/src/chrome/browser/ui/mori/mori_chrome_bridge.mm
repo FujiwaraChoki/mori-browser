@@ -510,13 +510,22 @@ class TabBridge : public content::WebContentsObserver,
                         const gfx::Image& image) override {
     // Only the standard 16-DIP page favicon drives the sidebar glyph; ignore
     // the larger touch-icon notifications so a big apple-touch-icon doesn't
-    // displace the crisp favicon. `AsNSImage` is nil for an empty image (icon
-    // removed), which the Swift side treats as "fall back to monogram".
+    // displace the crisp favicon.
     if (notification_icon_type !=
         favicon::FaviconDriverObserver::NON_TOUCH_16_DIP) {
       return;
     }
-    [view_ engineSetFaviconImage:image.AsNSImage()
+    // Chromium's FaviconDriver routinely fires a *spurious empty* update right
+    // after delivering the real icon (a secondary candidate, or the in-memory
+    // entry, resolving to nothing). Passing that through wiped the crisp
+    // favicon and flashed the host monogram ~0.5s after each page load. Drop
+    // empty updates here and keep the last good icon; a genuine page change
+    // clears it through the navigation-start path instead.
+    NSImage* ns_image = image.AsNSImage();
+    if (!ns_image) {
+      return;
+    }
+    [view_ engineSetFaviconImage:ns_image
                          iconURL:base::SysUTF8ToNSString(icon_url.spec())];
   }
 
