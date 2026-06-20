@@ -97,6 +97,12 @@ struct RootView: View {
             CaptureOverlay(store: store)
                 .ignoresSafeArea()
         }
+        // Site permission requests — notification-style, non-modal chrome that
+        // still reports Allow / Block / Not Now back to Chromium.
+        .overlay {
+            PermissionPromptOverlay(center: PermissionPromptCenter.shared)
+                .ignoresSafeArea()
+        }
         .background {
             WebRightClickCatcher(store: store)
                 .frame(width: 0, height: 0)
