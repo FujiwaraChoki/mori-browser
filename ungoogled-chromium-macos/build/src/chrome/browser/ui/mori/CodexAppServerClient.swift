@@ -1272,7 +1272,7 @@ final class CodexAppServerConnection {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: codex)
         process.arguments = ["app-server", "--listen", "ws://127.0.0.1:\(port)"]
-        process.environment = ProcessInfo.processInfo.environment
+        process.environment = Self.spawnEnvironment(codexPath: codex)
         let output = Pipe()
         output.fileHandleForReading.readabilityHandler = { handle in
             _ = handle.availableData
@@ -1297,6 +1297,39 @@ final class CodexAppServerConnection {
             return path
         }
         throw CodexAppServerError.codexBinaryMissing
+    }
+
+    /// Builds the environment for the spawned `codex` process.
+    ///
+    /// `codex` ships as a Node script (`#!/usr/bin/env node`), so launching it
+    /// requires `node` on PATH. A Finder/DMG-launched Mori only inherits the
+    /// stripped launchd PATH (`/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`),
+    /// which almost never contains the user's Node install — the shebang then
+    /// resolves to nothing, the process dies immediately, and the app-server
+    /// never comes up ("Couldn't reach the local Codex server"). Prepend the
+    /// common Node/codex install dirs (plus the codex binary's own directory)
+    /// so the spawn works no matter how Mori was launched. A dev build run from
+    /// a terminal already inherits the full shell PATH, so these entries are
+    /// simply de-duplicated there.
+    private static func spawnEnvironment(codexPath: String) -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        let home = NSHomeDirectory()
+        let preferredDirs = [
+            URL(fileURLWithPath: codexPath).deletingLastPathComponent().path,
+            "\(home)/.local/bin",
+            "\(home)/.bun/bin",
+            "\(home)/.npm-global/bin",
+            "\(home)/.volta/bin",
+            "/opt/homebrew/bin",
+            "/usr/local/bin"
+        ]
+        let inherited = (environment["PATH"] ?? "")
+            .split(separator: ":", omittingEmptySubsequences: true)
+            .map(String.init)
+        var seen = Set<String>()
+        let merged = (preferredDirs + inherited).filter { seen.insert($0).inserted }
+        environment["PATH"] = merged.joined(separator: ":")
+        return environment
     }
 
     private func receiveLoop() async {
