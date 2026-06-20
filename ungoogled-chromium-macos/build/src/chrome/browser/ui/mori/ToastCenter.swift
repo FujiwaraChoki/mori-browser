@@ -83,3 +83,79 @@ final class ToastCenter: ObservableObject {
         dismissWorkItems.removeValue(forKey: id)
     }
 }
+
+struct PermissionPromptItem: Identifiable, Equatable {
+    enum Response: Int {
+        case allow = 0
+        case block = 1
+        case dismiss = 2
+    }
+
+    let id: Int
+    let origin: String
+    let requests: [String]
+    let completion: (Response) -> Void
+
+    static func == (lhs: PermissionPromptItem, rhs: PermissionPromptItem) -> Bool {
+        lhs.id == rhs.id
+    }
+}
+
+final class PermissionPromptCenter: ObservableObject {
+    static let shared = PermissionPromptCenter()
+
+    @Published private(set) var prompts: [PermissionPromptItem] = []
+
+    private init() {}
+
+    func show(id: Int,
+              origin: String,
+              requests: [String],
+              completion: @escaping (PermissionPromptItem.Response) -> Void) {
+        let prompt = PermissionPromptItem(id: id,
+                                          origin: origin,
+                                          requests: requests,
+                                          completion: completion)
+        withAnimation(Motion.snappy) {
+            prompts.removeAll { $0.id == id }
+            prompts.append(prompt)
+        }
+    }
+
+    func dismiss(id: Int) {
+        withAnimation(Motion.snappy) {
+            prompts.removeAll { $0.id == id }
+        }
+    }
+
+    func respond(to prompt: PermissionPromptItem,
+                 with response: PermissionPromptItem.Response) {
+        dismiss(id: prompt.id)
+        prompt.completion(response)
+    }
+}
+
+/// ObjC-callable bridge for Chromium's permission prompt controller.
+@objc(MoriPermissionBridge)
+final class MoriPermissionBridge: NSObject {
+    @objc(showPermissionPromptWithID:origin:requests:completion:)
+    static func showPermissionPrompt(id: Int,
+                                     origin: String,
+                                     requests: [String],
+                                     completion: @escaping (Int) -> Void) {
+        DispatchQueue.main.async {
+            PermissionPromptCenter.shared.show(id: id,
+                                               origin: origin,
+                                               requests: requests) { response in
+                completion(response.rawValue)
+            }
+        }
+    }
+
+    @objc(dismissPermissionPromptWithID:)
+    static func dismissPermissionPrompt(id: Int) {
+        DispatchQueue.main.async {
+            PermissionPromptCenter.shared.dismiss(id: id)
+        }
+    }
+}
