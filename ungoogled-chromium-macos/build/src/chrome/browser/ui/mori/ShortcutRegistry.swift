@@ -250,6 +250,28 @@ enum MoriCommands {
 
     private static var lastHandledEvent: ShortcutEventIdentity?
 
+    /// Identity of a key chord, independent of which delivery path (AppKit
+    /// monitor, Chromium pre-handler, or the CEF keyCode entry point) reported
+    /// it. Used to collapse the same *physical* press into a single action even
+    /// when the two paths don't share an `NSEvent` (so their timestamps, and
+    /// thus `ShortcutEventIdentity`, differ).
+    private struct ShortcutSignature: Equatable {
+        let keyCode: UInt16
+        let key: String
+        let modifiersRawValue: UInt
+    }
+
+    private static var lastPerformedSignature: ShortcutSignature?
+    private static var lastPerformedAt: TimeInterval = 0
+    /// One physical press fans out to its handlers within the same run-loop
+    /// turn (sub-millisecond apart); a held key's *repeats* always carry
+    /// `isRepeat` (and the first repeat trails the press by 200ms+ anyway), and
+    /// no human can hit the same chord twice in 30ms (that's >30 presses/sec).
+    /// So any second *non-repeat* hit of the same chord inside this window is a
+    /// duplicate delivery, never a real second press — collapse it. Kept small
+    /// so genuine fast presses (e.g. mashing Escape) are never swallowed.
+    private static let duplicateDeliveryWindow: TimeInterval = 0.03
+
     static func handle(_ event: NSEvent, store: BrowserStore) -> Bool {
         guard event.type == .keyDown else { return false }
         let trigger = MoriShortcutTrigger(event: event)
@@ -304,12 +326,26 @@ enum MoriCommands {
                 remember(eventIdentity)
                 return true
             }
+            // Collapse duplicate delivery of a single physical press. Exact
+            // `NSEvent` identity (above) handles the common case where one
+            // NSEvent is reported twice; this time-windowed signature also
+            // catches deliveries that *don't* share an NSEvent — the CEF
+            // keyCode entry point (no identity) or AppKit-monitor + Chromium
+            // pre-handler racing with distinct event objects — so a chord can
+            // never double-toggle (which would read as "nothing happened").
+            // Repeats are exempt: a held key legitimately re-fires.
+            if !trigger.isRepeat && isDuplicateDelivery(trigger) {
+                remember(eventIdentity)
+                return true
+            }
             // Perform synchronously so the store mutation is done by the time
             // the caller (MoriRoot.handleShortcutEvent) forces the chrome to
-            // repaint — see flushChrome(). AppKit and Chromium can both report
-            // the same physical key event, so exact event identity collapses
-            // duplicate delivery without blocking a later fresh press.
+            // repaint — see flushChrome().
             shortcut.perform(store)
+            // Record only the first (non-repeat) press as the dedup anchor, so
+            // a held key's repeats don't slide the window forward and make a
+            // genuine fresh press just after release look like a duplicate.
+            if !trigger.isRepeat { markPerformed(trigger) }
             remember(eventIdentity)
             return true
         }
@@ -330,6 +366,28 @@ enum MoriCommands {
         if let eventIdentity {
             lastHandledEvent = eventIdentity
         }
+    }
+
+    private static func signature(for trigger: MoriShortcutTrigger) -> ShortcutSignature {
+        ShortcutSignature(keyCode: trigger.keyCode,
+                          key: trigger.key,
+                          modifiersRawValue: trigger.modifiers.rawValue)
+    }
+
+    /// True when the same chord already performed an action within
+    /// `duplicateDeliveryWindow` — i.e. this is a second delivery of one press.
+    private static func isDuplicateDelivery(_ trigger: MoriShortcutTrigger) -> Bool {
+        guard let last = lastPerformedSignature,
+              last == signature(for: trigger) else {
+            return false
+        }
+        return ProcessInfo.processInfo.systemUptime - lastPerformedAt
+            < duplicateDeliveryWindow
+    }
+
+    private static func markPerformed(_ trigger: MoriShortcutTrigger) {
+        lastPerformedSignature = signature(for: trigger)
+        lastPerformedAt = ProcessInfo.processInfo.systemUptime
     }
 
     private static let shortcuts: [MoriShortcut] = {

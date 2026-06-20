@@ -35,6 +35,13 @@ final class MoriRoot: NSObject {
     /// commits it immediately, matching the click-the-button path that works.
     private static func flushChrome() {
         flushChromeNow()
+        // The synchronous flush above renders the *pre-mutation* tree: SwiftUI
+        // commits a keyboard-driven `@Published` change on the run loop's
+        // BeforeWaiting observer, which hasn't fired yet inside this call stack.
+        // Hop to the next run-loop tick — by then the commit has landed — and
+        // redraw immediately, so the toggle's first frame shows up a frame
+        // sooner than the timer pulse below would deliver it.
+        DispatchQueue.main.async { flushChromeNow() }
         // A keyboard shortcut mutates the store from outside SwiftUI's own event
         // handling, so SwiftUI commits the change and advances its animation off
         // the main run loop's update observer + animation timer — both of which
@@ -58,8 +65,14 @@ final class MoriRoot: NSObject {
     private static var flushPulseScheduled = false
 
     private static func scheduleFlushPulseIfNeeded() {
-        guard !flushPulseScheduled,
-              ProcessInfo.processInfo.systemUptime < flushPulseDeadline else {
+        guard !flushPulseScheduled else { return }
+        guard ProcessInfo.processInfo.systemUptime < flushPulseDeadline else {
+            // The pulse window elapsed. If the main thread was starved (heavy
+            // page JS/layout) the in-flight pulses may have been delayed past
+            // the deadline; do one final redraw so the *settled*, end-of-
+            // animation state is guaranteed on screen instead of a stalled
+            // mid-animation frame, then stop pulsing.
+            flushChromeNow()
             return
         }
         flushPulseScheduled = true
@@ -72,7 +85,11 @@ final class MoriRoot: NSObject {
     }
 
     private static func flushChromeNow() {
-        guard let view = chromeView else { return }
+        // Normally the hosting view set in makeRootViewController; if that weak
+        // ref ever dies, fall back to the live window's content view so a
+        // keyboard toggle still forces a repaint instead of silently no-op'ing.
+        guard let view = chromeView
+            ?? (NSApp.keyWindow ?? NSApp.mainWindow)?.contentView else { return }
         let contentView = view.window?.contentView
 
         contentView?.needsLayout = true
@@ -86,6 +103,35 @@ final class MoriRoot: NSObject {
         view.displayIfNeeded()
         view.window?.viewsNeedDisplay = true
         view.window?.displayIfNeeded()
+        pumpAppKitForChromeUpdate()
+    }
+
+    /// Post a no-op AppKit event so NSApplication runs a real event cycle.
+    ///
+    /// The display calls above only *redraw the already-committed view tree*.
+    /// A keyboard shortcut, though, mutates an `@Published` value from outside
+    /// SwiftUI's own event handling, and SwiftUI applies that change (and
+    /// advances its `withAnimation`) from a run-loop observer that, under
+    /// Chromium's custom Mac message pump, only fires when AppKit actually
+    /// processes an event. `displayIfNeeded` does *not* count — which is why a
+    /// ⌘S sidebar toggle would land in the store yet not appear until some
+    /// unrelated keypress or mouse-move pumped the loop ("works only after you
+    /// take another action"). Posting a synthetic application-defined event
+    /// reproduces that wake-up deterministically: NSApp dequeues it, runs the
+    /// cycle, SwiftUI reconciles, and the toggle shows on the first press.
+    /// The event is inert — the app-level key/mouse monitor filters it out,
+    /// and no view acts on `applicationDefined` — so it has no side effects.
+    private static func pumpAppKitForChromeUpdate() {
+        guard let event = NSEvent.otherEvent(with: .applicationDefined,
+                                             location: .zero,
+                                             modifierFlags: [],
+                                             timestamp: ProcessInfo.processInfo.systemUptime,
+                                             windowNumber: 0,
+                                             context: nil,
+                                             subtype: 0,
+                                             data1: 0,
+                                             data2: 0) else { return }
+        NSApp.postEvent(event, atStart: false)
     }
 
     @objc static func prepareForTermination() {
