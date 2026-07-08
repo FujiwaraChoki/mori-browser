@@ -10,6 +10,7 @@ struct RootView: View {
     /// Live hover side while a sidebar tab is dragged over the web card.
     @State private var splitDropSide: BrowserStore.SplitSide?
     @State private var webCardWidth: CGFloat = 800
+    @State private var liveSidebarWidth: CGFloat?
 
     private var gradientTheme: GradientTheme { settings.gradientTheme }
 
@@ -22,6 +23,11 @@ struct RootView: View {
 
     private var palette: ThemePalette {
         ThemePalette.forScheme(scheme).applying(theme: gradientTheme, scheme: scheme)
+    }
+
+    private var sidebarWidth: CGFloat {
+        (liveSidebarWidth ?? settings.sidebarWidth)
+            .clamped(to: BrowserSettings.minSidebarWidth...BrowserSettings.maxSidebarWidth)
     }
 
     var body: some View {
@@ -40,9 +46,13 @@ struct RootView: View {
             }
 
             // Web content column — the toolbar chrome plus a floating, rounded
-            // "card" that encapsulates the live browser, Arc-style.
+            // "card" that encapsulates the live browser, Arc-style. Agent tabs
+            // hide the web toolbar (empty omnibox / dead nav) — the agent page
+            // carries its own header.
             VStack(spacing: 0) {
-                WebTopStrip(tab: activeTab)
+                if activeTab?.kind != .agent {
+                    WebTopStrip(tab: activeTab)
+                }
                 webCard(activeTab: activeTab)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -97,6 +107,11 @@ struct RootView: View {
             CaptureOverlay(store: store)
                 .ignoresSafeArea()
         }
+        // Native Mori replacements for Chromium page-action bubbles.
+        .overlay {
+            PageActionOverlay(store: store)
+                .ignoresSafeArea()
+        }
         // Site permission requests — notification-style, non-modal chrome that
         // still reports Allow / Block / Not Now back to Chromium.
         .overlay {
@@ -129,7 +144,7 @@ struct RootView: View {
                     GradientEngine.chromeView(for: gradientTheme, scheme: scheme)
                         .opacity(gradientTheme.opacity)
                     if gradientTheme.texture > 0 {
-                        GrainOverlay(amount: gradientTheme.texture)
+                        GradientGrainOverlay(amount: gradientTheme.texture)
                     }
                 }
             }
@@ -142,8 +157,8 @@ struct RootView: View {
     }
 
     private func sidebarSlot(onLeft: Bool) -> some View {
-        let width = settings.sidebarWidth
-        return Sidebar(store: store)
+        let width = sidebarWidth
+        return Sidebar(store: store, liveWidth: $liveSidebarWidth)
             .frame(width: width)
             .frame(width: store.sidebarVisible ? width : 0,
                    alignment: onLeft ? .leading : .trailing)
@@ -177,6 +192,15 @@ struct RootView: View {
                     .clipShape(RoundedRectangle(cornerRadius: Radius.window, style: .continuous))
             }
 
+            // An agent tab renders its full-page Codex thread over the
+            // (suppressed) web content, the same way Settings does. The web
+            // container stays mounted underneath so background/target web tabs
+            // keep running while the agent drives them.
+            if let activeTab, activeTab.kind == .agent, let agent = activeTab.agent {
+                AgentThreadView(store: store, assistant: agent, tab: activeTab)
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.window, style: .continuous))
+            }
+
             // While the sidebar is being resized the CEF view is frozen (see
             // WebContainerView); cover it with the plain card surface so the
             // user sees a clean, smoothly-resizing card instead of the static,
@@ -187,7 +211,7 @@ struct RootView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            if store.findBarVisible, let tab = activeTab {
+            if store.findBarVisible, let tab = activeTab, tab.kind == .web {
                 FindBar(store: store, tab: tab)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
@@ -195,7 +219,7 @@ struct RootView: View {
         .overlay(alignment: .bottom) {
             // Page-load indicator: a slim muted bar pinned to the bottom edge of
             // the page, clipped to the card's rounded corners.
-            if let activeTab, activeTab.isLoading {
+            if let activeTab, activeTab.kind == .web, activeTab.isLoading {
                 LoadingBar()
                     .padding(.horizontal, Radius.window)
                     .padding(.bottom, 1)
@@ -342,21 +366,6 @@ private struct ActiveWebContent: View {
     }
 }
 
-private struct GrainOverlay: View {
-    let amount: Double
-
-    var body: some View {
-        ZStack {
-            Color.white.opacity(0.035 * amount)
-                .blendMode(.overlay)
-            Color.black.opacity(0.025 * amount)
-                .blendMode(.multiply)
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-}
-
 /// Chrome's real extension side panel (an ExtensionViewHost owned by the
 /// native bridge), framed by Mori's side panel chrome.
 private struct ExtensionSidePanel: View {
@@ -372,6 +381,7 @@ private struct ExtensionSidePanel: View {
                     .font(Typography.ui(Typography.title, weight: .semibold))
                     .foregroundStyle(p.foreground.color)
                     .lineLimit(1)
+                    .help(extensions.sidePanelTitle ?? "Extension")
                 Spacer()
                 IconButton(systemName: "xmark", size: 28) {
                     extensions.closeSidePanel()
@@ -442,6 +452,8 @@ private struct ErrorOverlay: View {
                 .foregroundStyle(p.mutedForeground.color)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .help(tab.urlString)
+                .textSelection(.enabled)
 
             // Surface the underlying failure (DNS, timeout, SSL, …) so the user
             // can actually diagnose the problem instead of a generic message.
@@ -452,6 +464,7 @@ private struct ErrorOverlay: View {
                     .multilineTextAlignment(.center)
                     .lineLimit(3)
                     .fixedSize(horizontal: false, vertical: true)
+                    .textSelection(.enabled)
             }
 
             HStack(spacing: 8) {

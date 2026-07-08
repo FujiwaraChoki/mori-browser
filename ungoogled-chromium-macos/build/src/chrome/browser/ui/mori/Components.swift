@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Ghost/outline icon button matching MASTER §5.1: hover/active route through a
 /// translucent foreground overlay (no direct bg on ghost), color/opacity only,
@@ -34,11 +35,12 @@ struct IconButton: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .opacity(disabled ? 0.4 : 1)
-        .onHover { hovering = $0 }
+        .onHover { hovering = !disabled && $0 }
+        .animation(Motion.state, value: hovering)
         .animation(Motion.state, value: pressed)
         .simultaneousGesture(
             DragGesture(minimumDistance: 0)
-                .onChanged { _ in pressed = true }
+                .onChanged { _ in if !disabled { pressed = true } }
                 .onEnded { _ in pressed = false }
         )
     }
@@ -135,6 +137,51 @@ struct Favicon: View {
                 .foregroundStyle(.secondary)
                 .frame(width: size, height: size)
         }
+    }
+}
+
+/// Reports middle-mouse-button clicks (button 2) on the view it overlays, while
+/// letting left/right clicks fall straight through to the SwiftUI content
+/// beneath. The trick: `hitTest` claims the point *only* while the current event
+/// is a middle-click, so the catcher is invisible to every other gesture.
+struct MiddleClickCatcher: NSViewRepresentable {
+    let action: () -> Void
+
+    func makeNSView(context: Context) -> MiddleClickNSView {
+        let view = MiddleClickNSView()
+        view.onMiddleClick = action
+        return view
+    }
+
+    func updateNSView(_ nsView: MiddleClickNSView, context: Context) {
+        nsView.onMiddleClick = action
+    }
+
+    final class MiddleClickNSView: NSView {
+        var onMiddleClick: (() -> Void)?
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            // Only intercept the point during a middle-click; otherwise stay out
+            // of the way so taps, drags, and right-clicks reach SwiftUI.
+            if let event = NSApp.currentEvent,
+               event.type == .otherMouseDown || event.type == .otherMouseUp,
+               event.buttonNumber == 2 {
+                return self
+            }
+            return nil
+        }
+
+        override func otherMouseUp(with event: NSEvent) {
+            if event.buttonNumber == 2 { onMiddleClick?() }
+        }
+    }
+}
+
+extension View {
+    /// Run `action` when the view is middle-clicked (e.g. close a tab). Left and
+    /// right clicks pass through untouched.
+    func onMiddleClick(perform action: @escaping () -> Void) -> some View {
+        overlay(MiddleClickCatcher(action: action))
     }
 }
 

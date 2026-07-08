@@ -31,6 +31,9 @@ extension BrowserStore {
     private var archiveProtectedIDs: Set<BrowserTab.ID> {
         var ids = sleepProtectedIDs
         for context in contexts { ids.formUnion(context.pinnedTabIDs) }
+        for context in contexts {
+            ids.formUnion(context.folders.flatMap(\.tabIDs))
+        }
         return ids
     }
 
@@ -117,7 +120,7 @@ extension BrowserStore {
         ArchiveStore.shared.add(url: tab.urlString,
                                 title: tab.title,
                                 faviconURL: tab.faviconURL)
-        closeTab(id)
+        closeTab(id, allowFolderRemoval: true)
     }
 
     /// Reopen an archived page in a fresh tab and drop it from the archive.

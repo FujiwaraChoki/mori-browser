@@ -164,7 +164,16 @@ private struct LauncherView: View {
         VStack(spacing: 0) {
             header
 
-            if !items.isEmpty {
+            if items.isEmpty {
+                // Idle hint so the palette reads as capable, not broken, before
+                // any keystroke surfaces results/commands.
+                Text("Type to search, open a URL, or run a command")
+                    .font(Typography.ui(Typography.small))
+                    .foregroundStyle(p.mutedForeground.color.opacity(0.55))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, LauncherMetrics.headerPadding)
+                    .padding(.vertical, Spacing.xl)
+            } else {
                 Rectangle()
                     .fill(p.border.color.opacity(0.4))
                     .frame(height: 1)
@@ -215,29 +224,71 @@ private struct LauncherView: View {
                                     insertionColor: p.primary.nsColor,
                                     onMove: move,
                                     onEscape: store.dismissLauncher,
-                                    onSubmit: commit)
+                                    onSubmit: commit,
+                                    onShortcut: handleShortcut,
+                                    onTab: agentLaunchHandler)
                     .frame(height: 24)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Quiet hint that ⇥ launches an agent task from the typed text.
+            if store.settings.aiIntegrationEnabled {
+                agentHint
             }
         }
         .padding(.horizontal, LauncherMetrics.headerPadding)
         .frame(height: LauncherMetrics.headerHeight)
     }
 
-    private var results: some View {
-        ScrollView {
-            VStack(spacing: LauncherMetrics.rowSpacing) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
-                    LauncherRow(item: item, isHighlighted: idx == highlighted, scheme: scheme) {
-                        activate(item)
-                    }
-                    .onHover { if $0 { highlighted = idx } }
-                }
-            }
-            .padding(.horizontal, LauncherMetrics.resultsPadding)
-            .padding(.vertical, LauncherMetrics.resultsPadding)
+    /// Trailing affordance in the search row: a key-cap "TAB" plus a muted
+    /// "for Agent" label, advertising the ⇥-to-launch-an-agent gesture. Purely
+    /// informational, so it never steals the pointer from the field.
+    private var agentHint: some View {
+        HStack(spacing: 6) {
+            Text("TAB")
+                .font(Typography.ui(Typography.caption, weight: .semibold))
+                .foregroundStyle(p.mutedForeground.color)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(
+                    RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
+                        .fill(p.foreground.color.opacity(0.07))
+                )
+            Text("for Agent")
+                .font(Typography.ui(Typography.small, weight: .medium))
+                .foregroundStyle(p.mutedForeground.color.opacity(0.7))
         }
-        .frame(maxHeight: LauncherMetrics.maxResultsHeight)
-        .scrollIndicators(.never)
+        .fixedSize()
+        .allowsHitTesting(false)
+    }
+
+    private var agentLaunchHandler: ((String) -> Void)? {
+        guard store.settings.aiIntegrationEnabled else { return nil }
+        return { store.launcherLaunchAgent($0) }
+    }
+
+    private var results: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: LauncherMetrics.rowSpacing) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { idx, item in
+                        LauncherRow(item: item, isHighlighted: idx == highlighted, scheme: scheme) {
+                            activate(item)
+                        }
+                        .id(idx)
+                        .onHover { if $0 { highlighted = idx } }
+                    }
+                }
+                .padding(.horizontal, LauncherMetrics.resultsPadding)
+                .padding(.vertical, LauncherMetrics.resultsPadding)
+            }
+            .frame(maxHeight: LauncherMetrics.maxResultsHeight)
+            .scrollIndicators(.never)
+            // Keep the keyboard-highlighted row visible; minimal scroll (no
+            // anchor) so navigating among already-visible rows never yanks the
+            // list — and never fights the rows' own hover-to-highlight.
+            .onChange(of: highlighted) { _, new in proxy.scrollTo(new) }
+        }
     }
 
     private func move(_ delta: Int) {
@@ -251,6 +302,14 @@ private struct LauncherView: View {
         } else {
             store.launcherOpen(query)
         }
+    }
+
+    private func handleShortcut(_ trigger: MoriShortcutTrigger) -> Bool {
+        guard let item = items.first(where: { $0.shortcutHint?.matches(trigger) == true }) else {
+            return false
+        }
+        activate(item)
+        return true
     }
 
     private func activate(_ item: LauncherItem) {
@@ -303,13 +362,18 @@ private struct LauncherSearchField: NSViewRepresentable {
     let onMove: (Int) -> Void
     let onEscape: () -> Void
     let onSubmit: () -> Void
+    let onShortcut: (MoriShortcutTrigger) -> Bool
+    /// Pressing Tab (instead of Return) hands the live field text off to kick
+    /// off an agent task. Receives the field's current string directly so a
+    /// keystroke-then-Tab in the same runloop isn't missing its last character.
+    var onTab: ((String) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
     }
 
-    func makeNSView(context: Context) -> NSTextField {
-        let field = NSTextField(frame: .zero)
+    func makeNSView(context: Context) -> LauncherTextField {
+        let field = LauncherTextField(frame: .zero)
         field.isBordered = false
         field.drawsBackground = false
         field.backgroundColor = .clear
@@ -320,13 +384,16 @@ private struct LauncherSearchField: NSViewRepresentable {
         field.font = Self.font
         field.textColor = foregroundColor
         field.delegate = context.coordinator
+        field.onKeyDown = { [weak coordinator = context.coordinator] event in
+            coordinator?.handleKeyDown(event) ?? false
+        }
         field.cell?.wraps = false
         field.cell?.isScrollable = true
         field.cell?.lineBreakMode = .byClipping
         return field
     }
 
-    func updateNSView(_ field: NSTextField, context: Context) {
+    func updateNSView(_ field: LauncherTextField, context: Context) {
         context.coordinator.parent = self
         if field.stringValue != text {
             field.stringValue = text
@@ -335,6 +402,15 @@ private struct LauncherSearchField: NSViewRepresentable {
         field.textColor = foregroundColor
         field.backgroundColor = .clear
         context.coordinator.focusIfNeeded(field)
+    }
+
+    final class LauncherTextField: NSTextField {
+        var onKeyDown: ((NSEvent) -> Bool)?
+
+        override func keyDown(with event: NSEvent) {
+            if onKeyDown?(event) == true { return }
+            super.keyDown(with: event)
+        }
     }
 
     private static var font: NSFont {
@@ -358,6 +434,12 @@ private struct LauncherSearchField: NSViewRepresentable {
             parent.text = field.stringValue
         }
 
+        func handleKeyDown(_ event: NSEvent) -> Bool {
+            let trigger = MoriShortcutTrigger(event: event)
+            guard !trigger.modifiers.isEmpty else { return false }
+            return parent.onShortcut(trigger)
+        }
+
         func control(_ control: NSControl,
                      textView: NSTextView,
                      doCommandBy commandSelector: Selector) -> Bool {
@@ -373,6 +455,13 @@ private struct LauncherSearchField: NSViewRepresentable {
                 return true
             case #selector(NSResponder.cancelOperation(_:)):
                 parent.onEscape()
+                return true
+            case #selector(NSResponder.insertTab(_:)):
+                // Tab launches an agent task from the typed text. Consume it so
+                // focus never shifts away; an empty field is a no-op.
+                guard let onTab = parent.onTab else { return false }
+                let typed = textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !typed.isEmpty { onTab(textView.string) }
                 return true
             default:
                 return false
@@ -428,17 +517,30 @@ private struct LauncherItem: Identifiable {
     let tabID: BrowserTab.ID?
     /// Trailing affordance label ("Switch to Tab", "Open", "Search").
     let action: String
-    /// For command results: the SF Symbol to show in place of a favicon.
+    /// For symbol-backed results: the SF Symbol to show in place of a favicon.
     var iconSystemName: String? = nil
     /// For command results: the action to run on activation. Command closures
     /// dismiss the launcher themselves.
     var run: (() -> Void)? = nil
+    /// Visible command-key equivalent. Pressing it while the launcher field is
+    /// focused runs this row directly, matching the badge.
+    var shortcutHint: MoriShortcutHint? = nil
+
+    private struct RankedItem {
+        let item: LauncherItem
+        let score: Int
+        let sourceBonus: Int
+        let recency: Date
+
+        var rank: Int { score + sourceBonus }
+    }
 
     static func build(query: String, store: BrowserStore) -> [LauncherItem] {
-        let q = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         let rawQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let q = rawQuery.lowercased()
         var seen = Set<String>()
-        var out: [LauncherItem] = []
+        var leading: [LauncherItem] = []
+        var ranked: [RankedItem] = []
 
         if !rawQuery.isEmpty {
             let resolved = URLInterpreter.resolve(rawQuery, settings: store.settings)
@@ -446,55 +548,104 @@ private struct LauncherItem: Identifiable {
             seen.insert(resolved)
             // Stable id (not keyed on the resolved URL) so the row persists
             // across keystrokes instead of being torn down on every character.
-            out.append(LauncherItem(id: isAddress ? "direct-address" : "direct-search",
-                                    title: isAddress ? "Open \(rawQuery)" : "Search \(rawQuery)",
-                                    url: resolved,
-                                    faviconURL: nil,
-                                    tabID: nil,
-                                    action: isAddress ? "Open" : "Search"))
+            leading.append(LauncherItem(id: isAddress ? "direct-address" : "direct-search",
+                                        title: isAddress ? "Open \(rawQuery)" : "Search \(rawQuery)",
+                                        url: resolved,
+                                        faviconURL: nil,
+                                        tabID: nil,
+                                        action: isAddress ? "Open" : "Search"))
         }
 
-        // Commands (actions), matched while typing — surfaced near the top.
-        out.append(contentsOf: commands(query: q, store: store))
-
-        // Open tabs first — all of them when idle, filtered while typing. In
+        // Open tabs first when idle, then scored with the rest while typing. In
         // address-bar mode the current tab is the one being edited, so offering
         // to "Switch to" it would be redundant — skip it.
         for tab in store.tabs {
             if store.launcherEditsCurrentTab, tab.id == store.selectedTabID { continue }
-            let match = q.isEmpty
-                || tab.title.lowercased().contains(q)
-                || tab.urlString.lowercased().contains(q)
-            guard match else { continue }
+            let score = q.isEmpty
+                ? 0
+                : matchScore(query: q, title: tab.displayTitle, detail: tab.urlString)
+            guard let score else { continue }
             let key = tab.urlString.isEmpty ? "tab:\(tab.id)" : tab.urlString
             guard seen.insert(key).inserted else { continue }
-            out.append(LauncherItem(id: "tab-\(tab.id)",
-                                    title: tab.title,
-                                    url: tab.displayURL,
-                                    faviconURL: tab.faviconURL,
-                                    tabID: tab.id,
-                                    action: "Switch to Tab"))
+            ranked.append(RankedItem(item: LauncherItem(id: "tab-\(tab.id)",
+                                                        title: tab.displayTitle,
+                                                        url: tab.displayURL,
+                                                        faviconURL: tab.faviconURL,
+                                                        tabID: tab.id,
+                                                        action: "Switch to Tab"),
+                                     score: score,
+                                     sourceBonus: 70,
+                                     recency: tab.lastAccessedAt))
         }
 
-        // Then history: recent when idle, best matches while typing.
-        let history = q.isEmpty
-            ? Array(HistoryStore.shared.entries.prefix(8))
-            : HistoryStore.shared.suggestions(for: q, limit: 8)
+        // Then history: recent when idle, scored against the full store while typing.
+        let history = q.isEmpty ? Array(HistoryStore.shared.entries.prefix(8)) : HistoryStore.shared.entries
         for entry in history {
+            let score = q.isEmpty
+                ? 0
+                : matchScore(query: q, title: entry.title, detail: entry.url)
+            guard let score else { continue }
             guard seen.insert(entry.url).inserted else { continue }
-            out.append(LauncherItem(id: "hist-\(entry.id)",
-                                    title: entry.title.isEmpty ? entry.url : entry.title,
-                                    url: entry.url,
-                                    faviconURL: nil,
-                                    tabID: nil,
-                                    action: "Open"))
+            ranked.append(RankedItem(item: LauncherItem(id: "hist-\(entry.id)",
+                                                        title: entry.title.isEmpty ? entry.url : entry.title,
+                                                        url: entry.url,
+                                                        faviconURL: nil,
+                                                        tabID: nil,
+                                                        action: "Open"),
+                                     score: score,
+                                     sourceBonus: 55,
+                                     recency: entry.lastVisited))
         }
 
+        if !q.isEmpty {
+            for mark in BookmarkStore.shared.bookmarks {
+                guard let score = matchScore(query: q, title: mark.title, detail: mark.url),
+                      seen.insert(mark.url).inserted else { continue }
+                ranked.append(RankedItem(item: LauncherItem(id: "bookmark-\(mark.id)",
+                                                            title: mark.title.isEmpty ? mark.url : mark.title,
+                                                            url: mark.url,
+                                                            faviconURL: nil,
+                                                            tabID: nil,
+                                                            action: "Open",
+                                                            iconSystemName: "star"),
+                                         score: score,
+                                         sourceBonus: 45,
+                                         recency: mark.createdAt))
+            }
+
+            ranked.append(contentsOf: commands(query: q, store: store))
+        }
+
+        ranked.sort {
+            if $0.rank != $1.rank { return $0.rank > $1.rank }
+            if $0.recency != $1.recency { return $0.recency > $1.recency }
+            return $0.item.title.localizedCaseInsensitiveCompare($1.item.title) == .orderedAscending
+        }
+
+        let askAI: LauncherItem? = !rawQuery.isEmpty
+            ? LauncherItem(id: "ask-ai",
+                           title: "Ask AI: \(rawQuery)",
+                           url: rawQuery,
+                           faviconURL: nil,
+                           tabID: nil,
+                           action: "Ask",
+                           iconSystemName: "sparkles",
+                           run: {
+                               Task { @MainActor in
+                                   store.launcherLaunchAgent(rawQuery)
+                               }
+                           })
+            : nil
+
+        var out = leading
+        let available = max(0, 8 - out.count - (askAI == nil ? 0 : 1))
+        out.append(contentsOf: ranked.prefix(available).map(\.item))
+        if let askAI { out.append(askAI) }
         return Array(out.prefix(8))
     }
 
     /// Build the matching command (action) results for the current query.
-    private static func commands(query q: String, store: BrowserStore) -> [LauncherItem] {
+    private static func commands(query q: String, store: BrowserStore) -> [RankedItem] {
         guard !q.isEmpty else { return [] }
         struct Cmd { let title: String; let icon: String; let keywords: String; let run: () -> Void }
         var defs: [Cmd] = [
@@ -525,8 +676,47 @@ private struct LauncherItem: Identifiable {
             Cmd(title: "Settings", icon: "gearshape", keywords: "settings preferences options") {
                 store.dismissLauncher(); store.settingsVisible = true },
             Cmd(title: "New Space", icon: "square.grid.2x2", keywords: "space context new create") {
-                store.dismissLauncher(); store.contextCreationVisible = true }
+                store.dismissLauncher(); store.contextCreationVisible = true },
+            Cmd(title: "Rename Space", icon: "pencil", keywords: "rename space context title") {
+                store.dismissLauncher(); store.contextRenamePending = true },
+            Cmd(title: "Clear Finished Downloads", icon: "trash",
+                keywords: "clear downloads finished remove") {
+                store.dismissLauncher(); DownloadStore.shared.clearFinished() }
         ]
+
+        // Batch action when a ⌘/⇧-click multi-selection exists.
+        if store.multiSelectedTabIDs.count >= 2 {
+            defs.append(Cmd(title: "New Folder with \(store.multiSelectedTabIDs.count) Selected Tabs",
+                            icon: "folder.badge.plus",
+                            keywords: "folder group selected tabs multi new") {
+                store.dismissLauncher(); store.newFolderWithSelectedTabs() })
+        }
+
+        // Current-tab actions — only meaningful when a tab is selected.
+        if let id = store.selectedTabID, let tab = store.selectedTab {
+            defs.append(Cmd(title: "Copy URL", icon: "link", keywords: "copy url link address") {
+                store.dismissLauncher(); store.copyCurrentTabURL() })
+            defs.append(Cmd(title: store.isPinned(id) ? "Unpin Tab" : "Pin Tab",
+                            icon: store.isPinned(id) ? "pin.slash" : "pin",
+                            keywords: "pin unpin tab favorite") {
+                store.dismissLauncher(); store.togglePin(id) })
+            defs.append(Cmd(title: "Rename Tab", icon: "pencil", keywords: "rename tab title name") {
+                store.dismissLauncher(); store.beginTabRename(id) })
+            defs.append(Cmd(title: "Duplicate Tab", icon: "plus.square.on.square",
+                            keywords: "duplicate tab copy clone") {
+                store.dismissLauncher(); store.duplicateTab(id) })
+            defs.append(Cmd(title: BookmarkStore.shared.isBookmarked(tab.urlString)
+                                ? "Remove Bookmark" : "Bookmark Page",
+                            icon: "star", keywords: "bookmark save star favorite") {
+                store.dismissLauncher(); store.toggleBookmark() })
+            // Move the current tab to another space.
+            for ctx in store.contexts where ctx.id != store.activeContextID {
+                defs.append(Cmd(title: "Move Tab to \(ctx.name)",
+                                icon: "arrow.right.square",
+                                keywords: "move tab space context \(ctx.name)") {
+                    store.dismissLauncher(); store.moveTab(id, toContext: ctx.id, activate: true) })
+            }
+        }
         if store.settings.aiIntegrationEnabled {
             defs.append(Cmd(title: "Open Assistant", icon: "sparkles", keywords: "ai assistant codex chat ask") {
                 store.dismissLauncher(); store.openAIPanel()
@@ -540,17 +730,122 @@ private struct LauncherItem: Identifiable {
             })
         }
 
-        let needles = q.split(separator: " ").map(String.init)
-        return defs.filter { cmd in
-            let hay = (cmd.title + " " + cmd.keywords).lowercased()
-            return needles.allSatisfy { hay.contains($0) }
+        return defs.compactMap { cmd in
+            guard var score = matchScore(query: q, title: cmd.title, detail: cmd.keywords) else {
+                return nil
+            }
+            if q.count < 3 {
+                guard q.count > 1,
+                      let titleScore = matchScore(query: q, title: cmd.title),
+                      titleScore >= 400 else { return nil }
+                score = min(score, 240)
+            }
+            return RankedItem(item: LauncherItem(id: "cmd-\(cmd.title)",
+                                                 title: cmd.title,
+                                                 url: "",
+                                                 faviconURL: nil,
+                                                 tabID: nil,
+                                                 action: "Run",
+                                                 iconSystemName: cmd.icon,
+                                                 run: cmd.run,
+                                                 shortcutHint: commandShortcutHint(for: cmd.title,
+                                                                                   store: store)),
+                              score: score,
+                              sourceBonus: 0,
+                              recency: .distantPast)
         }
-        .prefix(5)
-        .map { cmd in
-            LauncherItem(id: "cmd-\(cmd.title)", title: cmd.title, url: "",
-                         faviconURL: nil, tabID: nil, action: "Run",
-                         iconSystemName: cmd.icon, run: cmd.run)
+    }
+
+    private static func commandShortcutHint(for title: String,
+                                            store: BrowserStore) -> MoriShortcutHint? {
+        let shortcutID: String?
+        switch title {
+        case "New Split":
+            shortcutID = "newSplit"
+        case "Boost This Site":
+            shortcutID = "boostSite"
+        case "Peek a Link":
+            shortcutID = "peek"
+        case "Sleep Background Tabs":
+            shortcutID = "sleepBackgroundTabs"
+        case "Reopen Closed Tab":
+            shortcutID = "reopenClosedTab"
+        case "Find in Page":
+            shortcutID = store.findBarVisible ? nil : "find"
+        case "Toggle Sidebar":
+            shortcutID = "toggleSidebar"
+        case "Settings":
+            shortcutID = "settings"
+        case "Copy URL":
+            shortcutID = "copyCurrentURL"
+        case "Pin Tab", "Unpin Tab":
+            shortcutID = "togglePinTab"
+        case "Duplicate Tab":
+            shortcutID = "duplicateTab"
+        case "Bookmark Page", "Remove Bookmark":
+            shortcutID = "bookmarkPage"
+        case "Open Assistant":
+            shortcutID = store.aiPanelVisible ? nil : "toggleAI"
+        default:
+            shortcutID = nil
         }
+
+        guard let shortcutID else { return nil }
+        return MoriCommands.shortcutHint(for: shortcutID)
+    }
+
+    private static func matchScore(query: String, title: String, detail: String = "") -> Int? {
+        let tokens = query.lowercased().split(separator: " ").map(String.init)
+        guard !tokens.isEmpty else { return nil }
+
+        let title = title.lowercased()
+        let detail = detail.lowercased()
+
+        func score(_ needle: String, in haystack: String) -> Int? {
+            guard !needle.isEmpty, !haystack.isEmpty else { return nil }
+            if haystack.hasPrefix(needle) { return 400 }
+            if hasWordBoundaryMatch(needle, in: haystack) { return 340 }
+            if haystack.contains(needle) { return 260 }
+            if needle.count >= 3, isSubsequence(needle, of: haystack) { return 180 }
+            return nil
+        }
+
+        func hasWordBoundaryMatch(_ needle: String, in haystack: String) -> Bool {
+            var start = haystack.startIndex
+            while start < haystack.endIndex,
+                  let range = haystack.range(of: needle, range: start..<haystack.endIndex) {
+                if range.lowerBound == haystack.startIndex { return true }
+                let before = haystack[haystack.index(before: range.lowerBound)]
+                let isBoundary = before.unicodeScalars.allSatisfy {
+                    !CharacterSet.alphanumerics.contains($0)
+                }
+                if isBoundary { return true }
+                start = range.upperBound
+            }
+            return false
+        }
+
+        func isSubsequence(_ needle: String, of haystack: String) -> Bool {
+            var index = haystack.startIndex
+            for character in needle {
+                guard let found = haystack[index...].firstIndex(of: character) else {
+                    return false
+                }
+                index = haystack.index(after: found)
+            }
+            return true
+        }
+
+        var total = 0
+        for token in tokens {
+            let titleScore = score(token, in: title)
+            let detailScore = score(token, in: detail).map { max($0 - 25, 0) }
+            guard let best = [titleScore, detailScore].compactMap({ $0 }).max() else {
+                return nil
+            }
+            total += best
+        }
+        return total / tokens.count
     }
 }
 
@@ -566,7 +861,7 @@ private struct LauncherRow: View {
     /// Tab rows advertise "Switch to Tab" at all times (dimmed at rest);
     /// open/search rows only reveal their affordance once active.
     private var showsAction: Bool {
-        item.tabID != nil || isHighlighted || hovering
+        item.tabID != nil || item.shortcutHint != nil || isHighlighted || hovering
     }
 
     var body: some View {
@@ -585,6 +880,7 @@ private struct LauncherRow: View {
                     .foregroundStyle(p.foreground.color)
                     .lineLimit(1)
                     .truncationMode(.tail)
+                    .help(item.title.isEmpty ? item.url : item.title)
 
                 Spacer(minLength: 12)
 
@@ -601,6 +897,7 @@ private struct LauncherRow: View {
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
         .animation(Motion.state, value: isHighlighted)
+        .animation(Motion.state, value: hovering)
     }
 
     private var trailing: some View {
@@ -609,14 +906,58 @@ private struct LauncherRow: View {
                 .font(Typography.ui(Typography.small, weight: .medium))
                 .foregroundStyle(isHighlighted ? p.foreground.color : p.mutedForeground.color.opacity(0.7))
 
-            Icon(name: "arrow.right", size: 11, weight: .semibold)
-                .foregroundStyle(isHighlighted ? p.popover.color : p.mutedForeground.color.opacity(0.7))
-                .frame(width: 20, height: 20)
-                .background(
-                    RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-                        .fill(isHighlighted ? p.foreground.color : p.foreground.color.opacity(0.07))
-                )
+            LauncherShortcutKeycaps(hint: item.shortcutHint ?? .defaultAction,
+                                    isHighlighted: isHighlighted)
         }
         .fixedSize()
+    }
+}
+
+private struct LauncherShortcutKeycaps: View {
+    let hint: MoriShortcutHint
+    let isHighlighted: Bool
+
+    @Environment(\.palette) private var p
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(hint.labels, id: \.self) { label in
+                Text(label)
+                    .font(Typography.ui(Typography.caption, weight: .semibold))
+                    .foregroundStyle(foreground)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.75)
+                    .frame(width: keyWidth(for: label), height: 20)
+                    .padding(.horizontal, horizontalPadding(for: label))
+                    .background(
+                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                            .fill(background)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                            .strokeBorder(border, lineWidth: 1)
+                    )
+            }
+        }
+    }
+
+    private var foreground: Color {
+        isHighlighted ? p.popover.color : p.mutedForeground.color.opacity(0.75)
+    }
+
+    private var background: Color {
+        isHighlighted ? p.foreground.color : p.foreground.color.opacity(0.07)
+    }
+
+    private var border: Color {
+        isHighlighted ? p.foreground.color.opacity(0.35) : p.foreground.color.opacity(0.1)
+    }
+
+    private func keyWidth(for label: String) -> CGFloat {
+        label.count > 1 ? 22 : 20
+    }
+
+    private func horizontalPadding(for label: String) -> CGFloat {
+        label.count > 1 ? 4 : 0
     }
 }

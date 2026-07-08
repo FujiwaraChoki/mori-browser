@@ -1,13 +1,37 @@
 import SwiftUI
 import AppKit
 
+/// One entry in a tab's back/forward list, for the history popover. `offset` is
+/// relative to the current page (negative = back, positive = forward).
+struct NavHistoryEntry: Identifiable {
+    let id = UUID()
+    let title: String
+    let url: String
+    let offset: Int
+}
+
 /// One browser tab. Owns a native `MoriBrowserView` (a live CEF browser) and
 /// republishes its navigation state for SwiftUI. The native view is created
 /// lazily so background/unopened tabs stay cheap.
 final class BrowserTab: NSObject, ObservableObject, Identifiable {
+    /// What a tab renders. `.web` is a normal CEF-backed page; `.agent` is a
+    /// native full-page Codex thread and never instantiates a browser view.
+    enum Kind { case web, agent }
+
     let id: UUID
 
+    /// Distinguishes web tabs from native agent-thread tabs. `let` because a
+    /// tab's nature never changes after creation.
+    let kind: Kind
+
+    /// The Codex thread backing an `.agent` tab. Owned by the model (not the
+    /// view) so the conversation survives tab switches. `nil` for web tabs.
+    var agent: CodexBrowserAssistant?
+
     @Published var title: String
+    /// A user-chosen name that overrides the page title in the sidebar (Arc's
+    /// "rename tab"). `nil` / empty means fall back to the live page title.
+    @Published var customTitle: String?
     @Published var urlString: String
     @Published var isLoading: Bool = false
     @Published var canGoBack: Bool = false
@@ -35,6 +59,15 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     private static let zoomStep = 0.5
     private var zoomLevel: Double = 0 {
         didSet { zoomPercent = Int((pow(1.2, zoomLevel) * 100).rounded()) }
+    }
+
+    /// The name shown in the sidebar: the user's custom title when set, else the
+    /// live page title.
+    var displayTitle: String {
+        if let custom = customTitle, !custom.trimmingCharacters(in: .whitespaces).isEmpty {
+            return custom
+        }
+        return title
     }
 
     /// The address shown in the omnibox while the user is *not* editing it.
@@ -114,8 +147,9 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         }
     }
 
-    init(id: UUID = UUID(), url: String, title: String = "New Tab") {
+    init(id: UUID = UUID(), url: String, title: String = "New Tab", kind: Kind = .web) {
         self.id = id
+        self.kind = kind
         self.urlString = url
         self.title = title
         super.init()
@@ -166,7 +200,10 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     // MARK: Navigation passthrough
 
     func load(_ url: String) {
+        guard kind == .web else { return }
+        let currentURL = urlString
         let target = MoriURLRewriter.rewrite(url)
+        prepareFaviconForNavigation(to: target, from: currentURL)
         urlString = target
         didFail = false
         failError = ""
@@ -175,18 +212,42 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         realize().loadURL(target)
     }
 
-    func goBack() { browserView.goBack() }
-    func goForward() { browserView.goForward() }
+    // Navigation passthrough. Guarded so they never touch `browserView` on an
+    // agent tab (which would lazily spin up a real CEF browser for a tab that
+    // shows a native Codex thread).
+    func goBack() { guard kind == .web else { return }; browserView.goBack() }
+    func goForward() { guard kind == .web else { return }; browserView.goForward() }
+
+    /// The tab's back/forward navigation entries (for the history popover).
+    /// Reads the live navigation controller; empty for non-web or unrealized
+    /// tabs (no history exists until a browser is realized).
+    func backForwardEntries() -> [NavHistoryEntry] {
+        guard kind == .web, isRealized else { return [] }
+        return browserView.backForwardEntries().compactMap { dict in
+            guard let offset = (dict["offset"] as? NSNumber)?.intValue else { return nil }
+            return NavHistoryEntry(title: (dict["title"] as? String) ?? "",
+                                   url: (dict["url"] as? String) ?? "",
+                                   offset: offset)
+        }
+    }
+
+    /// Navigate to a relative history offset (negative = back, positive = forward).
+    func goToHistoryOffset(_ offset: Int) {
+        guard kind == .web else { return }
+        browserView.go(toHistoryOffset: offset)
+    }
     func reload() {
+        guard kind == .web else { return }
         didFail = false
         browserView.reload()
     }
     func reloadIgnoringCache() {
+        guard kind == .web else { return }
         didFail = false
         browserView.reloadIgnoringCache()
     }
-    func stop() { browserView.stopLoading() }
-    func focus() { browserView.focusBrowser() }
+    func stop() { guard kind == .web else { return }; browserView.stopLoading() }
+    func focus() { guard kind == .web else { return }; browserView.focusBrowser() }
 
     // MARK: Site Boosts (per-site CSS/JS + zaps)
 
@@ -309,10 +370,11 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
         }
     }
 
-    func zoomIn() { zoomLevel += Self.zoomStep; browserView.zoomIn() }
-    func zoomOut() { zoomLevel -= Self.zoomStep; browserView.zoomOut() }
-    func resetZoom() { zoomLevel = 0; browserView.resetZoom() }
+    func zoomIn() { guard kind == .web else { return }; zoomLevel += Self.zoomStep; browserView.zoomIn() }
+    func zoomOut() { guard kind == .web else { return }; zoomLevel -= Self.zoomStep; browserView.zoomOut() }
+    func resetZoom() { guard kind == .web else { return }; zoomLevel = 0; browserView.resetZoom() }
     func setZoomFactor(_ factor: Double) {
+        guard kind == .web else { return }
         let safeFactor = min(max(factor, 0.25), 5.0)
         zoomLevel = log(safeFactor) / log(1.2)
         realize().setZoomFactor(safeFactor)
@@ -321,21 +383,40 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable {
     // MARK: Find-in-page / devtools / print
 
     func find(_ text: String, forward: Bool = true) {
+        guard kind == .web else { return }
         browserView.findText(text, forward: forward)
     }
 
     func stopFind() {
+        guard kind == .web else { return }
         browserView.stopFinding(true)
         findOrdinal = 0
         findCount = 0
     }
 
-    func showDevTools() { browserView.showDevTools() }
-    func toggleDevTools() { browserView.toggleDevTools() }
-    func printPage() { browserView.printPage() }
+    func showDevTools() { guard kind == .web else { return }; browserView.showDevTools() }
+    func toggleDevTools() { guard kind == .web else { return }; browserView.toggleDevTools() }
+    func printPage() { guard kind == .web else { return }; browserView.printPage() }
 
     func close() {
+        // Tear down the Codex thread (cancels its turn, releases any parked
+        // approval, kills the app-server process) before dropping the tab.
+        if let agent {
+            Task { @MainActor in agent.shutdown() }
+        }
         _browserView?.closeBrowser()
+    }
+
+    /// Same-host navigations (reloads, in-site links, the reload after a slept
+    /// tab wakes) keep the current icon. Cross-host or indeterminate ones must
+    /// never show the previous site's icon, so they swap to the destination's
+    /// cached favicon — nil when unknown, falling back to the globe.
+    private func prepareFaviconForNavigation(to url: String, from previousURL: String? = nil) {
+        let nextHost = FaviconStore.host(forPage: url)
+        let previousHost = FaviconStore.host(forPage: previousURL ?? urlString)
+        if nextHost != nil, nextHost == previousHost { return }
+        faviconImage = FaviconStore.shared.image(forPage: url)
+        faviconURL = nil
     }
 }
 
@@ -380,18 +461,16 @@ extension BrowserTab: MoriBrowserViewDelegate {
     }
 
     func browserView(_ view: MoriBrowserView, didLoadFaviconImage image: NSImage?) {
+        guard let image else { return }
         self.faviconImage = image
+        FaviconStore.shared.store(image, forPage: urlString)
     }
 
     func browserView(_ view: MoriBrowserView,
                      didStartNavigationToURL url: String,
                      isRedirect: Bool,
                      userGesture: Bool) {
-        // Drop the previous page's icon (both the decoded image and its URL) so
-        // we don't show a stale favicon for the new page; Chromium re-delivers
-        // one once it resolves.
-        self.faviconImage = nil
-        self.faviconURL = nil
+        prepareFaviconForNavigation(to: url)
         // A real navigation leaves the Reader view behind.
         if readerActive, !isRedirect { readerActive = false }
     }
@@ -400,6 +479,9 @@ extension BrowserTab: MoriBrowserViewDelegate {
         updateURL(url)
         // Inject CSS early to minimize flash; JS waits for the finish callback.
         applyBoosts()
+        // Install the passkey shim as early as possible so it overrides
+        // navigator.credentials before the page invokes WebAuthn (idempotent).
+        installPasskeyShim()
         onDidNavigate?(self, url)
     }
 
@@ -410,6 +492,8 @@ extension BrowserTab: MoriBrowserViewDelegate {
         applyBoosts()
         installContextMenuHook()
         installMediaAgent()
+        // Backstop in case the commit-time injection lost a race.
+        installPasskeyShim()
     }
 
     func browserView(_ view: MoriBrowserView,

@@ -14,17 +14,30 @@ struct Sidebar: View {
     /// than docked. In that mode there's no adjacent web-card float gap to
     /// compensate for, so the row/header padding stays symmetric instead of
     /// trimming the web-card-facing edge.
-    var floating: Bool = false
+    var floating: Bool
 
     /// The tab currently being dragged in the sidebar, shared across all drop
     /// targets so any container can reorder/accept it live. Held here at the top
     /// level and threaded down as a binding.
     @State private var draggingTabID: BrowserTab.ID?
 
-    /// Live width while the resize handle is being dragged. Kept local so each
-    /// drag frame is a cheap in-view update — the persisted (and UserDefaults-
-    /// backed) `settings.sidebarWidth` is only written once, on release.
-    @State private var liveWidth: CGFloat?
+    /// Live width while the resize handle is being dragged. RootView owns this
+    /// value so the sidebar content and its outer layout slot resize together;
+    /// the persisted `settings.sidebarWidth` is only written once, on release.
+    @Binding private var liveWidth: CGFloat?
+    private let allowsResizing: Bool
+
+    init(store: BrowserStore, floating: Bool = false, liveWidth: Binding<CGFloat?>? = nil) {
+        self.store = store
+        self.floating = floating
+        self._liveWidth = liveWidth ?? .constant(nil)
+        self.allowsResizing = liveWidth != nil
+    }
+
+    private var effectiveWidth: CGFloat {
+        (liveWidth ?? settings.sidebarWidth)
+            .clamped(to: BrowserSettings.minSidebarWidth...BrowserSettings.maxSidebarWidth)
+    }
 
     /// The web card floats with an 8pt gap on its sidebar-facing edge. Trim the
     /// row padding by that gap on the same side so tab cards sit evenly inset
@@ -90,12 +103,24 @@ struct Sidebar: View {
                     .transition(.opacity)
                 }
                 .clipped()
+                // Keyboard navigation: once the sidebar holds focus (e.g. after
+                // clicking a tab in it), ↑/↓ walk the visible rows, →/← expand /
+                // collapse the selected tab's folder, and Space toggles it. Scoped
+                // to focus via `.focusable()`, so it never steals arrows from the
+                // page or a focused text field.
+                .focusable()
+                .focusEffectDisabled()
+                .onKeyPress(.upArrow) { store.navigateSidebar(by: -1); return .handled }
+                .onKeyPress(.downArrow) { store.navigateSidebar(by: 1); return .handled }
+                .onKeyPress(.leftArrow) { store.setSelectedTabFolderExpanded(false); return .handled }
+                .onKeyPress(.rightArrow) { store.setSelectedTabFolderExpanded(true); return .handled }
+                .onKeyPress(.space) { store.toggleSelectedTabFolder(); return .handled }
                 SidebarMediaSection(store: store, media: store.media)
             }
             SidebarBottomBar(store: store)
         }
         .animation(Motion.reveal, value: store.contextCreationVisible)
-        .frame(width: liveWidth ?? settings.sidebarWidth)
+        .frame(width: effectiveWidth)
         .contentShape(Rectangle())
         .contextMenu { SidebarContextMenu(store: store) }
         .onDrop(of: SidebarTabDrag.acceptedTypes,
@@ -107,8 +132,10 @@ struct Sidebar: View {
         // Resize handle on the inner (web-card-facing) edge: leading when the
         // sidebar sits on the right, trailing when it sits on the left.
         .overlay(alignment: settings.sidebarPosition == .right ? .leading : .trailing) {
-            SidebarResizeHandle(store: store, position: settings.sidebarPosition,
-                                liveWidth: $liveWidth)
+            if allowsResizing {
+                SidebarResizeHandle(store: store, position: settings.sidebarPosition,
+                                    liveWidth: $liveWidth)
+            }
         }
         // No own background: the unified chrome surface (set on the root) shows
         // through, so the sidebar and the card's inset gaps are the same color.
@@ -124,7 +151,9 @@ private struct SidebarResizeHandle: View {
     let position: SidebarPosition
     @Binding var liveWidth: CGFloat?
     @ObservedObject private var settings = BrowserSettings.shared
+    @Environment(\.palette) private var p
     @State private var dragStartWidth: CGFloat?
+    @State private var hovering = false
 
     private static let hitWidth: CGFloat = 8
 
@@ -132,9 +161,25 @@ private struct SidebarResizeHandle: View {
         Rectangle()
             .fill(Color.clear)
             .frame(width: Self.hitWidth)
+            // A faint grip appears on hover (and while dragging) so the handle is
+            // discoverable instead of an invisible strip.
+            .overlay(
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(p.sidebarForeground.color.opacity(0.28))
+                    .frame(width: 3)
+                    .opacity(hovering || store.isResizingSidebar ? 1 : 0)
+                    .animation(Motion.state, value: hovering)
+            )
             .contentShape(Rectangle())
             .onHover { inside in
+                hovering = inside
                 if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() }
+            }
+            // Double-click resets to the default width (standard divider gesture).
+            .onTapGesture(count: 2) {
+                withAnimation(Motion.snappy) {
+                    settings.sidebarWidth = BrowserSettings.defaultSidebarWidth
+                }
             }
             .gesture(
                 DragGesture(minimumDistance: 1)
@@ -259,16 +304,16 @@ private struct SidebarHeader: View {
                 IconButton(systemName: settings.sidebarPosition.symbol, size: 28) {
                     store.toggleSidebar()
                 }
-                    .help("Toggle sidebar")
+                    .help("Hide Sidebar")
                 Spacer()
-                IconButton(systemName: "arrow.backward", size: 28,
-                           disabled: !tab.canGoBack) { store.goBack() }
-                IconButton(systemName: "arrow.forward", size: 28,
-                           disabled: !tab.canGoForward) { store.goForward() }
+                NavHistoryButton(store: store, tab: tab, forward: false)
+                NavHistoryButton(store: store, tab: tab, forward: true)
                 IconButton(systemName: tab.isLoading ? "xmark" : "arrow.clockwise",
                            size: 28) {
                     tab.isLoading ? store.stop() : store.reload()
                 }
+                    .help(tab.isLoading ? "Stop" : "Reload")
+                LibraryButton(store: store)
                 DownloadsButton(downloads: downloads, isOpen: $showDownloads)
             }
 
@@ -293,6 +338,134 @@ private struct SidebarSeparator: View {
         Rectangle()
             .fill(p.sidebarForeground.color.opacity(0.12))
             .frame(height: 1)
+    }
+}
+
+// MARK: - Back / forward with history
+
+/// A back or forward navigation button that also surfaces recent history: tap to
+/// go one step, right-click (or long-press) for the recent entries in that
+/// direction — the small browser muscle memory Arc relies on.
+///
+/// The long-press opens the same list as a popover. It's a *plain* surface (not
+/// an `IconButton`) so a held press doesn't also fire a one-step navigation on
+/// release; tap and long-press are disambiguated by the gestures below.
+private struct NavHistoryButton: View {
+    @ObservedObject var store: BrowserStore
+    @ObservedObject var tab: BrowserTab
+    let forward: Bool
+
+    @Environment(\.palette) private var p
+    @State private var hovering = false
+    @State private var showHistory = false
+    @State private var entries: [NavHistoryEntry] = []
+
+    private var enabled: Bool { forward ? tab.canGoForward : tab.canGoBack }
+
+    var body: some View {
+        Icon(name: forward ? "arrow.forward" : "arrow.backward", size: 16)
+            .frame(width: 28, height: 28)
+            .foregroundStyle(p.foreground.color.opacity(enabled ? 0.85 : 0.4))
+            .background(
+                RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
+                    .fill(hovering && enabled ? p.foreground.color.opacity(0.05) : .clear)
+            )
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            .onTapGesture {
+                guard enabled else { return }
+                forward ? store.goForward() : store.goBack()
+            }
+            .simultaneousGesture(
+                LongPressGesture(minimumDuration: 0.3).onEnded { _ in
+                    openHistory()
+                }
+            )
+            .help(forward ? "Forward — right-click for history" : "Back — right-click for history")
+            .contextMenu {
+                let items = directionEntries()
+                if items.isEmpty {
+                    Text("No history")
+                } else {
+                    ForEach(items) { entry in
+                        Button(menuTitle(entry)) { tab.goToHistoryOffset(entry.offset) }
+                    }
+                }
+            }
+            .popover(isPresented: $showHistory, arrowEdge: .bottom) {
+                NavHistoryPopover(entries: entries) { offset in
+                    showHistory = false
+                    tab.goToHistoryOffset(offset)
+                }
+                .environment(\.palette, p)
+            }
+    }
+
+    private func openHistory() {
+        entries = directionEntries()
+        if !entries.isEmpty { showHistory = true }
+    }
+
+    /// Entries in this button's direction, nearest-first, capped for sanity.
+    private func directionEntries() -> [NavHistoryEntry] {
+        let all = tab.backForwardEntries()
+        let filtered = forward
+            ? all.filter { $0.offset > 0 }.sorted { $0.offset < $1.offset }
+            : all.filter { $0.offset < 0 }.sorted { $0.offset > $1.offset }
+        return Array(filtered.prefix(12))
+    }
+
+    private func menuTitle(_ e: NavHistoryEntry) -> String {
+        let t = e.title.isEmpty ? e.url : e.title
+        return t.count > 60 ? String(t.prefix(60)) + "…" : t
+    }
+}
+
+private struct NavHistoryPopover: View {
+    let entries: [NavHistoryEntry]
+    let onPick: (Int) -> Void
+    @Environment(\.palette) private var p
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            ForEach(entries) { entry in
+                NavHistoryRow(entry: entry) { onPick(entry.offset) }
+            }
+        }
+        .padding(5)
+        .frame(width: 288)
+    }
+}
+
+private struct NavHistoryRow: View {
+    let entry: NavHistoryEntry
+    let action: () -> Void
+    @Environment(\.palette) private var p
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Favicon(icon: nil, page: entry.url, size: 15)
+                Text(entry.title.isEmpty ? entry.url : entry.title)
+                    .font(Typography.ui(Typography.base))
+                    .foregroundStyle(hovering ? p.primaryForeground.color : p.popoverForeground.color)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 6)
+            }
+            .padding(.horizontal, 9)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                    .fill(hovering ? p.primary.color : .clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(Motion.snappy, value: hovering)
+        .help(entry.title.isEmpty ? entry.url : entry.title)
     }
 }
 
@@ -380,12 +553,33 @@ private struct PinnedTile: View {
                         transaction.animation = nil
                     }
             )
+            // Loading microstate, mirroring the tab row so pinned tiles read the
+            // same. Bottom-leading, clear of the favicon's center.
+            .overlay(alignment: .bottomLeading) { statusBadge }
             .contentShape(Rectangle())
             .pressShrink(perform: onSelect) { isPressing in
                 pressing = isPressing
             }
-            .onHover { hovering = $0 }
-            .help(tab.title)
+            .onHover { inside in withAnimation(Motion.snappy) { hovering = inside } }
+            .help(hoverHelp)
+    }
+
+    @ViewBuilder private var statusBadge: some View {
+        if tab.isLoading {
+            Circle()
+                .fill(p.statusInfoFg.color)
+                .frame(width: 6, height: 6)
+                .padding(5)
+        }
+    }
+
+    /// Native tooltip: the tab name, then its host/path on a second line.
+    private var hoverHelp: String {
+        let name = tab.displayTitle
+        guard let u = URL(string: tab.urlString),
+              let host = u.host, !host.isEmpty else { return name }
+        let path = u.path.isEmpty || u.path == "/" ? "" : u.path
+        return "\(name)\n\(host)\(path)"
     }
 
     private var tileFill: Color {
@@ -449,6 +643,7 @@ private struct FolderRow: View {
                 // Clicking the folder icon itself opens the icon picker
                 // (Arc behavior); the rest of the row still toggles.
                 .onTapGesture { showIconPicker = true }
+                .help("Change icon")
                 .popover(isPresented: $showIconPicker, arrowEdge: .bottom) {
                     FolderIconPicker(store: store, folder: folder,
                                      isPresented: $showIconPicker)
@@ -465,6 +660,10 @@ private struct FolderRow: View {
                         .onChange(of: nameFocused) { _, focused in
                             if !focused { commitRename() }
                         }
+                        .onKeyPress(.escape) {
+                            isEditing = false   // commitRename() guards on isEditing, so the blur no-ops → cancel
+                            return .handled
+                        }
                 } else {
                     Text(folder.name)
                         .font(Typography.ui(Typography.base, weight: .medium))
@@ -478,8 +677,15 @@ private struct FolderRow: View {
             .frame(height: 32)
             .background(
                 RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
-                    .fill((hovering || headerDropTargeted) ? p.foreground.color.opacity(0.05) : .clear)
+                    .fill(headerDropTargeted ? p.primary.color.opacity(0.14)
+                          : hovering ? p.foreground.color.opacity(0.05) : .clear)
             )
+            // An accent ring on drag-over signals "drop into this folder".
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.lg, style: .continuous)
+                    .strokeBorder(p.primary.color.opacity(headerDropTargeted ? 0.7 : 0), lineWidth: 1.5)
+            )
+            .animation(Motion.snappy, value: headerDropTargeted)
             .contentShape(Rectangle())
             .onTapGesture { if !isEditing { store.toggleFolder(folder.id) } }
             .onHover { hovering = $0 }
@@ -506,8 +712,12 @@ private struct FolderRow: View {
                     TabRow(
                         tab: tab,
                         isSelected: tab.id == store.selectedTabID,
-                        onSelect: { store.selectTab(tab.id) },
-                        onClose: { store.closeTab(tab.id, allowFolderRemoval: true) }
+                        onSelect: { store.handleSidebarTabClick(tab.id) },
+                        onClose: { store.closeTab(tab.id, allowFolderRemoval: true) },
+                        pendingRename: store.tabIDPendingRename == tab.id,
+                        isMultiSelected: store.isMultiSelected(tab.id),
+                        onRename: { store.renameTab(tab.id, to: $0) },
+                        onRenameConsumed: { store.consumeTabRenameRequest(for: tab.id) }
                     )
                     .padding(.leading, 16)
                     .transition(.tabClose)
@@ -567,8 +777,12 @@ private struct LooseTabList: View {
                 TabRow(
                     tab: tab,
                     isSelected: tab.id == store.selectedTabID,
-                    onSelect: { store.selectTab(tab.id) },
-                    onClose: { store.closeTab(tab.id) }
+                    onSelect: { store.handleSidebarTabClick(tab.id) },
+                    onClose: { store.closeTab(tab.id) },
+                    pendingRename: store.tabIDPendingRename == tab.id,
+                    isMultiSelected: store.isMultiSelected(tab.id),
+                    onRename: { store.renameTab(tab.id, to: $0) },
+                    onRenameConsumed: { store.consumeTabRenameRequest(for: tab.id) }
                 )
                 .transition(.tabClose)
                 .contextMenu { TabMenu(store: store, tab: tab) }
@@ -611,10 +825,18 @@ private struct SidebarDropCatchZone: View {
 
     var body: some View {
         RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .fill(isTargeted ? p.sidebarForeground.color.opacity(0.08) : .clear)
+            .fill(isTargeted ? p.primary.color.opacity(0.14) : .clear)
+            // A dashed accent outline reads as an explicit insertion target,
+            // not just a faint wash.
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(p.primary.color.opacity(isTargeted ? 0.7 : 0),
+                                  style: StrokeStyle(lineWidth: 1.5, dash: [4, 3]))
+            )
             .frame(maxWidth: .infinity)
             .frame(height: height)
             .contentShape(Rectangle())
+            .animation(Motion.snappy, value: isTargeted)
     }
 }
 
@@ -656,6 +878,11 @@ struct TabMenu: View {
     let tab: BrowserTab
 
     var body: some View {
+        Button("Rename…") { store.beginTabRename(tab.id) }
+        if tab.customTitle != nil {
+            Button("Reset Name") { store.renameTab(tab.id, to: "") }
+        }
+        Divider()
         Button(store.isPinned(tab.id) ? "Unpin" : "Pin") {
             store.togglePin(tab.id)
         }
@@ -666,12 +893,32 @@ struct TabMenu: View {
                 }
             }
         }
+        if store.isMultiSelected(tab.id) {
+            Button("New Folder with \(store.multiSelectedTabIDs.count) Selected Tabs") {
+                store.newFolderWithSelectedTabs()
+            }
+        }
         Button("New Folder with Tab") {
             let folder = store.addFolderForEditing()
             store.addTab(tab.id, toFolder: folder.id)
         }
         if store.folders.contains(where: { $0.tabIDs.contains(tab.id) }) {
             Button("Remove from Folder") { store.removeTabFromFolders(tab.id) }
+        }
+        if !moveDestinations.isEmpty {
+            Menu("Move to Space") {
+                ForEach(moveDestinations) { context in
+                    Button {
+                        store.moveTab(tab.id, toContext: context.id)
+                    } label: {
+                        Label {
+                            Text(context.name)
+                        } icon: {
+                            Icon(name: context.symbol, size: 12)
+                        }
+                    }
+                }
+            }
         }
         Divider()
         Button("Always Open in This Space") { store.routeHostToActiveSpace(tab.id) }
@@ -707,6 +954,11 @@ struct TabMenu: View {
             store.closeTab(tab.id, allowFolderRemoval: true)
         }
     }
+
+    private var moveDestinations: [BrowserContext] {
+        let sourceID = store.contexts.first { $0.tabIDs.contains(tab.id) }?.id
+        return store.contexts.filter { $0.id != sourceID }
+    }
 }
 
 // MARK: - Bottom bar
@@ -725,7 +977,7 @@ private struct SidebarBottomBar: View {
                     IconButton(systemName: "mori",
                                kind: store.aiPanelVisible ? .primary : .ghost,
                                size: 30) { store.toggleAIPanel() }
-                        .help("Codex AI panel")
+                        .help(store.aiPanelVisible ? "Hide AI Panel" : "Show AI Panel")
                 }
                 Spacer()
                 IconButton(systemName: "gearshape", size: 30) { store.toggleSettings() }
@@ -750,6 +1002,7 @@ private struct ContextHeaderRow: View {
     @Environment(\.palette) private var p
     @State private var isEditing = false
     @State private var draftName = ""
+    @State private var deleteConfirmation: ContextDeleteConfirmation?
     @FocusState private var nameFocused: Bool
 
     var body: some View {
@@ -766,6 +1019,10 @@ private struct ContextHeaderRow: View {
                     .onChange(of: nameFocused) { _, focused in
                         if !focused { commitRename() }
                     }
+                    .onKeyPress(.escape) {
+                        isEditing = false
+                        return .handled
+                    }
             } else {
                 Text(store.activeContext.name)
                     .font(Typography.ui(Typography.label, weight: .semibold))
@@ -778,15 +1035,45 @@ private struct ContextHeaderRow: View {
         .frame(height: 20)
         .contentShape(Rectangle())
         .onTapGesture(count: 2, perform: beginRename)
+        .onChange(of: store.contextRenamePending) { _, pending in
+            if pending {
+                beginRename()
+                store.contextRenamePending = false
+            }
+        }
         .contextMenu {
             Button("Rename") { beginRename() }
             Button("New Context…") { store.contextCreationVisible = true }
             Divider()
             Button("Delete Context", role: .destructive) {
-                store.deleteContext(store.activeContextID)
+                requestDelete(store.activeContext)
             }
             .disabled(store.contexts.count <= 1)
         }
+        .confirmationDialog(deleteConfirmation?.title ?? "Delete Space?",
+                            isPresented: Binding(
+                                get: { deleteConfirmation != nil },
+                                set: { if !$0 { deleteConfirmation = nil } }),
+                            titleVisibility: .visible,
+                            presenting: deleteConfirmation) { request in
+            Button("Delete Space", role: .destructive) {
+                store.deleteContext(request.id)
+                deleteConfirmation = nil
+            }
+        } message: { request in
+            Text(request.message)
+        }
+    }
+
+    private func requestDelete(_ context: BrowserContext) {
+        let count = store.tabCount(inContext: context.id)
+        guard count > 0 else {
+            store.deleteContext(context.id)
+            return
+        }
+        deleteConfirmation = ContextDeleteConfirmation(id: context.id,
+                                                       name: context.name,
+                                                       tabCount: count)
     }
 
     private func beginRename() {

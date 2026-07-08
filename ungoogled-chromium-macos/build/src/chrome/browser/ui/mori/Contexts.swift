@@ -120,6 +120,7 @@ private struct ContextChip: View {
     @Environment(\.palette) private var p
     @State private var hovering = false
     @State private var showEditor = false
+    @State private var deleteConfirmation: ContextDeleteConfirmation?
 
     var body: some View {
         Button {
@@ -149,14 +150,38 @@ private struct ContextChip: View {
             }
             Divider()
             Button("Delete Context", role: .destructive) {
-                store.deleteContext(context.id)
+                requestDelete()
             }
             .disabled(store.contexts.count <= 1)
+        }
+        .confirmationDialog(deleteConfirmation?.title ?? "Delete Space?",
+                            isPresented: Binding(
+                                get: { deleteConfirmation != nil },
+                                set: { if !$0 { deleteConfirmation = nil } }),
+                            titleVisibility: .visible,
+                            presenting: deleteConfirmation) { request in
+            Button("Delete Space", role: .destructive) {
+                store.deleteContext(request.id)
+                deleteConfirmation = nil
+            }
+        } message: { request in
+            Text(request.message)
         }
         .popover(isPresented: $showEditor, arrowEdge: .bottom) {
             ContextEditor(store: store, contextID: context.id)
                 .environment(\.palette, p)
         }
+    }
+
+    private func requestDelete() {
+        let count = store.tabCount(inContext: context.id)
+        guard count > 0 else {
+            store.deleteContext(context.id)
+            return
+        }
+        deleteConfirmation = ContextDeleteConfirmation(id: context.id,
+                                                       name: context.name,
+                                                       tabCount: count)
     }
 }
 
@@ -166,6 +191,7 @@ private struct ContextEditor: View {
     let contextID: BrowserContext.ID
 
     @Environment(\.palette) private var p
+    @FocusState private var nameFocused: Bool
     @State private var draftName = ""
 
     private var context: BrowserContext? {
@@ -186,7 +212,11 @@ private struct ContextEditor: View {
                             .fill(p.foreground.color.opacity(0.06))
                     )
                     .onSubmit(commitRename)
-                    .onAppear { draftName = context.name }
+                    .focused($nameFocused)
+                    .onAppear {
+                        draftName = context.name
+                        DispatchQueue.main.async { nameFocused = true }
+                    }
 
                 GlyphGrid(selected: context.symbol) { asset in
                     store.setContextSymbol(contextID, symbol: asset)
@@ -253,7 +283,7 @@ struct CompactThemeStrip: View {
                 } action: {
                     onPick(.solid(RGB(TokenColor(hex: hex))))
                 }
-                .help(hex)
+                .help(SolidPalette.names[hex] ?? hex)
             }
         }
     }
@@ -367,7 +397,7 @@ private struct PlusMenuRow: View {
         .buttonStyle(.plain)
         .disabled(disabled)
         .opacity(disabled ? 0.4 : 1)
-        .onHover { hovering = $0 }
+        .onHover { if !disabled { hovering = $0 } }
     }
 }
 
@@ -408,7 +438,7 @@ struct CreateContextView: View {
                     HStack(spacing: 8) {
                         Icon(name: symbol, size: 14)
                             .foregroundStyle(p.mutedForeground.color)
-                        TextField("Context name...", text: $name)
+                        TextField("Context name…", text: $name)
                             .textFieldStyle(.plain)
                             .font(Typography.ui(Typography.base, weight: .medium))
                             .foregroundStyle(p.sidebarForeground.color)

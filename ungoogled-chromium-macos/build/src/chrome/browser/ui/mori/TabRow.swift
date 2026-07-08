@@ -15,27 +15,59 @@ struct TabRow: View {
     let isSelected: Bool
     let onSelect: () -> Void
     let onClose: () -> Void
+    /// True when the store has flagged this row to enter inline rename.
+    var pendingRename: Bool = false
+    /// True when this row is part of a ⌘/⇧-click multi-selection.
+    var isMultiSelected: Bool = false
+    /// Commit a new custom title (empty clears the override).
+    var onRename: (String) -> Void = { _ in }
+    /// Tell the store the pending-rename request has been consumed.
+    var onRenameConsumed: () -> Void = {}
 
     @Environment(\.palette) private var p
     @Environment(\.colorScheme) private var scheme
     @State private var hovering = false
     @State private var pressing = false
     @State private var closeHovering = false
+    @State private var isEditing = false
+    @State private var draftName = ""
+    @FocusState private var nameFocused: Bool
 
     var body: some View {
         HStack(spacing: 9) {
-            Favicon(icon: tab.faviconURL, page: tab.urlString,
-                    image: tab.faviconImage,
-                    size: 15,
-                    active: isSelected || hovering)
-                .opacity(tab.isAsleep ? 0.5 : 1)
+            if tab.kind == .agent, let agent = tab.agent {
+                AgentTabGlyph(assistant: agent)
+            } else {
+                Favicon(icon: tab.faviconURL, page: tab.urlString,
+                        image: tab.faviconImage,
+                        size: 15,
+                        active: isSelected || hovering)
+                    .opacity(tab.isAsleep ? 0.5 : 1)
+            }
 
-            Text(tab.title)
-                .font(Typography.ui(Typography.base))
-                .foregroundStyle(isSelected ? p.sidebarForeground.color
-                                            : p.sidebarForeground.color.opacity(tab.isAsleep ? 0.5 : 0.78))
-                .lineLimit(1)
-                .truncationMode(.tail)
+            if isEditing {
+                TextField("Tab name", text: $draftName)
+                    .textFieldStyle(.plain)
+                    .font(Typography.ui(Typography.base))
+                    .foregroundStyle(p.sidebarForeground.color)
+                    .focused($nameFocused)
+                    .onSubmit(commitRename)
+                    .onChange(of: nameFocused) { _, focused in
+                        if !focused { commitRename() }
+                    }
+                    .onKeyPress(.escape) {
+                        isEditing = false
+                        return .handled
+                    }
+            } else {
+                Text(tab.displayTitle)
+                    .font(Typography.ui(Typography.base))
+                    .foregroundStyle(isSelected ? p.sidebarForeground.color
+                                                : p.sidebarForeground.color.opacity(tab.isAsleep ? 0.5 : 0.78))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(tab.displayTitle)
+            }
 
             Spacer(minLength: 0)
 
@@ -85,15 +117,38 @@ struct TabRow: View {
                     transaction.animation = nil
                 }
         )
+        // Multi-selection ring (⌘/⇧-click) so a batch reads as a group.
+        .overlay(
+            RoundedRectangle(cornerRadius: TabSurface.radius, style: .continuous)
+                .strokeBorder(p.primary.color.opacity(isMultiSelected ? 0.8 : 0), lineWidth: 1.5)
+        )
         .contentShape(Rectangle())
-        .pressShrink(perform: onSelect) { isPressing in
+        .pressShrink(perform: { if !isEditing { onSelect() } }) { isPressing in
             pressing = isPressing
         }
         .onHover { hovering = $0 }
+        .onMiddleClick { if !isEditing { onClose() } }
+        .onAppear { if pendingRename { beginRename() } }
+        .onChange(of: pendingRename) { _, now in
+            if now { beginRename() }
+        }
     }
 
     private var showsCloseButton: Bool {
-        isSelected || hovering
+        (isSelected || hovering) && !isEditing
+    }
+
+    private func beginRename() {
+        draftName = tab.displayTitle
+        isEditing = true
+        DispatchQueue.main.async { nameFocused = true }
+        onRenameConsumed()
+    }
+
+    private func commitRename() {
+        guard isEditing else { return }
+        onRename(draftName)
+        isEditing = false
     }
 
     private var backgroundFill: Color {
@@ -102,5 +157,27 @@ struct TabRow: View {
         }
         if hovering { return TabSurface.hoverFill(scheme) }
         return .clear
+    }
+}
+
+/// Leading glyph for an agent tab: a sparkles mark that becomes a spinner while
+/// the agent is working. Observes the tab's assistant directly (a separate
+/// ObservableObject from the tab) so the working state stays live in the row.
+private struct AgentTabGlyph: View {
+    @ObservedObject var assistant: CodexBrowserAssistant
+    @Environment(\.palette) private var p
+
+    var body: some View {
+        ZStack {
+            if assistant.isWorking {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.55)
+            } else {
+                Icon(name: "sparkles", size: 15)
+                    .foregroundStyle(p.accent.color)
+            }
+        }
+        .frame(width: 15, height: 15)
     }
 }

@@ -6,6 +6,10 @@ import Combine
 final class BrowserStore: ObservableObject {
     @Published var tabs: [BrowserTab] = []
     @Published var selectedTabID: BrowserTab.ID?
+    /// Extra tabs selected alongside `selectedTabID` via ⌘/⇧-click in the
+    /// sidebar, for batch actions (e.g. "New Folder with Selected Tabs"). Empty
+    /// when there's no active multi-selection.
+    @Published var multiSelectedTabIDs: Set<BrowserTab.ID> = []
     @Published var sidebarVisible: Bool
     /// True while the sidebar's resize handle is being dragged. The web card
     /// freezes its (expensive, async) CEF resize and shows a smooth cover for
@@ -33,6 +37,9 @@ final class BrowserStore: ObservableObject {
     @Published var contextMenu: WebContextMenuRequest?
     /// True while the drag-to-select screenshot region picker is armed.
     @Published var captureMode: Bool = false
+    /// Native page-action sheet shown when Chromium asks Mori to present a QR
+    /// code bubble.
+    @Published var qrCodeSheet: QRCodeSheet?
     /// Seeds the launcher's search field when it opens (e.g. the current URL when
     /// invoked from the address bar). Empty for a blank ⌘T launcher.
     var launcherPrefill: String = ""
@@ -90,12 +97,21 @@ final class BrowserStore: ObservableObject {
     /// Folder row that should enter rename mode as soon as it renders.
     @Published var folderIDPendingRename: TabFolder.ID?
 
+    /// Tab row that should enter inline rename as soon as it renders (set by the
+    /// "Rename" context-menu item and the command palette).
+    @Published var tabIDPendingRename: BrowserTab.ID?
+
+    /// Flips true to ask the sidebar's context header to enter inline rename
+    /// (the command palette's "Rename Space"). The header consumes it.
+    @Published var contextRenamePending: Bool = false
+
     /// Mirrors theme edits (made through the existing pickers, which write
     /// `settings.gradientTheme`) back into the active context.
     private var themeMirror: AnyCancellable?
     /// Keeps the assistant surface closed while the user-level AI integration
     /// preference is off.
     private var aiIntegrationMirror: AnyCancellable?
+    private var sidePanelAssistantStorage: CodexBrowserAssistant?
 
     /// Shared, persisted user preferences.
     let settings = BrowserSettings.shared
@@ -110,12 +126,21 @@ final class BrowserStore: ObservableObject {
         let url: String
         let title: String
         let closedAt: Date
+        // Where it lived, so Undo / Reopen restores it in place rather than at
+        // the end of the active context.
+        var contextID: BrowserContext.ID? = nil
+        var tabIndex: Int? = nil       // index within context.tabIDs
+        var pinnedIndex: Int? = nil    // index within context.pinnedTabIDs, if it was pinned
+        var folderID: TabFolder.ID? = nil
+        var folderIndex: Int? = nil    // index within the folder's tabIDs
+        var customTitle: String? = nil // user-chosen name, preserved across undo
     }
     private var closedTabSessions: [ClosedTabSession] = []
     private var notificationObservers: [NSObjectProtocol] = []
     private let sessionFileURL: URL
     private var sessionSaveScheduled = false
     private var isRestoringSession = false
+    private static let currentSessionVersion = 2
 
     /// Repeating timer that drives auto-sleep and auto-archive (see
     /// TabMaintenance.swift). Retained here for the lifetime of the store.
@@ -125,6 +150,11 @@ final class BrowserStore: ObservableObject {
     /// rebroadcasts its state to `MediaController` (see MediaAgentScripts.swift).
     var mediaPollTimer: Timer?
 
+    /// Repeating timer that drains queued WebAuthn requests from each live web
+    /// tab's passkey shim and routes them to the native authenticator (see
+    /// PasskeyBridge.swift).
+    var passkeyPollTimer: Timer?
+
     private struct PersistedTab: Codable {
         var id: UUID
         var url: String
@@ -132,9 +162,12 @@ final class BrowserStore: ObservableObject {
         /// Last known favicon URL, so a restored-but-unopened tab can show its
         /// real icon (via the remote-load path) without realizing a CEF browser.
         var faviconURL: String?
+        /// User-chosen tab name (Arc-style rename), if any.
+        var customTitle: String? = nil
     }
 
     private struct PersistedSession: Codable {
+        var version: Int
         var tabs: [PersistedTab]
         var selectedTabID: UUID?
         // Legacy (pre-contexts) fields — optional so v2 files omit them and v1
@@ -146,6 +179,51 @@ final class BrowserStore: ObservableObject {
         // Contexts (v2).
         var contexts: [BrowserContext]? = nil
         var activeContextID: UUID? = nil
+
+        enum CodingKeys: String, CodingKey {
+            case version
+            case tabs
+            case selectedTabID
+            case pinnedTabIDs
+            case folders
+            case spaceName
+            case spaceEmoji
+            case contexts
+            case activeContextID
+        }
+
+        init(version: Int = BrowserStore.currentSessionVersion,
+             tabs: [PersistedTab],
+             selectedTabID: UUID?,
+             pinnedTabIDs: [UUID]? = nil,
+             folders: [TabFolder]? = nil,
+             spaceName: String? = nil,
+             spaceEmoji: String? = nil,
+             contexts: [BrowserContext]? = nil,
+             activeContextID: UUID? = nil) {
+            self.version = version
+            self.tabs = tabs
+            self.selectedTabID = selectedTabID
+            self.pinnedTabIDs = pinnedTabIDs
+            self.folders = folders
+            self.spaceName = spaceName
+            self.spaceEmoji = spaceEmoji
+            self.contexts = contexts
+            self.activeContextID = activeContextID
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            version = try container.decodeIfPresent(Int.self, forKey: .version) ?? 1
+            tabs = try container.decode([PersistedTab].self, forKey: .tabs)
+            selectedTabID = try container.decodeIfPresent(UUID.self, forKey: .selectedTabID)
+            pinnedTabIDs = try container.decodeIfPresent([UUID].self, forKey: .pinnedTabIDs)
+            folders = try container.decodeIfPresent([TabFolder].self, forKey: .folders)
+            spaceName = try container.decodeIfPresent(String.self, forKey: .spaceName)
+            spaceEmoji = try container.decodeIfPresent(String.self, forKey: .spaceEmoji)
+            contexts = try container.decodeIfPresent([BrowserContext].self, forKey: .contexts)
+            activeContextID = try container.decodeIfPresent(UUID.self, forKey: .activeContextID)
+        }
     }
 
     /// The homepage, sourced from user settings.
@@ -203,6 +281,7 @@ final class BrowserStore: ObservableObject {
         installExtensionCommandSmokeIfNeeded()
         startTabMaintenance()
         startMediaPolling()
+        startPasskeyPolling()
     }
 
     /// Smoke-test hook: fire extension keyboard commands shortly after launch
@@ -232,6 +311,22 @@ final class BrowserStore: ObservableObject {
         tabs.first { $0.id == selectedTabID }
     }
 
+    /// The selected tab iff it's a real web tab — `nil` while a native agent
+    /// thread is foreground. Use for web-only operations (realize/focus/find)
+    /// so an agent tab is never treated like a page.
+    var selectedWebTab: BrowserTab? {
+        selectedTab.flatMap { $0.kind == .web ? $0 : nil }
+    }
+
+    /// The web tab an agent's tool calls should act on when none is named: the
+    /// selected web tab, else the most-recently-used web tab, else the first web
+    /// tab. Never an agent thread's own (non-web) tab.
+    var agentWebTarget: BrowserTab? {
+        if let web = selectedWebTab { return web }
+        let webTabs = tabs.filter { $0.kind == .web }
+        return webTabs.max { $0.lastAccessedAt < $1.lastAccessedAt } ?? webTabs.first
+    }
+
     var shouldAutoFocusWebContent: Bool {
         !launcherVisible &&
             !settingsVisible &&
@@ -253,9 +348,14 @@ final class BrowserStore: ObservableObject {
 
     @discardableResult
     private func restoreSession() -> Bool {
-        guard let data = try? Data(contentsOf: sessionFileURL),
-              let decoded = try? JSONDecoder().decode(PersistedSession.self, from: data)
-        else { return false }
+        guard let data = try? Data(contentsOf: sessionFileURL) else { return false }
+        let decoded: PersistedSession
+        do {
+            decoded = try JSONDecoder().decode(PersistedSession.self, from: data)
+        } catch {
+            backupUnreadableSession()
+            return false
+        }
 
         let restoredTabs = decoded.tabs
             .filter { !$0.url.isEmpty }
@@ -265,6 +365,7 @@ final class BrowserStore: ObservableObject {
                 // Seed the last-known icon so the tab shows it immediately,
                 // before (or without) the browser ever being realized.
                 tab.faviconURL = persisted.faviconURL
+                tab.customTitle = persisted.customTitle
                 return tab
             }
         guard !restoredTabs.isEmpty else { return false }
@@ -314,6 +415,17 @@ final class BrowserStore: ObservableObject {
         return true
     }
 
+    private func backupUnreadableSession() {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let stamp = formatter.string(from: Date())
+            .replacingOccurrences(of: ":", with: "-")
+        let backupURL = sessionFileURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("session.backup-\(stamp).json")
+        try? FileManager.default.copyItem(at: sessionFileURL, to: backupURL)
+    }
+
     /// Post-restore invariants: at least one context exists, the active id is
     /// valid, and every live tab belongs to exactly one context.
     private func ensureContextIntegrity() {
@@ -350,26 +462,37 @@ final class BrowserStore: ObservableObject {
     }
 
     private func saveSession() {
+        // Agent threads are ephemeral per launch: they have no real URL and
+        // aren't trivially restorable, so they're excluded from the session and
+        // scrubbed from every context/folder/pinned list. We still save when only
+        // agent tabs remain (persisting an empty web set) so that closing the
+        // last web tab is durably recorded — restore falls back to a fresh tab on
+        // an empty session. Only skip when there are no tabs at all.
         guard !tabs.isEmpty else { return }
-        let liveIDs = Set(tabs.map(\.id))
+        let webTabs = tabs.filter { $0.kind == .web }
+        let webIDs = Set(webTabs.map(\.id))
         var snapshot = contexts.map { context in
             var copy = context
-            copy.tabIDs = copy.tabIDs.filter { liveIDs.contains($0) }
-            copy.pinnedTabIDs = copy.pinnedTabIDs.filter { liveIDs.contains($0) }
+            copy.tabIDs = copy.tabIDs.filter { webIDs.contains($0) }
+            copy.pinnedTabIDs = copy.pinnedTabIDs.filter { webIDs.contains($0) }
             copy.folders = copy.folders.map { folder in
                 var f = folder
-                f.tabIDs = f.tabIDs.filter { liveIDs.contains($0) }
+                f.tabIDs = f.tabIDs.filter { webIDs.contains($0) }
                 return f
             }
             return copy
         }
-        // Keep the active context's remembered selection fresh.
+        // Persist a web selection — if an agent tab is foreground, fall back to
+        // a real web tab so restore doesn't point at a vanished agent thread.
+        let persistedSelection = webIDs.contains(selectedTabID ?? UUID())
+            ? selectedTabID
+            : webTabs.first?.id
         if let idx = snapshot.firstIndex(where: { $0.id == activeContextID }) {
-            snapshot[idx].selectedTabID = selectedTabID
+            snapshot[idx].selectedTabID = persistedSelection
         }
         let state = PersistedSession(
-            tabs: tabs.map { PersistedTab(id: $0.id, url: $0.urlString, title: $0.title, faviconURL: $0.faviconURL) },
-            selectedTabID: selectedTabID,
+            tabs: webTabs.map { PersistedTab(id: $0.id, url: $0.urlString, title: $0.title, faviconURL: $0.faviconURL, customTitle: $0.customTitle) },
+            selectedTabID: persistedSelection,
             contexts: snapshot,
             activeContextID: activeContextID
         )
@@ -379,6 +502,7 @@ final class BrowserStore: ObservableObject {
 
     private func makeTab(id: BrowserTab.ID = UUID(), url: String, title: String) -> BrowserTab {
         let tab = BrowserTab(id: id, url: url, title: title)
+        tab.faviconImage = FaviconStore.shared.image(forPage: url)
         tab.onRequestNewTab = { [weak self] url in
             self?.newTab(url: url)
         }
@@ -411,6 +535,62 @@ final class BrowserStore: ObservableObject {
         contexts[activeContextIndex].tabIDs.append(id)
     }
 
+    // MARK: Agent tabs (Codex agent mode)
+
+    @MainActor
+    var sidePanelAssistant: CodexBrowserAssistant {
+        if let assistant = sidePanelAssistantStorage { return assistant }
+        let assistant = CodexBrowserAssistant(store: self)
+        sidePanelAssistantStorage = assistant
+        return assistant
+    }
+
+    /// Cap on concurrent agent threads — each owns its own Codex app-server
+    /// process, so we keep a sane ceiling. Launching past it is refused.
+    static let maxAgentTabs = 6
+
+    /// Build an `.agent` tab backed by a fresh Codex thread. The assistant is
+    /// owned by the tab (model) so the conversation survives tab switches.
+    @MainActor
+    private func makeAgentTab(title: String) -> BrowserTab {
+        let tab = BrowserTab(url: "mori://agent", title: title, kind: .agent)
+        tab.agent = CodexBrowserAssistant(store: self)
+        return tab
+    }
+
+    /// Kick off a new agent task as its own sidebar tab rendering a full-page
+    /// Codex thread, and start the turn. Empty queries are ignored (no stray
+    /// tab). Backs the OmniBox `Tab` gesture.
+    @discardableResult
+    @MainActor
+    func launchAgentTask(query: String) -> BrowserTab? {
+        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        guard settings.aiIntegrationEnabled else {
+            ToastCenter.shared.show("AI integration is off", icon: "sparkles", style: .warning)
+            return nil
+        }
+        guard tabs.filter({ $0.kind == .agent }).count < Self.maxAgentTabs else {
+            ToastCenter.shared.show("Too many agent tasks running", icon: "sparkles", style: .warning)
+            return nil
+        }
+        let tab = makeAgentTab(title: String(text.prefix(60)))
+        tabs.append(tab)
+        addToActiveContext(tab.id)
+        selectTab(tab.id)
+        tab.agent?.send(text)
+        scheduleSessionSave()
+        return tab
+    }
+
+    /// Dismiss the launcher, then start an agent task from the typed text.
+    /// Backs `Tab` (instead of `Enter`) in the OmniBox.
+    @MainActor
+    func launcherLaunchAgent(_ query: String) {
+        dismissLauncher()
+        launchAgentTask(query: query)
+    }
+
     // MARK: - Split view (Zen-style vertical split)
 
     enum SplitSide { case left, right }
@@ -418,20 +598,26 @@ final class BrowserStore: ObservableObject {
     @Published var splitSide: SplitSide = .right
 
     /// Show `id` side-by-side with the selected tab (drag-from-sidebar drop).
+    /// Split is web-only — an agent thread is a native page, not a CEF view.
     func splitWith(_ id: BrowserTab.ID, side: SplitSide) {
-        guard id != selectedTabID, tabs.contains(where: { $0.id == id }) else {
+        guard id != selectedTabID,
+              selectedTab?.kind == .web,
+              let target = tab(for: id), target.kind == .web else {
             return
         }
         splitSide = side
         splitTabID = id
-        tab(for: id)?.realize()
+        target.realize()
     }
 
     func closeSplit() {
         splitTabID = nil
     }
 
-    func selectTab(_ id: BrowserTab.ID) {
+    /// Select a tab. `focusWebView` is false for keyboard sidebar navigation, so
+    /// the sidebar keeps keyboard focus across successive ↑/↓ presses instead of
+    /// handing first-responder to the CEF view after one step.
+    func selectTab(_ id: BrowserTab.ID, focusWebView: Bool = true) {
         // Switching to a tab leaves the settings page — it covers the web card,
         // so it would otherwise stay parked over the newly selected tab.
         if settingsVisible { settingsVisible = false }
@@ -443,10 +629,14 @@ final class BrowserStore: ObservableObject {
         }
         let previous = selectedTabID
         selectedTabID = id
-        selectedTab?.realize()
         selectedTab?.markAccessed()
-        selectedTab?.setChromePinned(isPinned(id))
-        selectedTab?.focus()
+        // Web-only: realizing/focusing/pinning an agent tab would force a CEF
+        // browser into existence for a tab that shows a native Codex thread.
+        if selectedTab?.kind == .web {
+            selectedTab?.realize()
+            selectedTab?.setChromePinned(isPinned(id))
+            if focusWebView { selectedTab?.focus() }
+        }
         if previous != id { scheduleSessionSave() }
     }
 
@@ -463,18 +653,17 @@ final class BrowserStore: ObservableObject {
 
     /// Address-bar behavior: open the launcher seeded with the current tab's URL
     /// (text pre-selected), navigating the *current* tab on commit rather than
-    /// spawning a new one. Re-invoking while it's already up toggles it closed.
+    /// spawning a new one. ⌘L always lands you in the address bar with the whole
+    /// URL selected; pressing it again re-selects rather than dismissing (Arc
+    /// muscle memory) — use Esc or ⌘T to close. If a ⌘T (new-tab) launcher is
+    /// already open, ⌘L converts it into address-bar mode.
     func presentLauncherForCurrentTab() {
-        if launcherVisible {
-            // Already up (e.g. ⌘L pressed twice, or while a ⌘T launcher is open):
-            // collapse it rather than stacking another invocation.
-            dismissLauncher()
-            return
-        }
         launcherPrefill = selectedTab?.displayURL ?? ""
         launcherEditsCurrentTab = true
         launcherFocusRequest += 1
-        withAnimation(Motion.reveal) { launcherVisible = true }
+        if !launcherVisible {
+            withAnimation(Motion.reveal) { launcherVisible = true }
+        }
     }
 
     /// ⌘T behavior: open the launcher, or close it again if it's already up.
@@ -533,27 +722,57 @@ final class BrowserStore: ObservableObject {
         if id == splitTabID || id == selectedTabID { splitTabID = nil }
         guard let idx = tabs.firstIndex(where: { $0.id == id }) else { return }
         // Pinned tabs are permanent: a close gesture (Cmd-W, close button) is
-        // ignored. They can only be removed by explicitly unpinning them.
-        if contexts.contains(where: { $0.pinnedTabIDs.contains(id) }), !allowPinned { return }
+        // ignored. They can only be removed by explicitly unpinning them. Explain
+        // the no-op with a quiet toast offering a one-tap Unpin so the gesture
+        // doesn't just silently swallow.
+        if contexts.contains(where: { $0.pinnedTabIDs.contains(id) }), !allowPinned {
+            ToastCenter.shared.show("Pinned tab stays put",
+                                    icon: "pin.fill",
+                                    style: .info,
+                                    duration: 2,
+                                    actionLabel: "Unpin") { [weak self] in
+                self?.togglePin(id)
+            }
+            return
+        }
         // Tabs inside a folder are a persistent collection (Zen-style): Cmd-W
         // doesn't remove them. Instead the tab unloads its content and selection
         // moves to a neighbour, leaving it in the folder to reopen. The row's ×
         // button and the "Close Tab" menu item pass allowFolderRemoval to fall
         // through to a real close.
         if !allowFolderRemoval,
+           tabs[idx].kind == .web,
            contexts.contains(where: { $0.folders.contains { $0.tabIDs.contains(id) } }) {
             unloadFolderedTab(id)
             return
         }
         let tab = tabs[idx]
-        // Remember where it was pointing so Cmd-Shift-T can bring it back.
+        // Remember where it was pointing so Cmd-Shift-T (and the Undo toast) can
+        // bring it back, in its original spot. Agent threads have no real URL
+        // (and their Codex process is gone on close), so they're never offered.
         let url = tab.urlString
-        if url != "about:blank", !url.isEmpty {
-            closedTabSessions.append(ClosedTabSession(sessionID: UUID().uuidString,
-                                                      url: url,
-                                                      title: tab.title,
-                                                      closedAt: Date()))
+        var sessionForUndo: ClosedTabSession?
+        if tab.kind == .web, url != "about:blank", !url.isEmpty {
+            // Capture its home: which context, its slot among that context's tabs,
+            // and — if pinned or foldered — the slot within that collection.
+            let ownerCtx = contexts.firstIndex { $0.tabIDs.contains(id) }
+            var session = ClosedTabSession(sessionID: UUID().uuidString,
+                                           url: url,
+                                           title: tab.title,
+                                           closedAt: Date())
+            session.customTitle = tab.customTitle
+            if let ownerCtx {
+                session.contextID = contexts[ownerCtx].id
+                session.tabIndex = contexts[ownerCtx].tabIDs.firstIndex(of: id)
+                session.pinnedIndex = contexts[ownerCtx].pinnedTabIDs.firstIndex(of: id)
+                if let f = contexts[ownerCtx].folders.firstIndex(where: { $0.tabIDs.contains(id) }) {
+                    session.folderID = contexts[ownerCtx].folders[f].id
+                    session.folderIndex = contexts[ownerCtx].folders[f].tabIDs.firstIndex(of: id)
+                }
+            }
+            closedTabSessions.append(session)
             if closedTabSessions.count > 25 { closedTabSessions.removeFirst() }
+            sessionForUndo = session
         }
         // Remember its position among the active context's visible tabs so the
         // next selection stays in place (and in this context).
@@ -576,6 +795,7 @@ final class BrowserStore: ObservableObject {
                 }
             }
         }
+        multiSelectedTabIDs.remove(id)
         if tabs.isEmpty {
             // Always keep at least one tab open.
             let fresh = newTab(select: true)
@@ -594,6 +814,17 @@ final class BrowserStore: ObservableObject {
             }
         }
         scheduleSessionSave()
+        // Offer a one-tap Undo (Arc-style "Closed … · Undo"), restoring the tab
+        // to the exact spot it left.
+        if let sessionForUndo {
+            let name = tab.displayTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmed = name.count > 40 ? String(name.prefix(40)) + "…" : name
+            ToastCenter.shared.show(name.isEmpty ? "Closed tab" : "Closed \(trimmed)",
+                                    icon: "trash",
+                                    actionLabel: "Undo") { [weak self] in
+                self?.reopenClosedTab(sessionID: sessionForUndo.sessionID)
+            }
+        }
     }
 
     /// Close gesture for a tab that lives in a folder: unload its content
@@ -620,6 +851,12 @@ final class BrowserStore: ObservableObject {
         // cleanly; the row dims to its asleep state.
         withAnimation(Motion.snappy) { tab.sleep() }
         scheduleSessionSave()
+        // Explain why Cmd-W didn't remove the tab: foldered tabs are a kept
+        // collection, so it unloaded in place instead.
+        ToastCenter.shared.show("Unloaded — kept in folder",
+                                icon: "folder",
+                                style: .info,
+                                duration: 1.8)
     }
 
     func moveTab(from source: IndexSet, to destination: Int) {
@@ -627,9 +864,77 @@ final class BrowserStore: ObservableObject {
         scheduleSessionSave()
     }
 
+    func moveTab(_ id: BrowserTab.ID,
+                 toContext targetContextID: BrowserContext.ID,
+                 activate: Bool = false) {
+        guard tabs.contains(where: { $0.id == id }),
+              let targetIndex = contexts.firstIndex(where: { $0.id == targetContextID })
+        else { return }
+
+        let sourceIndex = contexts.firstIndex { $0.tabIDs.contains(id) }
+        guard sourceIndex.map({ contexts[$0].id }) != targetContextID else { return }
+
+        func orderedIDs(in context: BrowserContext) -> [BrowserTab.ID] {
+            let pinned = context.pinnedTabIDs.filter { tab(for: $0) != nil }
+            let rest = context.tabIDs
+                .filter { !context.pinnedTabIDs.contains($0) && tab(for: $0) != nil }
+            return pinned + rest
+        }
+
+        let sourceOrder = sourceIndex.map { orderedIDs(in: contexts[$0]) } ?? []
+        let sourcePosition = sourceOrder.firstIndex(of: id)
+        let fallbackIDs = sourceOrder.filter { $0 != id }
+        let wasSelectedInActiveContext = selectedTabID == id
+            && sourceIndex.map { contexts[$0].id == activeContextID } == true
+        let fallbackSelection = sourcePosition.flatMap { position -> BrowserTab.ID? in
+            guard !fallbackIDs.isEmpty else { return nil }
+            return fallbackIDs[min(position, fallbackIDs.count - 1)]
+        } ?? fallbackIDs.first
+
+        if id == splitTabID || id == selectedTabID { splitTabID = nil }
+
+        withAnimation(Motion.snappy) {
+            for contextIndex in contexts.indices {
+                contexts[contextIndex].tabIDs.removeAll { $0 == id }
+                contexts[contextIndex].pinnedTabIDs.removeAll { $0 == id }
+                for folderIndex in contexts[contextIndex].folders.indices {
+                    contexts[contextIndex].folders[folderIndex].tabIDs.removeAll { $0 == id }
+                }
+                if contexts[contextIndex].selectedTabID == id {
+                    contexts[contextIndex].selectedTabID = nil
+                }
+            }
+            contexts[targetIndex].tabIDs.append(id)
+            if activate {
+                contexts[targetIndex].selectedTabID = id
+            }
+            if wasSelectedInActiveContext, let sourceIndex {
+                contexts[sourceIndex].selectedTabID = fallbackSelection
+                selectedTabID = fallbackSelection
+            }
+        }
+
+        multiSelectedTabIDs.remove(id)
+        syncChromePinnedState(for: id)
+
+        if activate {
+            switchContext(to: targetContextID, selectRemembered: false)
+            selectTab(id)
+        } else if wasSelectedInActiveContext {
+            if let fallbackSelection {
+                selectTab(fallbackSelection)
+            } else {
+                _ = newTab(select: true)
+            }
+        }
+        scheduleSessionSave()
+    }
+
     @discardableResult
     func duplicateTab(_ id: BrowserTab.ID, select: Bool = true) -> BrowserTab? {
-        guard let tab = tabs.first(where: { $0.id == id }) else { return nil }
+        // Agent threads can't be cloned into a web tab — there's no URL behind
+        // them; leave them alone.
+        guard let tab = tabs.first(where: { $0.id == id }), tab.kind == .web else { return nil }
         let duplicate = makeTab(url: tab.urlString, title: tab.title)
         duplicate.faviconURL = tab.faviconURL
         let sourceIndex = tabs.firstIndex { $0.id == id } ?? tabs.count - 1
@@ -669,6 +974,78 @@ final class BrowserStore: ObservableObject {
         ToastCenter.shared.show("Link copied to clipboard", icon: "link", style: .success)
     }
 
+    @discardableResult
+    func toggleBookmark(url: String? = nil, title: String? = nil) -> Bool {
+        let targetURL = (url ?? selectedTab?.urlString ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !targetURL.isEmpty, targetURL != "about:blank" else {
+            ToastCenter.shared.show("No page to bookmark", icon: "star", style: .warning)
+            return false
+        }
+        let targetTitle = title ?? selectedTab?.title ?? targetURL
+        let saved = BookmarkStore.shared.toggle(url: targetURL, title: targetTitle)
+        ToastCenter.shared.show(saved ? "Bookmark saved" : "Bookmark removed",
+                                icon: saved ? "star.fill" : "star",
+                                style: .success)
+        return saved
+    }
+
+    func share(url: String? = nil, title: String? = nil) {
+        let targetURL = (url ?? selectedTab?.urlString ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let nsURL = URL(string: targetURL), !targetURL.isEmpty else {
+            ToastCenter.shared.show("No page to share", icon: "square.and.arrow.up", style: .warning)
+            return
+        }
+        let items: [Any] = [title ?? selectedTab?.title ?? targetURL, nsURL]
+        let picker = NSSharingServicePicker(items: items)
+        if let view = NSApp.keyWindow?.contentView {
+            picker.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+        } else {
+            ToastCenter.shared.show("Share sheet unavailable", icon: "square.and.arrow.up", style: .warning)
+        }
+    }
+
+    func showQRCode(url: String? = nil, title: String? = nil) {
+        let targetURL = (url ?? selectedTab?.urlString ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !targetURL.isEmpty, targetURL != "about:blank" else {
+            ToastCenter.shared.show("No page for QR code", icon: "qrcode", style: .warning)
+            return
+        }
+        withAnimation(Motion.reveal) {
+            qrCodeSheet = QRCodeSheet(url: targetURL,
+                                      title: title ?? selectedTab?.title ?? targetURL)
+        }
+    }
+
+    func closeQRCode() {
+        withAnimation(Motion.reveal) { qrCodeSheet = nil }
+    }
+
+    func translate(url: String? = nil) {
+        let targetURL = (url ?? selectedTab?.urlString ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let encoded = targetURL.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              !targetURL.isEmpty else {
+            ToastCenter.shared.show("No page to translate", icon: "character.bubble", style: .warning)
+            return
+        }
+        newTab(url: "https://translate.google.com/translate?sl=auto&tl=en&u=\(encoded)",
+               select: true)
+    }
+
+    func translate(text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              !trimmed.isEmpty else {
+            ToastCenter.shared.show("No text to translate", icon: "character.bubble", style: .warning)
+            return
+        }
+        newTab(url: "https://translate.google.com/?sl=auto&tl=en&text=\(encoded)&op=translate",
+               select: true)
+    }
+
     func closeOtherTabs(than id: BrowserTab.ID) {
         let context = activeContext
         let ids = context.tabIDs
@@ -700,10 +1077,70 @@ final class BrowserStore: ObservableObject {
         return context.tabIDs[(index + 1)...].contains { !context.pinnedTabIDs.contains($0) }
     }
 
-    /// Reopen the most recently closed tab, restoring its last URL.
-    func reopenClosedTab() {
-        guard let session = closedTabSessions.popLast() else { return }
-        _ = newTab(url: session.url, select: true)
+    /// Reopen a closed tab, restoring its last URL in its original spot. With no
+    /// `sessionID` it pops the most recently closed tab (Cmd-Shift-T); with one
+    /// it restores that specific tab (the Undo toast), so undoing an older close
+    /// doesn't grab a newer one.
+    @discardableResult
+    func reopenClosedTab(sessionID: String? = nil) -> BrowserTab? {
+        let session: ClosedTabSession?
+        if let sessionID {
+            if let idx = closedTabSessions.firstIndex(where: { $0.sessionID == sessionID }) {
+                session = closedTabSessions.remove(at: idx)
+            } else {
+                session = nil
+            }
+        } else {
+            session = closedTabSessions.popLast()
+        }
+        guard let session else { return nil }
+        return restoreClosedTab(session)
+    }
+
+    /// Recreate a tab from a closed session and slot it back into its original
+    /// context / pin / folder position when that home still exists.
+    @discardableResult
+    private func restoreClosedTab(_ session: ClosedTabSession) -> BrowserTab {
+        let tab = makeTab(url: session.url, title: session.title)
+        tab.customTitle = session.customTitle
+        tabs.append(tab)
+
+        let ctxIndex = session.contextID
+            .flatMap { cid in contexts.firstIndex { $0.id == cid } }
+            ?? activeContextIndex
+        guard contexts.indices.contains(ctxIndex) else {
+            addToActiveContext(tab.id)
+            selectTab(tab.id)
+            scheduleSessionSave()
+            return tab
+        }
+
+        // Membership list (all of the context's tabs).
+        let tabSlot = min(session.tabIndex ?? contexts[ctxIndex].tabIDs.count,
+                          contexts[ctxIndex].tabIDs.count)
+        contexts[ctxIndex].tabIDs.insert(tab.id, at: tabSlot)
+
+        // Restore pin membership.
+        if let pinned = session.pinnedIndex {
+            let slot = min(pinned, contexts[ctxIndex].pinnedTabIDs.count)
+            contexts[ctxIndex].pinnedTabIDs.insert(tab.id, at: slot)
+            syncChromePinnedState(for: tab.id)
+        }
+
+        // Restore folder membership when the folder still exists.
+        if let folderID = session.folderID,
+           let fIndex = contexts[ctxIndex].folders.firstIndex(where: { $0.id == folderID }) {
+            let slot = min(session.folderIndex ?? contexts[ctxIndex].folders[fIndex].tabIDs.count,
+                           contexts[ctxIndex].folders[fIndex].tabIDs.count)
+            contexts[ctxIndex].folders[fIndex].tabIDs.insert(tab.id, at: slot)
+        }
+
+        if contexts[ctxIndex].id != activeContextID {
+            switchContext(to: contexts[ctxIndex].id, selectRemembered: false)
+        }
+        selectTab(tab.id)
+        scheduleSessionSave()
+        return tab
     }
 
     /// Select the tab at a 1-based slot (Cmd-1…Cmd-9). By convention the
@@ -812,6 +1249,12 @@ final class BrowserStore: ObservableObject {
         withAnimation(Motion.reveal) { aiPanelVisible.toggle() }
     }
 
+    /// Close the AI side panel (Esc / explicit dismiss). Mirrors closePeek().
+    func closeAIPanel() {
+        guard aiPanelVisible else { return }
+        withAnimation(Motion.reveal) { aiPanelVisible = false }
+    }
+
     private func prepareAIPanelOpen() -> Bool {
         guard settings.aiIntegrationEnabled else {
             closeAIPanelForDisabledIntegration(showToast: true)
@@ -835,11 +1278,16 @@ final class BrowserStore: ObservableObject {
         settingsVisible.toggle()
     }
 
+    @MainActor
     func prepareForTermination() {
         // Make sure the cookie jar is written before we tear CEF down, so
         // sessions reliably survive the quit.
         saveSession()
         MoriPrivacy.flushCookies()
+        sidePanelAssistantStorage?.shutdown()
+        for tab in tabs {
+            tab.agent?.shutdown()
+        }
         for tab in tabs { tab.close() }
     }
 
@@ -882,6 +1330,107 @@ final class BrowserStore: ObservableObject {
 
     func tabs(in folder: TabFolder) -> [BrowserTab] {
         folder.tabIDs.compactMap { tab(for: $0) }
+    }
+
+    // MARK: Sidebar keyboard navigation
+
+    /// The sidebar's visible top-to-bottom tab order — pinned tiles, then each
+    /// expanded folder's children, then loose tabs. Mirrors the rendered layout
+    /// so ↑/↓ moves between exactly the rows the user can see.
+    var sidebarNavOrder: [BrowserTab] {
+        var out: [BrowserTab] = []
+        out += pinnedTabs
+        for folder in folders where folder.isExpanded {
+            out += tabs(in: folder)
+        }
+        out += looseTabs
+        return out
+    }
+
+    /// Move sidebar selection to the previous (−1) / next (+1) visible row.
+    /// Keeps keyboard focus on the sidebar (doesn't grab the web view) so the
+    /// next arrow press continues navigating.
+    func navigateSidebar(by delta: Int) {
+        let order = sidebarNavOrder
+        guard !order.isEmpty else { return }
+        guard let cur = order.firstIndex(where: { $0.id == selectedTabID }) else {
+            selectTab(order[delta > 0 ? 0 : order.count - 1].id, focusWebView: false)
+            return
+        }
+        let next = max(0, min(order.count - 1, cur + delta))
+        if next != cur { selectTab(order[next].id, focusWebView: false) }
+    }
+
+    /// Expand (→) or collapse (←) the folder that holds the selected tab.
+    func setSelectedTabFolderExpanded(_ expanded: Bool) {
+        guard let id = selectedTabID,
+              let fIdx = folders.firstIndex(where: { $0.tabIDs.contains(id) }),
+              folders[fIdx].isExpanded != expanded else { return }
+        withAnimation(Motion.snappy) { folders[fIdx].isExpanded = expanded }
+        scheduleSessionSave()
+    }
+
+    /// Toggle the selected tab's folder open/closed (Space).
+    func toggleSelectedTabFolder() {
+        guard let id = selectedTabID,
+              let folder = folders.first(where: { $0.tabIDs.contains(id) }) else { return }
+        setSelectedTabFolderExpanded(!folder.isExpanded)
+    }
+
+    // MARK: Multi-selection (⌘/⇧-click)
+
+    /// Handle a click on a sidebar tab, honoring ⌘ (toggle into the multi-
+    /// selection) and ⇧ (extend a contiguous range) modifiers. A plain click
+    /// clears any multi-selection and selects normally.
+    func handleSidebarTabClick(_ id: BrowserTab.ID) {
+        let mods = NSApp.currentEvent?.modifierFlags ?? []
+        if mods.contains(.command) {
+            // Seed the set with the current primary so ⌘-click builds on it.
+            if multiSelectedTabIDs.isEmpty, let cur = selectedTabID { multiSelectedTabIDs.insert(cur) }
+            if multiSelectedTabIDs.contains(id) {
+                multiSelectedTabIDs.remove(id)
+            } else {
+                multiSelectedTabIDs.insert(id)
+            }
+            selectTab(id)
+            return
+        }
+        if mods.contains(.shift), let anchor = selectedTabID, anchor != id {
+            let order = sidebarNavOrder.map(\.id)
+            if let a = order.firstIndex(of: anchor), let b = order.firstIndex(of: id) {
+                let lo = min(a, b), hi = max(a, b)
+                multiSelectedTabIDs = Set(order[lo...hi])
+            }
+            selectTab(id)
+            return
+        }
+        if !multiSelectedTabIDs.isEmpty { multiSelectedTabIDs.removeAll() }
+        selectTab(id)
+    }
+
+    func isMultiSelected(_ id: BrowserTab.ID) -> Bool {
+        multiSelectedTabIDs.count > 1 && multiSelectedTabIDs.contains(id)
+    }
+
+    func clearMultiSelection() {
+        if !multiSelectedTabIDs.isEmpty { multiSelectedTabIDs.removeAll() }
+    }
+
+    /// The current multi-selection, in sidebar (visible) order.
+    var multiSelectionOrdered: [BrowserTab.ID] {
+        sidebarNavOrder.map(\.id).filter { multiSelectedTabIDs.contains($0) }
+    }
+
+    /// Group the ⌘/⇧-selected tabs into a fresh folder and enter rename — the
+    /// "multi-select then make a folder" Arc flow.
+    @discardableResult
+    func newFolderWithSelectedTabs() -> TabFolder? {
+        let ids = multiSelectionOrdered
+        guard ids.count >= 2 else { return nil }
+        let folder = addFolderForEditing()
+        for id in ids { addTab(id, toFolder: folder.id) }
+        clearMultiSelection()
+        return folder
     }
 
     func isPinned(_ id: BrowserTab.ID) -> Bool { pinnedTabIDs.contains(id) }
@@ -932,6 +1481,27 @@ final class BrowserStore: ObservableObject {
     func consumeFolderRenameRequest(for folderID: TabFolder.ID) {
         guard folderIDPendingRename == folderID else { return }
         folderIDPendingRename = nil
+    }
+
+    // MARK: Tab rename
+
+    /// Set a tab's custom title. An empty / whitespace name clears the override,
+    /// reverting the row to the live page title.
+    func renameTab(_ id: BrowserTab.ID, to name: String) {
+        guard let tab = tab(for: id) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        tab.customTitle = trimmed.isEmpty ? nil : trimmed
+        scheduleSessionSave()
+    }
+
+    /// Ask the matching row to enter inline rename on its next render.
+    func beginTabRename(_ id: BrowserTab.ID) {
+        tabIDPendingRename = id
+    }
+
+    func consumeTabRenameRequest(for id: BrowserTab.ID) {
+        guard tabIDPendingRename == id else { return }
+        tabIDPendingRename = nil
     }
 
     func toggleFolder(_ folderID: TabFolder.ID) {
@@ -995,6 +1565,8 @@ final class BrowserStore: ObservableObject {
         guard id != activeContextID,
               let targetIndex = contexts.firstIndex(where: { $0.id == id })
         else { return }
+        // A multi-selection belongs to one context; drop it on the way out.
+        clearMultiSelection()
 
         // Stash the outgoing context's state.
         if contexts.indices.contains(activeContextIndex) {
@@ -1025,6 +1597,12 @@ final class BrowserStore: ObservableObject {
         let index = ordinal - 1
         guard contexts.indices.contains(index) else { return }
         switchContext(to: contexts[index].id)
+    }
+
+    func tabCount(inContext id: BrowserContext.ID) -> Int {
+        guard let context = contexts.first(where: { $0.id == id }) else { return 0 }
+        let liveIDs = Set(tabs.map(\.id))
+        return context.tabIDs.filter { liveIDs.contains($0) }.count
     }
 
     /// Create a context and switch to it. Starts empty — the sidebar's New Tab

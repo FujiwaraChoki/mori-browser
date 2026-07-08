@@ -131,11 +131,16 @@ final class PeekContainerView: NSView {
         if model.isOpen {
             if isInPanelBand(x) {
                 closeWork?.cancel()
+                // A cancelled DispatchWorkItem never nils itself, so clear the
+                // reference here or scheduleClose()'s `closeWork == nil` guard
+                // blocks every future auto-close.
+                closeWork = nil
             } else {
                 scheduleClose()
             }
         } else if isInEdgeBand(x) {
             closeWork?.cancel()
+            closeWork = nil
             setOpen(true)
         }
     }
@@ -262,25 +267,10 @@ private struct PeekPanelBackground: View {
                     .opacity(gradientTheme.opacity)
                 palette.sidebar.color.opacity(scheme == .dark ? 0.22 : 0.18)
                 if gradientTheme.texture > 0 {
-                    PeekGrainOverlay(amount: gradientTheme.texture)
+                    GradientGrainOverlay(amount: gradientTheme.texture)
                 }
             }
         }
-    }
-}
-
-private struct PeekGrainOverlay: View {
-    let amount: Double
-
-    var body: some View {
-        ZStack {
-            Color.white.opacity(0.035 * amount)
-                .blendMode(.overlay)
-            Color.black.opacity(0.025 * amount)
-                .blendMode(.multiply)
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }
 

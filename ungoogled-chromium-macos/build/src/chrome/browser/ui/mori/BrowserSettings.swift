@@ -29,16 +29,6 @@ final class BrowserSettings: ObservableObject {
         didSet { defaults.set(customSearchTemplate, forKey: Key.customEngine) }
     }
 
-    // MARK: Privacy
-
-    /// Blocks ad-serving requests using Mori's bundled Block List Project list.
-    @Published var blockAds: Bool {
-        didSet {
-            defaults.set(blockAds, forKey: Key.blockAds)
-            MoriBrowserView.setAdBlockerEnabled(blockAds)
-        }
-    }
-
     /// Enables Mori's local Codex assistant and browser automation tools.
     @Published var aiIntegrationEnabled: Bool {
         didSet { defaults.set(aiIntegrationEnabled, forKey: Key.aiIntegrationEnabled) }
@@ -111,6 +101,16 @@ final class BrowserSettings: ObservableObject {
         didSet { defaults.set(autoArchiveHours, forKey: Key.autoArchiveHours) }
     }
 
+    // MARK: Agent mode
+
+    /// When on, the in-thread approval cards auto-approve read-only agent tools
+    /// (page/tab snapshots, read-page) without prompting. Write/navigation
+    /// actions always still ask. Shared across all agent threads and the side
+    /// panel.
+    @Published var agentAutoApproveSafeReads: Bool {
+        didSet { defaults.set(agentAutoApproveSafeReads, forKey: Key.agentAutoApproveSafeReads) }
+    }
+
     // MARK: Resolution helpers
 
     /// The built-in start page, served from Mori's internal scheme so it
@@ -148,7 +148,6 @@ final class BrowserSettings: ObservableObject {
         static let newTab = "mori.newTabBehavior"
         static let engine = "mori.searchEngine"
         static let customEngine = "mori.customSearchTemplate"
-        static let blockAds = "mori.blockAds"
         static let aiIntegrationEnabled = "mori.aiIntegrationEnabled"
         static let theme = "mori.theme"
         static let sidebarOnLaunch = "mori.showSidebarOnLaunch"
@@ -158,6 +157,7 @@ final class BrowserSettings: ObservableObject {
         static let gradientTheme = "mori.gradientTheme"
         static let autoSleepMinutes = "mori.autoSleepMinutes"
         static let autoArchiveHours = "mori.autoArchiveHours"
+        static let agentAutoApproveSafeReads = "mori.agentAutoApproveSafeReads"
     }
 
     init(defaults: UserDefaults = .standard) {
@@ -178,7 +178,6 @@ final class BrowserSettings: ObservableObject {
             ?? .google
         customSearchTemplate = defaults.string(forKey: Key.customEngine)
             ?? "https://www.example.com/search?q={query}"
-        blockAds = defaults.object(forKey: Key.blockAds) as? Bool ?? true
         aiIntegrationEnabled = defaults.object(forKey: Key.aiIntegrationEnabled) as? Bool ?? true
         theme = ThemePreference(rawValue: defaults.string(forKey: Key.theme) ?? "")
             ?? .system
@@ -198,10 +197,10 @@ final class BrowserSettings: ObservableObject {
         autoPiP = defaults.object(forKey: Key.autoPiP) as? Bool ?? true
         autoSleepMinutes = defaults.object(forKey: Key.autoSleepMinutes) as? Int ?? 60
         autoArchiveHours = defaults.object(forKey: Key.autoArchiveHours) as? Int ?? 24
+        agentAutoApproveSafeReads = defaults.object(forKey: Key.agentAutoApproveSafeReads) as? Bool ?? false
 
         // Apply the persisted auto-PiP default to the engine on startup.
         MoriBrowserView.setAutoPiPEnabled(autoPiP)
-        MoriBrowserView.setAdBlockerEnabled(blockAds)
     }
 }
 

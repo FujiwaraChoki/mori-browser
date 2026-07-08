@@ -45,3 +45,17 @@ struct BrowserContext: Identifiable, Equatable, Codable {
         self.selectedTabID = selectedTabID
     }
 }
+
+struct ContextDeleteConfirmation: Identifiable, Equatable {
+    let id: BrowserContext.ID
+    let name: String
+    let tabCount: Int
+
+    var title: String {
+        "Delete \"\(name)\"?"
+    }
+
+    var message: String {
+        "This closes \(tabCount) tab\(tabCount == 1 ? "" : "s")."
+    }
+}

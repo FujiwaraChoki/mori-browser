@@ -57,6 +57,7 @@ struct MoriShortcutTrigger {
 
     private static func normalizedSpecialAppKitKey(keyCode: UInt16) -> String? {
         switch keyCode {
+        case 36, 76: return "return"
         case 48: return "tab"
         case 53: return "escape"
         case 116: return "pageup"
@@ -123,6 +124,7 @@ struct MoriShortcutTrigger {
         let logical = normalizedPrintableKey(charactersIgnoringModifiers ?? "")
         let physical: String?
         switch keyCode {
+        case 13: physical = "return"
         case 9: physical = "tab"
         case 27: physical = "escape"
         case 33: physical = "pageup"
@@ -228,6 +230,20 @@ private struct MoriShortcut {
     }
 }
 
+private extension MoriShortcut {
+    var hint: MoriShortcutHint {
+        MoriShortcutHint(modifiers: modifiers,
+                         keys: keys,
+                         displayKey: preferredDisplayKey)
+    }
+
+    private var preferredDisplayKey: String {
+        if keys.contains("+") { return "+" }
+        if keys.contains("=") { return "=" }
+        return keys.sorted().first ?? ""
+    }
+}
+
 /// Single registry for browser keyboard shortcuts.
 ///
 /// New shortcuts should be added to `shortcuts` below. Both native AppKit
@@ -271,20 +287,15 @@ enum MoriCommands {
     /// duplicate delivery, never a real second press — collapse it. Kept small
     /// so genuine fast presses (e.g. mashing Escape) are never swallowed.
     private static let duplicateDeliveryWindow: TimeInterval = 0.03
+    private static let launcherPersistentShortcutIDs: Set<String> = [
+        "dismissLauncher", "focusOmnibox", "toggleOmnibox"
+    ]
 
     static func handle(_ event: NSEvent, store: BrowserStore) -> Bool {
         guard event.type == .keyDown else { return false }
         let trigger = MoriShortcutTrigger(event: event)
         let eventIdentity = ShortcutEventIdentity(event: event, trigger: trigger)
         return handle(trigger, eventIdentity: eventIdentity, store: store)
-    }
-
-    static func release(_ event: NSEvent) {
-    }
-
-    static func release(keyCode: UInt16,
-                        charactersIgnoringModifiers: String?,
-                        modifierMask: UInt) {
     }
 
     static func handle(keyCode: UInt16,
@@ -338,10 +349,16 @@ enum MoriCommands {
                 remember(eventIdentity)
                 return true
             }
+            let wasLauncherVisible = store.launcherVisible
             // Perform synchronously so the store mutation is done by the time
             // the caller (MoriRoot.handleShortcutEvent) forces the chrome to
             // repaint — see flushChrome().
             shortcut.perform(store)
+            if wasLauncherVisible,
+               store.launcherVisible,
+               !launcherPersistentShortcutIDs.contains(shortcut.id) {
+                store.dismissLauncher()
+            }
             // Record only the first (non-repeat) press as the dedup anchor, so
             // a held key's repeats don't slide the window forward and make a
             // genuine fresh press just after release look like a duplicate.
@@ -385,6 +402,13 @@ enum MoriCommands {
             < duplicateDeliveryWindow
     }
 
+    static func shortcutHint(for id: String) -> MoriShortcutHint? {
+        guard let shortcut = shortcuts.first(where: { $0.id == id }) else {
+            return nil
+        }
+        return shortcut.hint
+    }
+
     private static func markPerformed(_ trigger: MoriShortcutTrigger) {
         lastPerformedSignature = signature(for: trigger)
         lastPerformedAt = ProcessInfo.processInfo.systemUptime
@@ -409,6 +433,12 @@ enum MoriCommands {
                          key: "escape",
                          isEnabled: { store, _ in store.peekTab != nil }) {
                 $0.closePeek()
+            },
+            MoriShortcut("dismissQRCode",
+                         modifiers: [],
+                         key: "escape",
+                         isEnabled: { store, _ in store.qrCodeSheet != nil }) {
+                $0.closeQRCode()
             },
             MoriShortcut("dismissWebContextMenu",
                          modifiers: [],
@@ -455,6 +485,14 @@ enum MoriCommands {
                     tab.failError = ""
                 }
             },
+            // Lowest-priority Esc: the AI side panel is persistent chrome, so it
+            // only closes when no transient overlay above it is claiming Escape.
+            MoriShortcut("dismissAIPanel",
+                         modifiers: [],
+                         key: "escape",
+                         isEnabled: { store, _ in store.aiPanelVisible }) {
+                $0.closeAIPanel()
+            },
             MoriShortcut("newSplit", modifiers: [.control, .shift], keys: ["=", "+"]) {
                 $0.newSplit()
             },
@@ -472,12 +510,6 @@ enum MoriCommands {
                          key: "left",
                          acceptsRepeats: true) {
                 $0.selectPreviousTab()
-            },
-            MoriShortcut("toggleAIOptionA",
-                         modifiers: .option,
-                         key: "a",
-                         isEnabled: { store, _ in store.settings.aiIntegrationEnabled }) {
-                $0.toggleAIPanel()
             },
             MoriShortcut("nextTabCommandShiftBracket",
                          modifiers: [.command, .shift],
@@ -517,6 +549,12 @@ enum MoriCommands {
             },
             MoriShortcut("forceReload", modifiers: [.command, .shift], key: "r") {
                 $0.reloadIgnoringCache()
+            },
+            MoriShortcut("bookmarkPage", modifiers: [.command], key: "d") {
+                $0.toggleBookmark()
+            },
+            MoriShortcut("sharePage", modifiers: [.command, .shift], key: "i") {
+                $0.share()
             },
             MoriShortcut("findPrevious", modifiers: [.command, .shift], key: "g") {
                 $0.findNext(forward: false)
@@ -658,5 +696,55 @@ enum MoriCommands {
             return true
         }
         return false
+    }
+}
+
+struct MoriShortcutHint: Equatable {
+    let modifiers: NSEvent.ModifierFlags
+    let keys: Set<String>
+    let displayKey: String
+
+    static let defaultAction = MoriShortcutHint(modifiers: [], key: "return")
+
+    init(modifiers: NSEvent.ModifierFlags, key: String) {
+        self.init(modifiers: modifiers, keys: [key], displayKey: key)
+    }
+
+    init(modifiers: NSEvent.ModifierFlags, keys: Set<String>, displayKey: String) {
+        self.modifiers = modifiers.intersection(MoriShortcutTrigger.shortcutModifierMask)
+        self.keys = Set(keys.map(MoriShortcutTrigger.normalizedPrintableKey))
+        self.displayKey = MoriShortcutTrigger.normalizedPrintableKey(displayKey)
+    }
+
+    var labels: [String] {
+        var out: [String] = []
+        if modifiers.contains(.control) { out.append("⌃") }
+        if modifiers.contains(.option) { out.append("⌥") }
+        if modifiers.contains(.shift) { out.append("⇧") }
+        if modifiers.contains(.command) { out.append("⌘") }
+        out.append(Self.label(for: displayKey))
+        return out
+    }
+
+    func matches(_ trigger: MoriShortcutTrigger) -> Bool {
+        trigger.modifiers == modifiers &&
+            !keys.isDisjoint(with: trigger.keyAliases)
+    }
+
+    private static func label(for key: String) -> String {
+        switch key {
+        case "return": return "↵"
+        case "tab": return "Tab"
+        case "escape": return "Esc"
+        case "left": return "←"
+        case "right": return "→"
+        case "up": return "↑"
+        case "down": return "↓"
+        case "pageup": return "PgUp"
+        case "pagedown": return "PgDn"
+        case " ": return "Space"
+        default:
+            return key.count == 1 ? key.uppercased() : key
+        }
     }
 }
