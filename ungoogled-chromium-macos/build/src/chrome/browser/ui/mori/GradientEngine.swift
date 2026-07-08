@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 /// Pure color math for the gradient theme: mapping points on the circular picker
 /// to colors and back, deriving harmonized dots, building the chrome-wash
@@ -191,4 +192,64 @@ struct GradientMesh: View {
         RadialGradient(colors: [color, color.opacity(0)],
                        center: point, startRadius: 0, endRadius: reach)
     }
+}
+
+/// Real film-grain texture for gradient chrome surfaces. The monochrome noise
+/// tile is generated once, then repeated over the chrome wash.
+struct GradientGrainOverlay: View {
+    let amount: Double
+
+    private var clampedAmount: Double {
+        min(max(amount, 0), 1)
+    }
+
+    var body: some View {
+        ZStack {
+            Color.white.opacity(0.035 * clampedAmount)
+                .blendMode(.overlay)
+            Color.black.opacity(0.025 * clampedAmount)
+                .blendMode(.multiply)
+            Image(nsImage: Self.noiseImage)
+                .resizable(resizingMode: .tile)
+                .interpolation(.none)
+                .opacity(0.18 * clampedAmount)
+                .blendMode(.softLight)
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private static let noiseImage: NSImage = {
+        let size = 128
+        let imageSize = NSSize(width: size, height: size)
+        guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                         pixelsWide: size,
+                                         pixelsHigh: size,
+                                         bitsPerSample: 8,
+                                         samplesPerPixel: 4,
+                                         hasAlpha: true,
+                                         isPlanar: false,
+                                         colorSpaceName: .deviceRGB,
+                                         bytesPerRow: size * 4,
+                                         bitsPerPixel: 32),
+              let data = rep.bitmapData
+        else {
+            return NSImage(size: imageSize)
+        }
+
+        var state: UInt64 = 0x4D4F52495F47524E
+        for pixel in 0..<(size * size) {
+            state = state &* 6364136223846793005 &+ 1442695040888963407
+            let value = UInt8((state >> 56) & 0xFF)
+            let offset = pixel * 4
+            data[offset] = value
+            data[offset + 1] = value
+            data[offset + 2] = value
+            data[offset + 3] = 255
+        }
+
+        let image = NSImage(size: imageSize)
+        image.addRepresentation(rep)
+        return image
+    }()
 }

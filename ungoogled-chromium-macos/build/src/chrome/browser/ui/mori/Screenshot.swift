@@ -71,7 +71,12 @@ extension BrowserStore {
     }
 
     private func captureWindow() -> NSWindow? {
-        selectedTab?.browserView.window ?? NSApp.keyWindow ?? NSApp.mainWindow
+        // Only touch browserView on an already-realized web tab — reading it on
+        // an agent tab (or an unrealized tab) would spin up a CEF browser.
+        let webWindow = (selectedTab?.kind == .web && selectedTab?.hasRealized == true)
+            ? selectedTab?.browserView.window
+            : nil
+        return webWindow ?? NSApp.keyWindow ?? NSApp.mainWindow
     }
 
     /// Grab the composited image of our own window (no screen-recording

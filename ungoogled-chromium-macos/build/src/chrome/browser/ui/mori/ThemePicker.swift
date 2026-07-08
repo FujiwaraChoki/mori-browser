@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The theme gallery: a grid of ready-made anime presets plus a "Default" tile
+/// The theme gallery: a grid of ready-made presets plus a "Default" tile
 /// that clears the theme. Selecting a tile writes its `GradientTheme` to
 /// `BrowserSettings.shared.gradientTheme`, so the chrome wash and derived accent
 /// update immediately. (The earlier freeform color picker was retired in favor
@@ -28,6 +28,8 @@ struct ThemePicker: View {
                 }
             }
 
+            ThemeIntensityControls()
+
             VStack(alignment: .leading, spacing: 8) {
                 Text("Solid colors")
                     .font(Typography.ui(Typography.label, weight: .medium))
@@ -36,6 +38,95 @@ struct ThemePicker: View {
             }
         }
         .frame(width: 320)
+    }
+}
+
+/// Compact live controls for the active context's gradient strength. They write
+/// through `BrowserSettings.gradientTheme`, matching the preset/swatches path so
+/// BrowserStore's existing mirror persists the edits back to the active context.
+struct ThemeIntensityControls: View {
+    @ObservedObject private var settings = BrowserSettings.shared
+    @Environment(\.palette) private var p
+
+    private var hasTheme: Bool { !settings.gradientTheme.isEmpty }
+
+    private var wash: Binding<Double> {
+        Binding(
+            get: { settings.gradientTheme.opacity },
+            set: { value in
+                updateTheme {
+                    $0.opacity = min(max(value, GradientTheme.minOpacity),
+                                     GradientTheme.maxOpacity)
+                }
+            }
+        )
+    }
+
+    private var grain: Binding<Double> {
+        Binding(
+            get: { settings.gradientTheme.texture },
+            set: { value in
+                updateTheme { $0.texture = min(max(value, 0), 1) }
+            }
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            ThemeIntensitySlider(title: "Wash",
+                                 value: wash,
+                                 range: GradientTheme.minOpacity...GradientTheme.maxOpacity,
+                                 valueText: percentage(settings.gradientTheme.opacity))
+            ThemeIntensitySlider(title: "Grain",
+                                 value: grain,
+                                 range: 0...1,
+                                 valueText: percentage(settings.gradientTheme.texture))
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: Radius.popover, style: .continuous)
+                .fill(p.card.color.opacity(0.45))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: Radius.popover, style: .continuous)
+                .strokeBorder(p.border.color.opacity(0.55), lineWidth: 1)
+        )
+        .opacity(hasTheme ? 1 : 0.45)
+        .disabled(!hasTheme)
+    }
+
+    private func updateTheme(_ mutate: (inout GradientTheme) -> Void) {
+        var theme = settings.gradientTheme
+        mutate(&theme)
+        settings.gradientTheme = theme
+    }
+
+    private func percentage(_ value: Double) -> String {
+        "\(Int((value * 100).rounded()))%"
+    }
+}
+
+private struct ThemeIntensitySlider: View {
+    let title: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let valueText: String
+
+    @Environment(\.palette) private var p
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .font(Typography.ui(Typography.label, weight: .medium))
+                .foregroundStyle(p.foreground.color)
+                .frame(width: 40, alignment: .leading)
+            Slider(value: $value, in: range)
+                .tint(p.primary.color)
+            Text(valueText)
+                .font(Typography.ui(Typography.small))
+                .foregroundStyle(p.mutedForeground.color)
+                .frame(width: 34, alignment: .trailing)
+        }
     }
 }
 
@@ -99,7 +190,7 @@ private struct SolidSwatch: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .help(hex)
+        .help(SolidPalette.names[hex] ?? hex)
         .onHover { hovering = $0 }
         .animation(Motion.state, value: isSelected)
         .animation(Motion.snappy, value: hovering)
@@ -222,6 +313,7 @@ private struct ThemeRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .animation(Motion.snappy, value: hovering)
         .animation(Motion.state, value: isSelected)
     }
 
@@ -293,6 +385,7 @@ private struct PresetTile: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .animation(Motion.snappy, value: hovering)
         .animation(Motion.state, value: isSelected)
     }
 
@@ -346,6 +439,7 @@ private struct DefaultTile: View {
         }
         .buttonStyle(.plain)
         .onHover { hovering = $0 }
+        .animation(Motion.snappy, value: hovering)
         .animation(Motion.state, value: isSelected)
     }
 }

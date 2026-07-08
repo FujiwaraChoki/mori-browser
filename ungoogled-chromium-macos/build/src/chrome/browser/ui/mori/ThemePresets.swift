@@ -1,9 +1,8 @@
 import SwiftUI
 
-/// A named, ready-made gradient theme. Presets are the only way to theme the
-/// chrome for now — each is a curated `GradientTheme` evoking an anime's
-/// signature palette. The chrome wash and derived UI accent come straight from
-/// the existing gradient engine.
+/// A named, ready-made gradient theme. Each is a curated `GradientTheme`; the
+/// chrome wash and derived UI accent come straight from the existing gradient
+/// engine.
 struct ThemePreset: Identifiable {
     let id: String
     let name: String
@@ -33,8 +32,8 @@ struct ThemePreset: Identifiable {
         return ThemePreset(id: id, name: name, subtitle: subtitle, theme: theme)
     }
 
-    /// The curated lineup. Evangelion and Tokyo Ghoul were requested; the rest
-    /// are recommendations spanning dark, twilight, and a lighter pastel.
+    /// The curated lineup. The first group keeps the original fandom palettes;
+    /// the second adds neutral, non-IP options for everyday chrome.
     // Palettes drawn from published character/brand color references (color-hex,
     // brandpalettes, schemecolor) and tuned for a cohesive chrome wash. The first
     // color is always the signature accent.
@@ -73,6 +72,31 @@ struct ThemePreset: Identifiable {
         make(id: "sailor-moon", name: "Sailor Moon", subtitle: "Moonlight",
              colors: ["#FB87B0", "#5C79CE", "#FBD15B"],
              opacity: 0.46, texture: 0.15, scheme: .light),
+
+        // Warm horizon: coral light, berry shadow, and a muted blue dusk.
+        make(id: "sunset", name: "Sunset", subtitle: "Warm horizon",
+             colors: ["#F08A5D", "#B84A62", "#355C7D"],
+             opacity: 0.52, texture: 0.18, scheme: .dark),
+
+        // Deep evergreen with a moss accent.
+        make(id: "forest", name: "Forest", subtitle: "Moss canopy",
+             colors: ["#2F7D5C", "#173F35", "#A7C957"],
+             opacity: 0.54, texture: 0.24, scheme: .dark),
+
+        // Cool fjord blues over a clean snow highlight.
+        make(id: "nordic", name: "Nordic", subtitle: "Fjord light",
+             colors: ["#88C0D0", "#5E81AC", "#ECEFF4"],
+             opacity: 0.48, texture: 0.12, scheme: .light),
+
+        // Clear marine blues with a deeper current underneath.
+        make(id: "ocean", name: "Ocean", subtitle: "Blue current",
+             colors: ["#0077B6", "#00B4D8", "#023E8A"],
+             opacity: 0.52, texture: 0.20, scheme: .dark),
+
+        // Soft lavender balanced with rose and muted plum.
+        make(id: "lavender", name: "Lavender", subtitle: "Quiet bloom",
+             colors: ["#B8A1FF", "#F1C6E7", "#7C6CB0"],
+             opacity: 0.44, texture: 0.12, scheme: .light),
     ]
 }
 
@@ -91,5 +115,20 @@ enum SolidPalette {
         "#EC4899", // pink
         "#64748B", // slate
         "#1F2937", // graphite
+    ]
+
+    /// Human-readable names for the swatch hexes, shown on hover instead of the
+    /// raw hex (parallels the gradient presets, which show their name).
+    static let names: [String: String] = [
+        "#6E56CF": "Violet",
+        "#3B82F6": "Blue",
+        "#0EA5A4": "Teal",
+        "#22C55E": "Green",
+        "#EAB308": "Amber",
+        "#F97316": "Orange",
+        "#EF4444": "Red",
+        "#EC4899": "Pink",
+        "#64748B": "Slate",
+        "#1F2937": "Graphite",
     ]
 }

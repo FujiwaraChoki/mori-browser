@@ -38,7 +38,11 @@ struct DownloadItem: Identifiable {
     }
 
     var statusText: String {
-        if isComplete { return "Completed" }
+        if isComplete {
+            let size = ByteCountFormatter.string(
+                fromByteCount: total > 0 ? total : received, countStyle: .file)
+            return "Completed — \(size)"
+        }
         if isCanceled { return "Canceled" }
         if speed > 0 {
             let rate = ByteCountFormatter.string(fromByteCount: speed, countStyle: .file)

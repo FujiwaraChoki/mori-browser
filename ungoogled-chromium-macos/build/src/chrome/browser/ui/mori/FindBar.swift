@@ -21,6 +21,11 @@ struct FindBar: View {
                 .foregroundStyle(p.foreground.color)
                 .frame(width: 180)
                 .focused($focused)
+                .onKeyPress(keys: [.return], phases: .down) { press in
+                    guard press.modifiers.contains(.shift) else { return .ignored }
+                    search(forward: false)
+                    return .handled
+                }
                 .onSubmit { search(forward: true) }
                 .onChange(of: store.findQuery) { _, text in
                     if text.isEmpty { tab.stopFind() } else { tab.find(text, forward: true) }

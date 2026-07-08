@@ -9,6 +9,7 @@ struct ExtensionToolbarItems: View {
     @ObservedObject private var extensions = ExtensionStore.shared
     @Environment(\.palette) private var p
     @State private var menuVisible = false
+    @State private var puzzleHover = false
 
     var body: some View {
         HStack(spacing: 2) {
@@ -21,11 +22,17 @@ struct ExtensionToolbarItems: View {
             } label: {
                 Icon(name: "puzzlepiece.extension", size: 12)
                     .foregroundStyle(p.mutedForeground.color)
-                    .frame(width: 20, height: 20)
+                    .frame(width: 22, height: 22)
+                    .background(
+                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                            .fill(puzzleHover ? p.foreground.color.opacity(0.12) : .clear)
+                    )
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .help("Extensions")
+            .onHover { puzzleHover = $0 }
+            .animation(Motion.snappy, value: puzzleHover)
             .popover(isPresented: $menuVisible, arrowEdge: .bottom) {
                 ExtensionsMenu(store: store) { menuVisible = false }
             }
@@ -165,7 +172,7 @@ struct ExtensionsMenu: View {
             Hairline().opacity(0.6)
 
             if extensions.extensions.isEmpty {
-                Text("No extensions installed.")
+                Text("No extensions installed")
                     .font(Typography.ui(Typography.base))
                     .foregroundStyle(p.mutedForeground.color)
                     .padding(14)
@@ -276,7 +283,7 @@ private struct ExtensionMenuRow: View {
                 .fill(hover ? p.accent.color.opacity(0.5) : .clear)
         )
         .background(AnchorReader(box: anchor))
-        .onHover { hover = $0 }
+        .onHover { hover = ext.enabled && $0 }
         .animation(Motion.snappy, value: hover)
         .contextMenu {
             if ext.hasOptionsPage {

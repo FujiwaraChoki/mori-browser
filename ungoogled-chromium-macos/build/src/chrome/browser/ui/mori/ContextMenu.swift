@@ -377,7 +377,7 @@ private struct WebContextMenuCard: View {
         CtxDivider()
         if let link = target.linkURL {
             ForEach(store.contexts) { context in
-                CtxRow(icon: "circle.fill", title: context.name) {
+                CtxRow(icon: context.symbol, title: context.name) {
                     store.ctxOpenLink(link, inContext: context.id)
                 }
             }

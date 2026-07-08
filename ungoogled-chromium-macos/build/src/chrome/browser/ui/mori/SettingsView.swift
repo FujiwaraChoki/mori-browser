@@ -8,6 +8,7 @@ struct SettingsView: View {
     @ObservedObject var store: BrowserStore
     @ObservedObject private var settings = BrowserSettings.shared
     @ObservedObject private var extensions = ExtensionStore.shared
+    @ObservedObject private var boosts = BoostStore.shared
     @Environment(\.palette) private var p
 
     /// Comfortable reading column for the settings content.
@@ -21,11 +22,11 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 22) {
                     generalSection
                     searchSection
-                    privacySection
                     aiSection
                     appearanceSection
                     tabsSection
                     RoutingSection(store: store)
+                    boostsSection
                     mediaSection
                     extensionsSection
                     aboutSection
@@ -107,6 +108,7 @@ struct SettingsView: View {
                     Text("Version 2.0.4")
                         .font(Typography.ui(Typography.label))
                         .foregroundStyle(p.mutedForeground.color)
+                        .textSelection(.enabled)
                 }
                 Spacer(minLength: 0)
             }
@@ -139,21 +141,6 @@ struct SettingsView: View {
                 Text("Use {query} where the search terms should go.")
                     .font(Typography.ui(Typography.label))
                     .foregroundStyle(p.mutedForeground.color)
-            }
-        }
-    }
-
-    private var privacySection: some View {
-        Section(title: "Privacy") {
-            ToggleRow(isOn: $settings.blockAds) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Block ads")
-                        .font(Typography.ui(Typography.base))
-                        .foregroundStyle(p.foreground.color)
-                    Text("Use Mori's bundled Block List Project ads list.")
-                        .font(Typography.ui(Typography.label))
-                        .foregroundStyle(p.mutedForeground.color)
-                }
             }
         }
     }
@@ -195,11 +182,12 @@ struct SettingsView: View {
                 Text("Color theme")
                     .font(Typography.ui(Typography.base))
                     .foregroundStyle(p.foreground.color)
-                Text("Pick an anime-inspired theme to wash the chrome and accent.")
+                Text("Pick a preset theme to wash the chrome and accent.")
                     .font(Typography.ui(Typography.label))
                     .foregroundStyle(p.mutedForeground.color)
             }
             ThemeList()
+            ThemeIntensityControls()
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Solid color")
@@ -210,6 +198,31 @@ struct SettingsView: View {
                     .foregroundStyle(p.mutedForeground.color)
                 SolidThemeSwatches()
                     .padding(.top, 2)
+            }
+        }
+    }
+
+    private var boostsSection: some View {
+        Section(title: "Boosts") {
+            if boosts.boosts.isEmpty {
+                HStack(spacing: 8) {
+                    Icon(name: "wand.and.stars", size: 15, weight: .light)
+                        .foregroundStyle(p.mutedForeground.color)
+                    Text("No site Boosts saved")
+                        .font(Typography.ui(Typography.base))
+                        .foregroundStyle(p.mutedForeground.color)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(boosts.boosts) { boost in
+                        BoostSettingsRow(boost: boost, store: store, boosts: boosts)
+                        if boost.id != boosts.boosts.last?.id {
+                            Hairline().opacity(0.5)
+                        }
+                    }
+                }
             }
         }
     }
@@ -260,9 +273,20 @@ struct SettingsView: View {
                 Text(error)
                     .font(Typography.ui(Typography.label))
                     .foregroundStyle(p.destructive.color)
+                    .textSelection(.enabled)
             }
 
-            if !extensions.extensions.isEmpty {
+            if extensions.extensions.isEmpty {
+                HStack(spacing: 8) {
+                    Icon(name: "puzzlepiece.extension", size: 15, weight: .light)
+                        .foregroundStyle(p.mutedForeground.color)
+                    Text("No extensions installed")
+                        .font(Typography.ui(Typography.base))
+                        .foregroundStyle(p.mutedForeground.color)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.vertical, 4)
+            } else {
                 VStack(spacing: 0) {
                     ForEach(extensions.extensions) { ext in
                         ExtensionRow(ext: ext, store: extensions)
@@ -327,7 +351,106 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Extension row
+// MARK: - Settings rows
+
+private struct BoostSettingsRow: View {
+    let boost: SiteBoost
+    @ObservedObject var store: BrowserStore
+    @ObservedObject var boosts: BoostStore
+    @Environment(\.palette) private var p
+
+    var body: some View {
+        HStack(spacing: 11) {
+            Icon(name: "wand.and.stars", size: 15, weight: .regular)
+                .foregroundStyle(p.mutedForeground.color)
+                .frame(width: 28, height: 28)
+                .background(Circle().fill(p.input.color.opacity(0.5)))
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(boost.host)
+                    .font(Typography.ui(Typography.base, weight: .medium))
+                    .foregroundStyle(p.foreground.color)
+                    .lineLimit(1)
+                Text(summary)
+                    .font(Typography.ui(Typography.label))
+                    .foregroundStyle(p.mutedForeground.color)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            Button {
+                visitSite()
+            } label: {
+                Text("Visit")
+                    .font(Typography.ui(Typography.label, weight: .medium))
+                    .foregroundStyle(p.foreground.color)
+                    .padding(.horizontal, 9)
+                    .frame(height: 26)
+                    .background(
+                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                            .fill(p.input.color.opacity(0.5))
+                    )
+            }
+            .buttonStyle(.plain)
+            .help("Visit site")
+
+            Toggle("", isOn: Binding(
+                get: { boosts.boost(forHost: boost.host)?.enabled ?? boost.enabled },
+                set: { setEnabled($0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .tint(p.primary.color)
+
+            Button {
+                boosts.remove(host: boost.host)
+                reloadMatchingTabs()
+            } label: {
+                Icon(name: "trash", size: 13, weight: .regular)
+                    .foregroundStyle(p.mutedForeground.color)
+            }
+            .buttonStyle(.plain)
+            .help("Delete Boost")
+        }
+        .padding(.vertical, 10)
+    }
+
+    private var summary: String {
+        var parts: [String] = []
+        if !boost.css.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append("CSS")
+        }
+        if !boost.js.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            parts.append("JS")
+        }
+        if !boost.zappedSelectors.isEmpty {
+            parts.append("\(boost.zappedSelectors.count) zap\(boost.zappedSelectors.count == 1 ? "" : "s")")
+        }
+        return parts.isEmpty ? "Empty Boost" : parts.joined(separator: " · ")
+    }
+
+    private func setEnabled(_ enabled: Bool) {
+        boosts.setEnabled(enabled, host: boost.host)
+        reloadMatchingTabs()
+    }
+
+    private func visitSite() {
+        store.newTab(url: "https://\(boost.host)", select: true)
+    }
+
+    private func reloadMatchingTabs() {
+        for tab in store.tabs where matches(tab.urlString) {
+            tab.reload()
+        }
+    }
+
+    private func matches(_ url: String) -> Bool {
+        guard let host = URLComponents(string: url)?.host?.lowercased() else { return false }
+        return host == boost.host || host.hasSuffix("." + boost.host)
+    }
+}
 
 private struct ExtensionRow: View {
     let ext: ChromeExtensionInfo
@@ -583,10 +706,24 @@ private struct RoutingSection: View {
                 .menuIndicator(.hidden)
                 .fixedSize()
 
-                Button("Add") { addRule() }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
-                    .disabled(newPattern.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button { addRule() } label: {
+                    Text("Add")
+                        .font(Typography.ui(Typography.base, weight: .medium))
+                        .foregroundStyle(p.foreground.color)
+                        .padding(.horizontal, 12)
+                        .frame(height: 30)
+                        .background(
+                            RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                                .fill(p.input.color.opacity(0.5))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                                .strokeBorder(p.border.color.opacity(0.6), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .disabled(newPattern.trimmingCharacters(in: .whitespaces).isEmpty)
+                .opacity(newPattern.trimmingCharacters(in: .whitespaces).isEmpty ? 0.4 : 1)
             }
         }
     }

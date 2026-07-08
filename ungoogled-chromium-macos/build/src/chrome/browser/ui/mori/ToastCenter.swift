@@ -19,6 +19,11 @@ struct Toast: Identifiable, Equatable {
     var style: Style = .info
     /// Seconds the toast lingers before auto-dismissing.
     var duration: TimeInterval = 2.4
+    /// Optional trailing action — e.g. "Undo" on a close-tab toast. When set,
+    /// `ToastOverlay` draws a button after the message that runs `action` and
+    /// dismisses the toast. Closures aren't part of `Equatable` (identity only).
+    var actionLabel: String?
+    var action: (() -> Void)?
 
     static func == (lhs: Toast, rhs: Toast) -> Bool { lhs.id == rhs.id }
 }
@@ -45,12 +50,24 @@ final class ToastCenter: ObservableObject {
     init() {}
 
     /// Queue a notification. Returns its id so a caller can dismiss it early.
+    ///
+    /// Pass `actionLabel`/`action` to attach a trailing button (e.g. "Undo");
+    /// actionable toasts default to a longer 5s lifetime so the offer doesn't
+    /// vanish before it can be taken.
     @discardableResult
     func show(_ message: String,
               icon: String? = nil,
               style: Toast.Style = .info,
-              duration: TimeInterval = 2.4) -> Toast.ID {
-        let toast = Toast(message: message, icon: icon, style: style, duration: duration)
+              duration: TimeInterval? = nil,
+              actionLabel: String? = nil,
+              action: (() -> Void)? = nil) -> Toast.ID {
+        let hasAction = actionLabel != nil && action != nil
+        let toast = Toast(message: message,
+                          icon: icon,
+                          style: style,
+                          duration: duration ?? (hasAction ? 5 : 2.4),
+                          actionLabel: hasAction ? actionLabel : nil,
+                          action: hasAction ? action : nil)
         withAnimation(Motion.snappy) {
             toasts.append(toast)
             while toasts.count > maxVisible {

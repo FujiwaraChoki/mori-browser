@@ -103,7 +103,7 @@ struct ReaderButton: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help(tab.readerActive ? "Exit Reader" : "Reader View")
+            .help(tab.readerActive ? "Exit Reader View" : "Reader View")
         }
     }
 }

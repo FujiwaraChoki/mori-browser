@@ -19,33 +19,6 @@ extension BrowserStore {
                                 icon: "arrow.triangle.branch", style: .info)
     }
 
-    /// Move a tab out of its current context and into `targetID`.
-    func moveTab(_ id: BrowserTab.ID,
-                 toContext targetID: BrowserContext.ID,
-                 activate: Bool) {
-        guard let targetIdx = contexts.firstIndex(where: { $0.id == targetID }) else { return }
-        let wasSelected = (id == selectedTabID)
-
-        for i in contexts.indices {
-            contexts[i].tabIDs.removeAll { $0 == id }
-            contexts[i].pinnedTabIDs.removeAll { $0 == id }
-            for f in contexts[i].folders.indices {
-                contexts[i].folders[f].tabIDs.removeAll { $0 == id }
-            }
-            if contexts[i].selectedTabID == id { contexts[i].selectedTabID = nil }
-        }
-        contexts[targetIdx].tabIDs.append(id)
-
-        if activate {
-            switchContext(to: targetID, selectRemembered: false)
-            selectTab(id)
-        } else if wasSelected {
-            // The moved tab left the active context; keep a valid selection.
-            if let fallback = activeContext.tabIDs.first { selectTab(fallback) }
-        }
-        scheduleSessionSave()
-    }
-
     /// "Always Open in This Space": route the tab's host to the active context.
     func routeHostToActiveSpace(_ tabID: BrowserTab.ID) {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }

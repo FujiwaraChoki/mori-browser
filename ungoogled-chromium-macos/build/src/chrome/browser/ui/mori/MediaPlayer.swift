@@ -25,10 +25,12 @@ struct MediaPlayerStrip: View {
                         .font(Typography.ui(Typography.label, weight: .medium))
                         .foregroundStyle(p.sidebarForeground.color)
                         .lineLimit(1)
-                    Text(s.artist)
-                        .font(Typography.ui(Typography.small))
-                        .foregroundStyle(p.mutedForeground.color)
-                        .lineLimit(1)
+                    if !s.artist.isEmpty {
+                        Text(s.artist)
+                            .font(Typography.ui(Typography.small))
+                            .foregroundStyle(p.mutedForeground.color)
+                            .lineLimit(1)
+                    }
                 }
 
                 Spacer(minLength: 4)
@@ -85,7 +87,7 @@ struct MediaPlayerStrip: View {
         )
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .onTapGesture { media.revealOwningTab(in: store) }
-        .onHover { hoveringArt = $0 }
+        .onHover { inside in withAnimation(Motion.state) { hoveringArt = inside } }
     }
 
     /// PiP affordance revealed when hovering the thumbnail.
@@ -100,7 +102,7 @@ struct MediaPlayerStrip: View {
                 }
             }
             .buttonStyle(.plain)
-            .help("Picture in Picture")
+            .help(s.inPiP ? "Exit Picture in Picture" : "Picture in Picture")
             .transition(.opacity)
         }
     }
@@ -185,6 +187,7 @@ private struct PlayerButton: View {
         .onHover { hovering = $0 }
         .help(label)
         .accessibilityLabel(label)
+        .animation(Motion.state, value: hovering)
     }
 
     private var foreground: Color {

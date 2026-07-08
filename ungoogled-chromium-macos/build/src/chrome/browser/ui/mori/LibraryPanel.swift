@@ -52,6 +52,8 @@ struct LibraryPanel: View {
         case history = "History", bookmarks = "Bookmarks", archive = "Archive"
     }
     @State private var tab: Tab = .history
+    @State private var historySearch = ""
+    @State private var bookmarkSearch = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -156,42 +158,55 @@ struct LibraryPanel: View {
     private var content: some View {
         switch tab {
         case .history:
-            if history.entries.isEmpty {
-                emptyState("clock", "No history yet")
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 1) {
-                        ForEach(history.entries.prefix(200)) { entry in
-                            LibraryRow(title: entry.title, url: entry.url) { open(entry.url) }
-                                .contextMenu {
-                                    Button("Remove", role: .destructive) { history.remove(entry) }
-                                }
+            VStack(spacing: 0) {
+                searchField(text: $historySearch, placeholder: "Search History")
+                if history.entries.isEmpty {
+                    emptyState("clock", "No history yet")
+                } else if historyResults.isEmpty {
+                    emptyState("magnifyingglass", "No matching history")
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 1) {
+                            ForEach(historyResults) { entry in
+                                LibraryRow(title: entry.title,
+                                           url: entry.url,
+                                           trailing: libraryRelativeTime(entry.lastVisited)) { open(entry.url) }
+                                    .contextMenu {
+                                        Button("Remove", role: .destructive) { history.remove(entry) }
+                                    }
+                            }
+                            if historySearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                               history.entries.count > 200 {
+                                Text("Showing the 200 most recent of \(history.entries.count) entries")
+                                    .font(Typography.ui(Typography.small))
+                                    .foregroundStyle(p.mutedForeground.color)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 10)
+                            }
                         }
-                        if history.entries.count > 200 {
-                            Text("Showing the 200 most recent of \(history.entries.count) entries")
-                                .font(Typography.ui(Typography.small))
-                                .foregroundStyle(p.mutedForeground.color)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 10)
-                        }
+                        .padding(8)
                     }
-                    .padding(8)
                 }
             }
         case .bookmarks:
-            if bookmarks.bookmarks.isEmpty {
-                emptyState("star", "No bookmarks yet")
-            } else {
-                ScrollView {
-                    LazyVStack(spacing: 1) {
-                        ForEach(bookmarks.bookmarks) { mark in
-                            LibraryRow(title: mark.title, url: mark.url) { open(mark.url) }
-                                .contextMenu {
-                                    Button("Remove", role: .destructive) { bookmarks.remove(mark) }
-                                }
+            VStack(spacing: 0) {
+                searchField(text: $bookmarkSearch, placeholder: "Search Bookmarks")
+                if bookmarks.bookmarks.isEmpty {
+                    emptyState("star", "No bookmarks yet")
+                } else if bookmarkResults.isEmpty {
+                    emptyState("magnifyingglass", "No matching bookmarks")
+                } else {
+                    ScrollView {
+                        LazyVStack(spacing: 1) {
+                            ForEach(bookmarkResults) { mark in
+                                LibraryRow(title: mark.title, url: mark.url) { open(mark.url) }
+                                    .contextMenu {
+                                        Button("Remove", role: .destructive) { bookmarks.remove(mark) }
+                                    }
+                            }
                         }
+                        .padding(8)
                     }
-                    .padding(8)
                 }
             }
         case .archive:
@@ -199,18 +214,21 @@ struct LibraryPanel: View {
                 emptyState("archivebox", "No archived tabs")
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 1) {
-                        ForEach(archive.tabs) { archived in
-                            LibraryRow(title: archived.title, url: archived.url) {
-                                store.restoreArchived(archived)
-                                isOpen = false
-                            }
-                            .contextMenu {
-                                Button("Reopen") {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(archiveGroups) { group in
+                            archiveHeader(group.title)
+                            ForEach(group.tabs) { archived in
+                                LibraryRow(title: archived.title, url: archived.url) {
                                     store.restoreArchived(archived)
                                     isOpen = false
                                 }
-                                Button("Remove", role: .destructive) { archive.remove(archived) }
+                                .contextMenu {
+                                    Button("Reopen") {
+                                        store.restoreArchived(archived)
+                                        isOpen = false
+                                    }
+                                    Button("Remove", role: .destructive) { archive.remove(archived) }
+                                }
                             }
                         }
                     }
@@ -218,6 +236,43 @@ struct LibraryPanel: View {
                 }
             }
         }
+    }
+
+    private var historyResults: [HistoryEntry] {
+        let q = historySearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return Array(history.entries.prefix(200)) }
+        return history.suggestions(for: q, limit: history.entries.count)
+    }
+
+    private var bookmarkResults: [Bookmark] {
+        let q = bookmarkSearch.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !q.isEmpty else { return bookmarks.bookmarks }
+        return bookmarks.bookmarks.filter {
+            $0.title.lowercased().contains(q) || $0.url.lowercased().contains(q)
+        }
+    }
+
+    private var archiveGroups: [ArchiveDateGroup] {
+        ArchiveDateGroup.group(archive.tabs, calendar: .current, now: Date())
+    }
+
+    private func searchField(text: Binding<String>, placeholder: String) -> some View {
+        HStack(spacing: 8) {
+            Icon(name: "magnifyingglass", size: 13)
+                .foregroundStyle(p.mutedForeground.color)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.plain)
+                .font(Typography.ui(Typography.base))
+                .foregroundStyle(p.foreground.color)
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 30)
+        .background(
+            RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
+                .fill(p.foreground.color.opacity(0.06))
+        )
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
     }
 
     private func emptyState(_ symbol: String, _ text: String) -> some View {
@@ -232,15 +287,73 @@ struct LibraryPanel: View {
         .padding(.vertical, 44)
     }
 
+    private func archiveHeader(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(Typography.ui(Typography.small, weight: .medium))
+            .foregroundStyle(p.mutedForeground.color)
+            .tracking(0.4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 9)
+            .padding(.top, 9)
+            .padding(.bottom, 4)
+    }
+
     private func open(_ url: String) {
         store.navigate(url)
         isOpen = false
     }
 }
 
+/// Shared relative-time formatter for history rows (one alloc, not per-row).
+private let libraryRelativeFormatter: RelativeDateTimeFormatter = {
+    let f = RelativeDateTimeFormatter()
+    f.unitsStyle = .abbreviated
+    return f
+}()
+
+private func libraryRelativeTime(_ date: Date) -> String {
+    libraryRelativeFormatter.localizedString(for: date, relativeTo: Date())
+}
+
+private struct ArchiveDateGroup: Identifiable {
+    let id: String
+    let title: String
+    let tabs: [ArchivedTab]
+
+    static func group(_ tabs: [ArchivedTab],
+                      calendar: Calendar,
+                      now: Date) -> [ArchiveDateGroup] {
+        var today: [ArchivedTab] = []
+        var yesterday: [ArchivedTab] = []
+        var thisWeek: [ArchivedTab] = []
+        var older: [ArchivedTab] = []
+        let week = calendar.dateInterval(of: .weekOfYear, for: now)
+
+        for tab in tabs {
+            if calendar.isDateInToday(tab.archivedAt) {
+                today.append(tab)
+            } else if calendar.isDateInYesterday(tab.archivedAt) {
+                yesterday.append(tab)
+            } else if week?.contains(tab.archivedAt) == true {
+                thisWeek.append(tab)
+            } else {
+                older.append(tab)
+            }
+        }
+
+        return [
+            ArchiveDateGroup(id: "today", title: "Today", tabs: today),
+            ArchiveDateGroup(id: "yesterday", title: "Yesterday", tabs: yesterday),
+            ArchiveDateGroup(id: "this-week", title: "This Week", tabs: thisWeek),
+            ArchiveDateGroup(id: "older", title: "Older", tabs: older),
+        ].filter { !$0.tabs.isEmpty }
+    }
+}
+
 private struct LibraryRow: View {
     let title: String
     let url: String
+    var trailing: String? = nil
     let action: () -> Void
 
     @Environment(\.palette) private var p
@@ -263,6 +376,13 @@ private struct LibraryRow: View {
                         .truncationMode(.middle)
                 }
                 Spacer(minLength: 0)
+                if let trailing {
+                    Text(trailing)
+                        .font(Typography.ui(Typography.small))
+                        .foregroundStyle(p.mutedForeground.color)
+                        .lineLimit(1)
+                        .fixedSize()
+                }
             }
             .padding(.horizontal, 9)
             .padding(.vertical, 6)

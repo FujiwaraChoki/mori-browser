@@ -6,14 +6,15 @@ import SwiftUI
 /// dynamically-computed names keep resolving; anything not in `map` falls back
 /// to the real SF Symbol so nothing silently vanishes.
 ///
-/// Every name Mori uses is currently mapped. The SF fallback remains a safety
-/// net for any new name added before its asset.
+/// Most chrome names Mori uses are mapped. The SF fallback remains a safety
+/// net for any name added before a matching asset exists.
 enum Nucleo {
     /// SF-style name → (asset name in the catalog, clockwise rotation°).
     /// Directional chevrons reuse one right-pointing asset, rotated.
     static let map: [String: (asset: String, rotation: Double)] = [
         "mori": ("mori", 0),
         "sparkles": ("sparkles", 0),
+        "wand.and.stars": ("glyph-star", 0),
         "xmark": ("close", 0),
         "arrow.up": ("arrow-up", 0),
         "arrow.right": ("arrow-right", 0),
@@ -38,6 +39,7 @@ enum Nucleo {
         "doc.fill": ("page-portrait", 0),
         "sidebar.left": ("sidebar-right", 180),
         "sidebar.right": ("sidebar-right", 0),
+        "sidebar.trailing": ("sidebar-right", 0),
         "chevron.right": ("chevron", 0),
         "chevron.left": ("chevron", 180),
         "chevron.down": ("chevron", 90),
@@ -59,6 +61,7 @@ enum Nucleo {
         "wifi.exclamationmark": ("signal-2", 0),
         "chevron.up.chevron.down": ("chevron-down", 0),
         "circle.lefthalf.filled": ("color-palette", 0),
+        "slider.horizontal.3": ("glyph-tools", 0),
         "music.note": ("audio-mixer", 0),
         "play.rectangle.fill": ("half-dotted-circle-play", 0),
         "pip.enter": ("minimize-window", 0),
@@ -138,12 +141,21 @@ struct Icon: View {
 
     var body: some View {
         if let spec = Nucleo.map[name] {
-            Image(spec.asset)
-                .resizable()
-                .renderingMode(.template)
-                .aspectRatio(contentMode: .fit)
-                .frame(width: size, height: size)
-                .rotationEffect(.degrees(spec.rotation))
+            if GlyphLibrary.isGlyph(spec.asset), let glyph = GlyphLibrary.image(named: spec.asset) {
+                Image(nsImage: glyph)
+                    .resizable()
+                    .renderingMode(.template)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: size, height: size)
+                    .rotationEffect(.degrees(spec.rotation))
+            } else {
+                Image(spec.asset)
+                    .resizable()
+                    .renderingMode(.template)
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: size, height: size)
+                    .rotationEffect(.degrees(spec.rotation))
+            }
         } else if GlyphLibrary.isGlyph(name), let glyph = GlyphLibrary.image(named: name) {
             Image(nsImage: glyph)
                 .resizable()

@@ -43,8 +43,27 @@ private struct ToastView: View {
                 .foregroundStyle(p.foreground.color)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
+
+            if let label = toast.actionLabel, let action = toast.action {
+                // A vertical hairline then a tinted action button — e.g. "Undo".
+                // The button captures its own tap, so the pill's tap-to-dismiss
+                // doesn't fire when the action is clicked.
+                Hairline(vertical: true).frame(height: 16).opacity(0.5)
+                Button {
+                    action()
+                    onDismiss()
+                } label: {
+                    Text(label)
+                        .font(Typography.ui(Typography.base, weight: .semibold))
+                        .foregroundStyle(accent)
+                        .padding(.horizontal, 4)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
         }
-        .padding(.horizontal, 14)
+        .padding(.leading, 14)
+        .padding(.trailing, toast.actionLabel == nil ? 14 : 10)
         .padding(.vertical, 10)
         .background(
             ZStack {

@@ -10,6 +10,7 @@ struct DownloadsButton: View {
     @Environment(\.palette) private var p
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var spin = false
+    @State private var completionPulse = false
 
     var body: some View {
         Group {
@@ -24,6 +25,17 @@ struct DownloadsButton: View {
                                kind: isOpen ? .primary : .ghost,
                                size: 28) { isOpen.toggle() }
                 }
+                // A one-shot success flash at the exact moment a download lands,
+                // so completion registers even at a glance.
+                .overlay {
+                    if completionPulse {
+                        Circle()
+                            .stroke(p.statusSuccessFg.color, lineWidth: 2)
+                            .frame(width: 28, height: 28)
+                            .transition(.opacity)
+                    }
+                }
+                .scaleEffect(completionPulse ? 1.16 : 1)
                 .popover(isPresented: $isOpen, arrowEdge: .bottom) {
                     DownloadsPanel(downloads: downloads)
                         .environment(\.palette, p)
@@ -31,8 +43,17 @@ struct DownloadsButton: View {
                 .help(downloads.hasActiveDownloads ? "Downloading…" : "Downloads")
                 .onChange(of: downloads.completionToken) { _, _ in
                     isOpen = true
+                    pulseOnCompletion()
                 }
             }
+        }
+    }
+
+    private func pulseOnCompletion() {
+        guard !reduceMotion else { return }
+        withAnimation(Motion.snappy) { completionPulse = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) {
+            withAnimation(Motion.reveal) { completionPulse = false }
         }
     }
 
@@ -47,6 +68,7 @@ struct DownloadsButton: View {
                 .rotationEffect(.degrees(spin ? 360 : 0))
                 .animation(reduceMotion ? nil : Motion.spin, value: spin)
                 .onAppear { spin = true }
+                .onDisappear { spin = false }
         } else {
             ZStack {
                 Circle()
@@ -178,6 +200,8 @@ private struct DownloadRow: View {
                 Button { downloads.cancel(item) } label: {
                     Icon(name: "xmark", size: 14, weight: .semibold)
                         .foregroundStyle(p.mutedForeground.color)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Cancel download")
@@ -186,6 +210,8 @@ private struct DownloadRow: View {
                 Button { downloads.reveal(item) } label: {
                     Icon(name: "magnifyingglass", size: 14)
                         .foregroundStyle(p.mutedForeground.color)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help("Show in Finder")
