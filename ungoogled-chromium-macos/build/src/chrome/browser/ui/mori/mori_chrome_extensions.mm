@@ -27,8 +27,8 @@
 #include "chrome/browser/extensions/extension_view_host_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #import "chrome/browser/ui/mori/mori_bridge.h"
 #include "chrome/browser/ui/mori/mori_chrome_hooks.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -65,7 +65,7 @@
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_handlers/icons_handler.h"
 #include "extensions/common/manifest_handlers/options_page_info.h"
-#include "extensions/common/manifest_url_handlers.h"
+#include "extensions/common/manifest_handlers/manifest_url_handlers.h"
 #include "extensions/common/mojom/context_type.mojom.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/base/page_transition_types.h"
@@ -121,6 +121,13 @@ void PostExtensionsChanged() {
   dispatch_async(dispatch_get_main_queue(), ^{
     pending = NO;
     PostNotification(kExtensionsChanged);
+  });
+}
+
+void PostInstallFinished(BOOL ok, NSString* error) {
+  PostNotification(kInstallFinished, @{
+    @"ok" : @(ok),
+    @"error" : error ?: @"",
   });
 }
 
@@ -767,7 +774,12 @@ NSString* InstallTypeString(const extensions::Extension& extension) {
 
 + (BOOL)installCRXAtPath:(NSString*)path expectedId:(NSString*)extensionId {
   Profile* profile = MoriProfile();
-  if (!profile || path.length == 0) {
+  if (!profile) {
+    PostInstallFinished(NO, @"Chrome's extension service is not ready yet.");
+    return NO;
+  }
+  if (path.length == 0) {
+    PostInstallFinished(NO, @"No extension package was provided.");
     return NO;
   }
 
@@ -790,10 +802,7 @@ NSString* InstallTypeString(const extensions::Extension& extension) {
         if (error) {
           NSLog(@"MORI extension CRX install failed: %@", message);
         }
-        PostNotification(kInstallFinished, @{
-          @"ok" : @(!error),
-          @"error" : message,
-        });
+        PostInstallFinished(!error, message);
         PostExtensionsChanged();
       }));
   installer->InstallCrx(base::FilePath(base::SysNSStringToUTF8(path)));
@@ -802,7 +811,12 @@ NSString* InstallTypeString(const extensions::Extension& extension) {
 
 + (BOOL)loadUnpackedExtensionAtPath:(NSString*)path {
   Profile* profile = MoriProfile();
-  if (!profile || path.length == 0) {
+  if (!profile) {
+    PostInstallFinished(NO, @"Chrome's extension service is not ready yet.");
+    return NO;
+  }
+  if (path.length == 0) {
+    PostInstallFinished(NO, @"No extension folder was provided.");
     return NO;
   }
 
@@ -815,10 +829,8 @@ NSString* InstallTypeString(const extensions::Extension& extension) {
           NSLog(@"MORI unpacked extension load failed: %@",
                 base::SysUTF16ToNSString(error));
         }
-        PostNotification(kInstallFinished, @{
-          @"ok" : @(extension != nullptr),
-          @"error" : base::SysUTF16ToNSString(error),
-        });
+        PostInstallFinished(extension != nullptr,
+                            base::SysUTF16ToNSString(error));
         PostExtensionsChanged();
       }));
   installer->Load(base::FilePath(base::SysNSStringToUTF8(path)));

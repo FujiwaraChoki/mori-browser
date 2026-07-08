@@ -15,9 +15,27 @@
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
 #include "chrome/browser/ui/find_bar/find_bar.h"
 #include "chrome/browser/ui/location_bar/location_bar.h"
+#include "components/sharing_message/sharing_dialog_data.h"
 #include "components/web_modal/web_contents_modal_dialog_host.h"
 
 class Browser;
+
+namespace qrcode_generator {
+class QRCodeGeneratorBubbleView;
+}  // namespace qrcode_generator
+
+namespace send_tab_to_self {
+class SendTabToSelfBubbleView;
+}  // namespace send_tab_to_self
+
+namespace share {
+struct ShareAttempt;
+}  // namespace share
+
+namespace sharing_hub {
+class ScreenshotCapturedBubble;
+class SharingHubBubbleView;
+}  // namespace sharing_hub
 
 // No-op FindBar: FindBarController derefs the FindBar unconditionally; the
 // real find UI is Mori's SwiftUI FindBar driving FindTabHelper directly.
@@ -54,7 +72,8 @@ class MoriFindBar : public FindBar {
 // tab switches (SaveStateToContents etc.); Mori's omnibox lives in SwiftUI.
 class MoriLocationBar : public LocationBar {
  public:
-  MoriLocationBar() : LocationBar(nullptr) {}
+  explicit MoriLocationBar(Browser* browser)
+      : LocationBar(nullptr), browser_(browser) {}
   ~MoriLocationBar() override = default;
 
   void FocusLocation(bool is_user_initiated, bool clear_focus_if_failed) override;
@@ -64,6 +83,7 @@ class MoriLocationBar : public LocationBar {
   void SaveStateToContents(content::WebContents* contents) override;
   void Revert() override;
   OmniboxView* GetOmniboxView() override;
+  OmniboxPopupView* GetOmniboxPopupView() override;
   OmniboxController* GetOmniboxController() override;
   bool ShouldCloseOmniboxPopup(ui::MouseEvent* event) override;
   content::WebContents* GetWebContents() override;
@@ -89,6 +109,9 @@ class MoriLocationBar : public LocationBar {
   void ResetTabState(content::WebContents* contents) override;
   bool HasSecurityStateChanged() override;
   LocationBarTesting* GetLocationBarForTesting() override;
+
+ private:
+  Browser* browser_;  // Weak; the Browser owns the window.
 };
 
 // Fullscreen / exclusive-access context for the Mori window. Every mouse and
@@ -185,21 +208,21 @@ class MoriBrowserWindow : public BrowserWindow {
   void SetTopControlsGestureScrollInProgress(bool in_progress) override;
   std::vector<StatusBubble*> GetStatusBubbles() override;
   void UpdateTitleBar() override;
-  void BookmarkBarStateChanged( BookmarkBar::AnimateChangeType change_type) override;
-  void TemporarilyShowBookmarkBar(base::TimeDelta duration) override;
-  void UpdateDevTools(content::WebContents* inspected_web_contents) override;
-  bool CanDockDevTools() const override;
+  void BookmarkBarStateChanged( BookmarkBar::AnimateChangeType change_type);
+  void TemporarilyShowBookmarkBar(base::TimeDelta duration);
+  void UpdateDevTools(content::WebContents* inspected_web_contents);
+  bool CanDockDevTools() const;
   void UpdateLoadingAnimations(bool is_visible) override;
   void SetStarredState(bool is_starred) override;
   bool IsTabModalPopupDeprecated() const override;
   void SetIsTabModalPopupDeprecated( bool is_tab_modal_popup_deprecated) override;
   void OnActiveTabChanged(content::WebContents* old_contents, content::WebContents* new_contents, int index, int reason) override;
   void OnTabDetached(content::WebContents* contents, bool was_active) override;
-  void ZoomChangedForActiveTab(bool can_show_bubble) override;
-  bool ShouldHideUIForFullscreen() const override;
-  bool IsFullscreenBubbleVisible() const override;
-  bool IsForceFullscreen() const override;
-  void SetForceFullscreen(bool force_fullscreen) override;
+  void ZoomChangedForActiveTab(bool can_show_bubble);
+  bool ShouldHideUIForFullscreen() const;
+  bool IsFullscreenBubbleVisible() const;
+  bool IsForceFullscreen() const;
+  void SetForceFullscreen(bool force_fullscreen);
   gfx::Size GetContentsSize() const override;
   void SetContentsSize(const gfx::Size& size) override;
   void UpdatePageActionIcon(PageActionIconType type) override;
@@ -211,35 +234,35 @@ class MoriBrowserWindow : public BrowserWindow {
   void UpdateToolbar(content::WebContents* contents) override;
   bool UpdateToolbarSecurityState() override;
   void UpdateCustomTabBarVisibility(bool visible, bool animate) override;
-  void SetDevToolsScrimVisibility(bool visible) override;
+  void SetDevToolsScrimVisibility(bool visible);
   void ResetToolbarTabState(content::WebContents* contents) override;
   void FocusToolbar() override;
   void ToolbarSizeChanged(bool is_animating) override;
   void TabDraggingStatusChanged(bool is_dragging) override;
   void LinkOpeningFromGesture(WindowOpenDisposition disposition) override;
   void FocusAppMenu() override;
-  void FocusBookmarksToolbar() override;
-  void FocusInactivePopupForAccessibility() override;
-  void RotatePaneFocus(bool forwards) override;
-  void FocusWebContentsPane() override;
-  bool IsBookmarkBarVisible() const override;
-  bool IsBookmarkBarAnimating() const override;
+  void FocusBookmarksToolbar();
+  void FocusInactivePopupForAccessibility();
+  void RotatePaneFocus(bool forwards);
+  void FocusWebContentsPane();
+  bool IsBookmarkBarVisible() const;
+  bool IsBookmarkBarAnimating() const;
   bool IsTabStripEditable() const override;
   void DisableTabStripEditingForTesting() override;
   bool IsToolbarVisible() const override;
   bool IsToolbarShowing() const override;
   bool IsLocationBarVisible() const override;
-  SharingDialog* ShowSharingDialog(content::WebContents* contents, SharingDialogData data) override;
+  SharingDialog* ShowSharingDialog(content::WebContents* contents, SharingDialogData data);
   void ShowUpdateChromeDialog() override;
   void ShowIntentPickerBubble( std::vector<apps::IntentPickerAppInfo> app_info, bool show_stay_in_chrome, bool show_remember_selection, apps::IntentPickerBubbleType bubble_type, const std::optional<url::Origin>& initiating_origin, IntentPickerResponse callback) override;
   void ShowBookmarkBubble(const GURL& url, bool already_bookmarked) override;
-  sharing_hub::ScreenshotCapturedBubble* ShowScreenshotCapturedBubble( content::WebContents* contents, const gfx::Image& image) override;
-  qrcode_generator::QRCodeGeneratorBubbleView* ShowQRCodeGeneratorBubble(content::WebContents* contents, const GURL& url, bool show_back_button) override;
-  send_tab_to_self::SendTabToSelfBubbleView* ShowSendTabToSelfDevicePickerBubble(content::WebContents* contents) override;
-  send_tab_to_self::SendTabToSelfBubbleView* ShowSendTabToSelfPromoBubble(content::WebContents* contents, bool show_signin_button) override;
-  sharing_hub::SharingHubBubbleView* ShowSharingHubBubble( share::ShareAttempt attempt) override;
+  sharing_hub::ScreenshotCapturedBubble* ShowScreenshotCapturedBubble( content::WebContents* contents, const gfx::Image& image);
+  qrcode_generator::QRCodeGeneratorBubbleView* ShowQRCodeGeneratorBubble(content::WebContents* contents, const GURL& url, bool show_back_button);
+  send_tab_to_self::SendTabToSelfBubbleView* ShowSendTabToSelfDevicePickerBubble(content::WebContents* contents);
+  send_tab_to_self::SendTabToSelfBubbleView* ShowSendTabToSelfPromoBubble(content::WebContents* contents, bool show_signin_button);
+  sharing_hub::SharingHubBubbleView* ShowSharingHubBubble( share::ShareAttempt attempt);
   ShowTranslateBubbleResult ShowTranslateBubble( content::WebContents* contents, translate::TranslateStep step, const std::string& source_language, const std::string& target_language, translate::TranslateErrors error_type, bool is_user_gesture) override;
-  void StartPartialTranslate(const std::string& source_language, const std::string& target_language, const std::u16string& text_selection) override;
+  void StartPartialTranslate(const std::string& source_language, const std::string& target_language, const std::u16string& text_selection);
   DownloadBubbleUIController* GetDownloadBubbleUIController() override;
   void ConfirmBrowserCloseWithPendingDownloads( int download_count, Browser::DownloadCloseType dialog_type, base::OnceCallback<void(bool)> callback) override;
   void ShowAppMenu() override;

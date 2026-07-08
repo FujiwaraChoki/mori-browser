@@ -134,6 +134,7 @@ final class MoriRoot: NSObject {
         NSApp.postEvent(event, atStart: false)
     }
 
+    @MainActor
     @objc static func prepareForTermination() {
         shared?.store.prepareForTermination()
     }
@@ -154,16 +155,6 @@ final class MoriRoot: NSObject {
         let handled = MoriCommands.handle(event, store: store)
         if handled { flushChrome() }
         return handled
-    }
-
-    @objc static func releaseShortcutEvent(_ event: NSEvent) {
-        guard Thread.isMainThread else {
-            DispatchQueue.main.sync {
-                releaseShortcutEvent(event)
-            }
-            return
-        }
-        MoriCommands.release(event)
     }
 
     @objc(isReservedShortcutKeyEquivalent:modifierMask:)
@@ -207,23 +198,6 @@ final class MoriRoot: NSObject {
         return handled
     }
 
-    @objc(releaseShortcutWithKeyCode:charactersIgnoringModifiers:modifierMask:)
-    static func releaseShortcut(keyCode: UInt16,
-                                charactersIgnoringModifiers: String?,
-                                modifierMask: UInt) {
-        guard Thread.isMainThread else {
-            DispatchQueue.main.sync {
-                releaseShortcut(keyCode: keyCode,
-                                charactersIgnoringModifiers: charactersIgnoringModifiers,
-                                modifierMask: modifierMask)
-            }
-            return
-        }
-        MoriCommands.release(keyCode: keyCode,
-                             charactersIgnoringModifiers: charactersIgnoringModifiers,
-                             modifierMask: modifierMask)
-    }
-
     // Menu-driven actions (called from the AppKit menu bar).
     // ⌘T / File ▸ New Tab toggles the launcher (command palette) rather than
     // silently spawning a blank tab.
@@ -259,7 +233,37 @@ final class MoriRoot: NSObject {
     @objc static func findPrevious() { shared?.store.findNext(forward: false) }
     @objc static func toggleDevTools() { shared?.store.toggleDevTools() }
     @objc static func printPage() { shared?.store.printPage() }
+    @objc static func shareCurrentPage() { shared?.store.share() }
+    @objc static func showQRCodeForCurrentPage() { shared?.store.showQRCode() }
+    @objc static func translateCurrentPage() { shared?.store.translate() }
     @objc static func selectNextTab() { shared?.store.selectNextTab() }
     @objc static func selectPreviousTab() { shared?.store.selectPreviousTab() }
+    @objc(toggleBookmarkForURL:title:)
+    static func toggleBookmark(url: String, title: String) {
+        shared?.store.toggleBookmark(url: url, title: title)
+    }
+    @objc(shareURL:title:)
+    static func share(url: String, title: String) {
+        shared?.store.share(url: url, title: title)
+    }
+    @objc(showQRCodeForURL:title:)
+    static func showQRCode(url: String, title: String) {
+        shared?.store.showQRCode(url: url, title: title)
+    }
+    @objc(translateURL:)
+    static func translate(url: String) {
+        shared?.store.translate(url: url)
+    }
+    @objc(translateText:)
+    static func translate(text: String) {
+        shared?.store.translate(text: text)
+    }
+    @objc(showNativeNotice:icon:)
+    static func showNativeNotice(message: String, icon: String) {
+        ToastCenter.shared.show(message, icon: icon, style: .info)
+    }
+    @objc static func showTabSearch() {
+        shared?.store.presentLauncher()
+    }
 
 }

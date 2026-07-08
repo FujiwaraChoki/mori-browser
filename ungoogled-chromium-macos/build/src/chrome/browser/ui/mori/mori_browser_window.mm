@@ -7,7 +7,11 @@
 #import <QuartzCore/QuartzCore.h>
 
 #include "base/strings/sys_string_conversions.h"
+#include "chrome/browser/share/share_attempt.h"
 #include "chrome/browser/ui/browser.h"
+#include "chrome/browser/ui/autofill/autofill_bubble_handler.h"
+#include "chrome/browser/ui/autofill/save_address_bubble_controller.h"
+#include "chrome/browser/ui/autofill/update_address_bubble_controller.h"
 #include "chrome/browser/ui/mori/mori_chrome_hooks.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/profiles/profile.h"
@@ -25,6 +29,14 @@
 // registry the app-level NSEvent monitor uses, without pulling in the bridge.
 @interface MoriRoot : NSObject
 + (BOOL)handleShortcutEvent:(NSEvent*)event;
++ (void)toggleBookmarkForURL:(NSString*)url title:(NSString*)title;
++ (void)shareURL:(NSString*)url title:(NSString*)title;
++ (void)showQRCodeForURL:(NSString*)url title:(NSString*)title;
++ (void)translateURL:(NSString*)url;
++ (void)translateText:(NSString*)text;
++ (void)showNativeNotice:(NSString*)message icon:(NSString*)icon;
++ (void)showTabSearch;
++ (void)focusOmnibox;
 @end
 
 namespace {
@@ -68,10 +80,145 @@ void ConfigureDisclosureLabel(NSTextField* label,
   label.lineBreakMode = NSLineBreakByTruncatingMiddle;
 }
 
+class MoriAutofillBubbleHandler final : public autofill::AutofillBubbleHandler {
+ public:
+  MoriAutofillBubbleHandler() = default;
+  ~MoriAutofillBubbleHandler() override = default;
+
+  autofill::AutofillBubbleBase* ShowSaveCreditCardBubble(
+      content::WebContents* web_contents,
+      autofill::SaveCardBubbleController* controller,
+      bool is_user_gesture) override {
+    Notice(@"Payment autofill bubbles are not exposed in Mori yet.",
+           @"creditcard");
+    return nullptr;
+  }
+
+  autofill::AutofillBubbleBase* ShowIbanBubble(
+      content::WebContents* web_contents,
+      autofill::IbanBubbleController* controller,
+      bool is_user_gesture,
+      autofill::IbanBubbleType bubble_type) override {
+    Notice(@"Payment autofill bubbles are not exposed in Mori yet.",
+           @"creditcard");
+    return nullptr;
+  }
+
+  autofill::AutofillBubbleBase* ShowOfferNotificationBubble(
+      content::WebContents* web_contents,
+      autofill::OfferNotificationBubbleController* controller,
+      bool is_user_gesture) override {
+    Notice(@"Autofill offer bubbles are not exposed in Mori yet.", @"tag");
+    return nullptr;
+  }
+
+  autofill::AutofillBubbleBase* ShowSaveAutofillAiDataBubble(
+      content::WebContents* web_contents,
+      autofill::AutofillAiImportDataController* controller) override {
+    Notice(@"Autofill AI bubbles are not exposed in Mori yet.", @"sparkles");
+    return nullptr;
+  }
+
+  autofill::AutofillBubbleBase* ShowAutofillAiLocalSaveNotification(
+      content::WebContents* web_contents,
+      autofill::AutofillAiImportDataController* controller) override {
+    Notice(@"Autofill AI bubbles are not exposed in Mori yet.", @"sparkles");
+    return nullptr;
+  }
+
+  autofill::AutofillBubbleBase* ShowSaveAddressProfileBubble(
+      content::WebContents* web_contents,
+      std::unique_ptr<autofill::SaveAddressBubbleController> controller,
+      bool is_user_gesture) override {
+    Notice(@"Address autofill bubbles are not exposed in Mori yet.",
+           @"person.text.rectangle");
+    return nullptr;
+  }
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  autofill::AutofillBubbleBase* ShowAddressSignInPromo(
+      content::WebContents* web_contents,
+      const autofill::AutofillProfile& autofill_profile) override {
+    Notice(@"Address autofill sign-in is not exposed in Mori yet.",
+           @"person.crop.circle.badge.plus");
+    return nullptr;
+  }
+#endif
+
+  autofill::AutofillBubbleBase* ShowUpdateAddressProfileBubble(
+      content::WebContents* web_contents,
+      std::unique_ptr<autofill::UpdateAddressBubbleController> controller,
+      bool is_user_gesture) override {
+    Notice(@"Address autofill bubbles are not exposed in Mori yet.",
+           @"person.text.rectangle");
+    return nullptr;
+  }
+
+  autofill::AutofillBubbleBase* ShowFilledCardInformationBubble(
+      content::WebContents* web_contents,
+      autofill::FilledCardInformationBubbleController* controller,
+      bool is_user_gesture) override {
+    Notice(@"Payment autofill bubbles are not exposed in Mori yet.",
+           @"creditcard");
+    return nullptr;
+  }
+
+  autofill::AutofillBubbleBase* ShowVirtualCardEnrollBubble(
+      content::WebContents* web_contents,
+      autofill::VirtualCardEnrollBubbleController* controller,
+      bool is_user_gesture) override {
+    Notice(@"Virtual card enrollment is not exposed in Mori yet.",
+           @"creditcard.trianglebadge.exclamationmark");
+    return nullptr;
+  }
+
+  autofill::AutofillBubbleBase* ShowVirtualCardEnrollConfirmationBubble(
+      content::WebContents* web_contents,
+      autofill::VirtualCardEnrollBubbleController* controller) override {
+    Notice(@"Virtual card enrollment is not exposed in Mori yet.",
+           @"creditcard.trianglebadge.exclamationmark");
+    return nullptr;
+  }
+
+  autofill::AutofillBubbleBase* ShowMandatoryReauthBubble(
+      content::WebContents* web_contents,
+      autofill::MandatoryReauthBubbleController* controller,
+      bool is_user_gesture,
+      autofill::MandatoryReauthBubbleType bubble_type) override {
+    Notice(@"Autofill reauthentication is not exposed in Mori yet.",
+           @"lock.shield");
+    return nullptr;
+  }
+
+  autofill::AutofillBubbleBase* ShowSaveCardConfirmationBubble(
+      content::WebContents* web_contents,
+      autofill::SaveCardBubbleController* controller) override {
+    Notice(@"Payment autofill bubbles are not exposed in Mori yet.",
+           @"creditcard");
+    return nullptr;
+  }
+
+  autofill::AutofillBubbleBase* ShowSaveIbanConfirmationBubble(
+      content::WebContents* web_contents,
+      autofill::IbanBubbleController* controller) override {
+    Notice(@"Payment autofill bubbles are not exposed in Mori yet.",
+           @"creditcard");
+    return nullptr;
+  }
+
+ private:
+  static void Notice(NSString* message, NSString* icon) {
+    [MoriRoot showNativeNotice:message icon:icon];
+  }
+};
+
 }  // namespace
 
 MoriBrowserWindow::MoriBrowserWindow(Browser* browser)
-    : browser_(browser), exclusive_access_context_(browser) {
+    : browser_(browser),
+      modal_dialog_host_(),
+      exclusive_access_context_(browser),
+      location_bar_(browser) {
   mori::OnBrowserWindowCreated(browser);
 }
 
@@ -157,6 +304,10 @@ OmniboxView* MoriLocationBar::GetOmniboxView() {
   return nullptr;
 }
 
+OmniboxPopupView* MoriLocationBar::GetOmniboxPopupView() {
+  return nullptr;
+}
+
 OmniboxController* MoriLocationBar::GetOmniboxController() {
   return nullptr;
 }
@@ -190,11 +341,11 @@ ui::TrackedElement* MoriLocationBar::GetAnchorOrNull() {
 }
 
 Browser* MoriLocationBar::GetBrowser() {
-  return nullptr;
+  return browser_;
 }
 
 Profile* MoriLocationBar::GetProfile() {
-  return nullptr;
+  return browser_ ? browser_->profile() : nullptr;
 }
 
 bool MoriLocationBar::IsInitialized() const {
@@ -580,7 +731,8 @@ void MoriBrowserWindow::SetContentsSize(const gfx::Size& size) {}
 void MoriBrowserWindow::UpdatePageActionIcon(PageActionIconType type) {}
 
 autofill::AutofillBubbleHandler* MoriBrowserWindow::GetAutofillBubbleHandler() {
-  return nullptr;
+  static MoriAutofillBubbleHandler* handler = new MoriAutofillBubbleHandler();
+  return handler;
 }
 
 void MoriBrowserWindow::ExecutePageActionIconForTesting(PageActionIconType type) {}
@@ -589,7 +741,9 @@ LocationBar* MoriBrowserWindow::GetLocationBar() const {
   return const_cast<MoriLocationBar*>(&location_bar_);
 }
 
-void MoriBrowserWindow::SetFocusToLocationBar(bool is_user_initiated) {}
+void MoriBrowserWindow::SetFocusToLocationBar(bool is_user_initiated) {
+  [MoriRoot focusOmnibox];
+}
 
 void MoriBrowserWindow::UpdateReloadStopState(bool is_loading, bool force) {}
 
@@ -655,48 +809,134 @@ bool MoriBrowserWindow::IsLocationBarVisible() const {
 }
 
 SharingDialog* MoriBrowserWindow::ShowSharingDialog(content::WebContents* contents, SharingDialogData data) {
+  content::WebContents* target =
+      contents ? contents : browser_->tab_strip_model()->GetActiveWebContents();
+  if (target) {
+    [MoriRoot shareURL:base::SysUTF8ToNSString(target->GetVisibleURL().spec())
+                 title:base::SysUTF16ToNSString(target->GetTitle())];
+  }
   return nullptr;
 }
 
 void MoriBrowserWindow::ShowUpdateChromeDialog() {}
 
-void MoriBrowserWindow::ShowIntentPickerBubble( std::vector<apps::IntentPickerAppInfo> app_info, bool show_stay_in_chrome, bool show_remember_selection, apps::IntentPickerBubbleType bubble_type, const std::optional<url::Origin>& initiating_origin, IntentPickerResponse callback) {}
+void MoriBrowserWindow::ShowIntentPickerBubble( std::vector<apps::IntentPickerAppInfo> app_info, bool show_stay_in_chrome, bool show_remember_selection, apps::IntentPickerBubbleType bubble_type, const std::optional<url::Origin>& initiating_origin, IntentPickerResponse callback) {
+  if (app_info.empty()) {
+    std::move(callback).Run(std::string(), apps::PickerEntryType::kUnknown,
+                            apps::IntentPickerCloseReason::STAY_IN_CHROME,
+                            false);
+    return;
+  }
 
-void MoriBrowserWindow::ShowBookmarkBubble(const GURL& url, bool already_bookmarked) {}
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = @"Open this link in another app?";
+  alert.informativeText = @"Choose an app or keep browsing in Mori.";
+  alert.alertStyle = NSAlertStyleInformational;
+  for (const auto& app : app_info) {
+    [alert addButtonWithTitle:base::SysUTF8ToNSString(app.display_name)];
+  }
+  [alert addButtonWithTitle:@"Stay in Mori"];
+
+  NSModalResponse response = [alert runModal];
+  NSInteger selected = response - NSAlertFirstButtonReturn;
+  if (selected >= 0 && selected < static_cast<NSInteger>(app_info.size())) {
+    const auto& app = app_info[static_cast<size_t>(selected)];
+    std::move(callback).Run(app.launch_name, app.type,
+                            apps::IntentPickerCloseReason::OPEN_APP,
+                            false);
+    return;
+  }
+  std::move(callback).Run(std::string(), apps::PickerEntryType::kUnknown,
+                          apps::IntentPickerCloseReason::STAY_IN_CHROME,
+                          false);
+}
+
+void MoriBrowserWindow::ShowBookmarkBubble(const GURL& url, bool already_bookmarked) {
+  const std::string spec = url.is_valid() ? url.spec() : std::string();
+  NSString* title = @"";
+  if (content::WebContents* contents =
+          browser_->tab_strip_model()->GetActiveWebContents()) {
+    title = base::SysUTF16ToNSString(contents->GetTitle());
+  }
+  [MoriRoot toggleBookmarkForURL:base::SysUTF8ToNSString(spec) title:title];
+}
 
 sharing_hub::ScreenshotCapturedBubble* MoriBrowserWindow::ShowScreenshotCapturedBubble( content::WebContents* contents, const gfx::Image& image) {
+  [MoriRoot showNativeNotice:@"Screenshot captured."
+                        icon:@"camera.viewfinder"];
   return nullptr;
 }
 
 qrcode_generator::QRCodeGeneratorBubbleView* MoriBrowserWindow::ShowQRCodeGeneratorBubble(content::WebContents* contents, const GURL& url, bool show_back_button) {
+  NSString* title = contents ? base::SysUTF16ToNSString(contents->GetTitle()) : @"";
+  const std::string spec = url.is_valid()
+                               ? url.spec()
+                               : (contents ? contents->GetVisibleURL().spec()
+                                           : std::string());
+  [MoriRoot showQRCodeForURL:base::SysUTF8ToNSString(spec) title:title];
   return nullptr;
 }
 
 send_tab_to_self::SendTabToSelfBubbleView* MoriBrowserWindow::ShowSendTabToSelfDevicePickerBubble(content::WebContents* contents) {
+  [MoriRoot showNativeNotice:@"Send to device is not exposed in Mori yet."
+                        icon:@"paperplane"];
   return nullptr;
 }
 
 send_tab_to_self::SendTabToSelfBubbleView* MoriBrowserWindow::ShowSendTabToSelfPromoBubble(content::WebContents* contents, bool show_signin_button) {
+  [MoriRoot showNativeNotice:@"Send to device is not exposed in Mori yet."
+                        icon:@"paperplane"];
   return nullptr;
 }
 
 sharing_hub::SharingHubBubbleView* MoriBrowserWindow::ShowSharingHubBubble( share::ShareAttempt attempt) {
+  if (content::WebContents* contents =
+          browser_->tab_strip_model()->GetActiveWebContents()) {
+    [MoriRoot shareURL:base::SysUTF8ToNSString(contents->GetVisibleURL().spec())
+                 title:base::SysUTF16ToNSString(contents->GetTitle())];
+  }
   return nullptr;
 }
 
 ShowTranslateBubbleResult MoriBrowserWindow::ShowTranslateBubble( content::WebContents* contents, translate::TranslateStep step, const std::string& source_language, const std::string& target_language, translate::TranslateErrors error_type, bool is_user_gesture) {
+  if (contents) {
+    [MoriRoot translateURL:base::SysUTF8ToNSString(contents->GetVisibleURL().spec())];
+  }
   return {};
 }
 
-void MoriBrowserWindow::StartPartialTranslate(const std::string& source_language, const std::string& target_language, const std::u16string& text_selection) {}
+void MoriBrowserWindow::StartPartialTranslate(const std::string& source_language, const std::string& target_language, const std::u16string& text_selection) {
+  [MoriRoot translateText:base::SysUTF16ToNSString(text_selection)];
+}
 
 DownloadBubbleUIController* MoriBrowserWindow::GetDownloadBubbleUIController() {
   return nullptr;
 }
 
-void MoriBrowserWindow::ConfirmBrowserCloseWithPendingDownloads( int download_count, Browser::DownloadCloseType dialog_type, base::OnceCallback<void(bool)> callback) {}
+void MoriBrowserWindow::ConfirmBrowserCloseWithPendingDownloads( int download_count, Browser::DownloadCloseType dialog_type, base::OnceCallback<void(bool)> callback) {
+  NSAlert* alert = [[NSAlert alloc] init];
+  alert.messageText = download_count == 1
+                          ? @"A download is still in progress."
+                          : [NSString stringWithFormat:@"%d downloads are still in progress.",
+                                                       download_count];
+  alert.informativeText = @"Closing Mori now will cancel unfinished downloads.";
+  alert.alertStyle = NSAlertStyleWarning;
+  [alert addButtonWithTitle:@"Close Anyway"];
+  [alert addButtonWithTitle:@"Keep Browsing"];
+  NSModalResponse response = [alert runModal];
+  std::move(callback).Run(response == NSAlertFirstButtonReturn);
+}
 
-void MoriBrowserWindow::ShowAppMenu() {}
+void MoriBrowserWindow::ShowAppMenu() {
+  NSMenu* appMenu = [[NSApp.mainMenu itemAtIndex:0] submenu];
+  if (!appMenu) {
+    return;
+  }
+  NSWindow* window = mori::MoriMainWindow();
+  NSPoint point = window ? NSMakePoint(NSMidX(window.frame), NSMaxY(window.frame) - 40)
+                         : NSMakePoint(24, 24);
+  [appMenu popUpMenuPositioningItem:nil atLocation:point inView:nil];
+}
 
 void MoriBrowserWindow::PreHandleDragUpdate(const content::DropData& drop_data, const gfx::PointF& point) {}
 
@@ -730,7 +970,10 @@ MoriBrowserWindow::GetWebContentsModalDialogHostFor(
   return &modal_dialog_host_;
 }
 
-void MoriBrowserWindow::ShowAvatarBubbleFromAvatarButton(bool is_source_accelerator) {}
+void MoriBrowserWindow::ShowAvatarBubbleFromAvatarButton(bool is_source_accelerator) {
+  [MoriRoot showNativeNotice:@"Profiles are not exposed in Mori yet."
+                        icon:@"person.crop.circle"];
+}
 
 void MoriBrowserWindow::MaybeShowProfileSwitchIPH() {}
 
@@ -750,21 +993,36 @@ bool MoriBrowserWindow::IsVisibleOnAllWorkspaces() const {
   return false;
 }
 
-void MoriBrowserWindow::ShowEmojiPanel() {}
+void MoriBrowserWindow::ShowEmojiPanel() {
+  [NSApp orderFrontCharacterPalette:nil];
+}
 
 std::unique_ptr<content::EyeDropper> MoriBrowserWindow::OpenEyeDropper( content::RenderFrameHost* frame, content::EyeDropperListener* listener) {
+  [MoriRoot showNativeNotice:@"Eye dropper is not exposed in Mori yet."
+                        icon:@"eyedropper"];
   return {};
 }
 
-void MoriBrowserWindow::ShowCaretBrowsingDialog() {}
+void MoriBrowserWindow::ShowCaretBrowsingDialog() {
+  [MoriRoot showNativeNotice:@"Caret browsing is not exposed in Mori yet."
+                        icon:@"text.cursor"];
+}
 
-void MoriBrowserWindow::CreateTabSearchBubble() {}
+void MoriBrowserWindow::CreateTabSearchBubble() {
+  [MoriRoot showTabSearch];
+}
 
 void MoriBrowserWindow::CloseTabSearchBubble() {}
 
-void MoriBrowserWindow::ShowIncognitoClearBrowsingDataDialog() {}
+void MoriBrowserWindow::ShowIncognitoClearBrowsingDataDialog() {
+  [MoriRoot showNativeNotice:@"Private browsing is not exposed in Mori yet."
+                        icon:@"eye.slash"];
+}
 
-void MoriBrowserWindow::ShowIncognitoHistoryDisclaimerDialog() {}
+void MoriBrowserWindow::ShowIncognitoHistoryDisclaimerDialog() {
+  [MoriRoot showNativeNotice:@"Private browsing is not exposed in Mori yet."
+                        icon:@"eye.slash"];
+}
 
 bool MoriBrowserWindow::IsUnframedModeEnabled() const {
   return false;
@@ -778,7 +1036,10 @@ ui::mojom::WindowShowState MoriBrowserWindow::GetWindowShowState() const {
   return {};
 }
 
-void MoriBrowserWindow::ShowChromeLabs() {}
+void MoriBrowserWindow::ShowChromeLabs() {
+  [MoriRoot showNativeNotice:@"Chrome Labs is not exposed in Mori."
+                        icon:@"flask"];
+}
 
 BrowserView* MoriBrowserWindow::AsBrowserView() {
   return nullptr;

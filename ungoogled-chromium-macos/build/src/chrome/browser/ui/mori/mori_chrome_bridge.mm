@@ -10,10 +10,13 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <memory>
 #include <string>
+#include <vector>
 
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
@@ -21,11 +24,12 @@
 #include "base/values.h"
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/download/download_core_service_factory.h"
+#include "chrome/browser/printing/print_view_manager_common.h"
 #include "chrome/browser/shell_integration.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/common/chrome_isolated_world_ids.h"
@@ -63,7 +67,6 @@
 + (void)prepareForTermination;
 + (BOOL)shouldAutoFocusWebContent;
 + (BOOL)handleShortcutEvent:(NSEvent*)event;
-+ (void)releaseShortcutEvent:(NSEvent*)event;
 + (BOOL)isReservedShortcutKeyEquivalent:(NSString*)keyEquivalent
                            modifierMask:(NSUInteger)modifierMask;
 + (void)newTab;
@@ -71,6 +74,17 @@
 + (void)goBack;
 + (void)goForward;
 + (void)toggleSidebar;
++ (void)toggleBookmarkForURL:(NSString*)url title:(NSString*)title;
++ (void)shareURL:(NSString*)url title:(NSString*)title;
++ (void)showQRCodeForURL:(NSString*)url title:(NSString*)title;
++ (void)translateURL:(NSString*)url;
++ (void)showNativeNotice:(NSString*)message icon:(NSString*)icon;
++ (void)showTabSearch;
++ (void)shareCurrentPage;
++ (void)showQRCodeForCurrentPage;
++ (void)translateCurrentPage;
++ (void)printPage;
++ (void)toggleFindBar;
 @end
 
 @class MoriBrowserView;
@@ -92,10 +106,12 @@ namespace {
 constexpr int kMoriMediaWorldId = ISOLATED_WORLD_ID_CHROME_INTERNAL;
 
 Browser* g_mori_browser = nullptr;
-// True while a MoriBrowserView is synchronously creating its own tab via
-// Navigate() — the TabStripModel insert observer must not treat that insert
-// as an engine-created orphan (it fires before the view can register).
-bool g_self_insert_in_progress = false;
+// Set while a MoriBrowserView is synchronously creating its own tab via
+// Navigate(). Navigate() publishes the inserted WebContents only after the
+// TabStripModel notification, so collect those inserts and replay them once the
+// expected self-created WebContents is known.
+std::vector<base::WeakPtr<content::WebContents>>*
+    g_deferred_self_insert_contents = nullptr;
 NSWindow* __strong g_main_window = nil;
 BOOL g_web_content_suppressed = NO;
 int g_next_browser_identifier = 1;
@@ -113,6 +129,72 @@ std::map<content::WebContents*, __weak MoriBrowserView*>& ViewMap() {
 std::multimap<std::string, content::WebContents*>& OrphanMap() {
   static std::multimap<std::string, content::WebContents*> map;
   return map;
+}
+
+void EraseOrphanEntriesForContents(content::WebContents* contents);
+
+class MoriOrphanWebContentsObserver : public content::WebContentsObserver {
+ public:
+  explicit MoriOrphanWebContentsObserver(content::WebContents* contents)
+      : content::WebContentsObserver(contents), contents_(contents) {}
+
+  void WebContentsDestroyed() override {
+    EraseOrphanEntriesForContents(contents_);
+  }
+
+ private:
+  raw_ptr<content::WebContents> contents_ = nullptr;
+};
+
+std::map<content::WebContents*, std::unique_ptr<MoriOrphanWebContentsObserver>>&
+OrphanObservers() {
+  static std::map<content::WebContents*,
+                  std::unique_ptr<MoriOrphanWebContentsObserver>>
+      observers;
+  return observers;
+}
+
+void EraseOrphanEntriesForContents(content::WebContents* contents) {
+  if (!contents) {
+    return;
+  }
+  for (auto it = OrphanMap().begin(); it != OrphanMap().end();) {
+    if (it->second == contents) {
+      it = OrphanMap().erase(it);
+    } else {
+      ++it;
+    }
+  }
+  OrphanObservers().erase(contents);
+}
+
+void RegisterOrphanWebContents(const std::string& spec,
+                               content::WebContents* contents) {
+  if (!contents) {
+    return;
+  }
+  OrphanMap().emplace(spec, contents);
+  if (!OrphanObservers().count(contents)) {
+    OrphanObservers()[contents] =
+        std::make_unique<MoriOrphanWebContentsObserver>(contents);
+  }
+}
+
+BOOL DispatchToMainThreadIfNeeded(dispatch_block_t block) {
+  if ([NSThread isMainThread]) {
+    return NO;
+  }
+  dispatch_async(dispatch_get_main_queue(), block);
+  return YES;
+}
+
+BOOL AssertMainThreadForSynchronousReturn(SEL selector) {
+  if ([NSThread isMainThread]) {
+    return YES;
+  }
+  NSCAssert(NO, @"%@ must be called on the main thread; its return value cannot be deferred.",
+            NSStringFromSelector(selector));
+  return NO;
 }
 
 NSMutableArray<MoriBrowserView*>* AllViews() {
@@ -271,6 +353,20 @@ void EnsureMenuAction(NSMenu* menu,
   item.keyEquivalentModifierMask = modifiers;
 }
 
+void EnsureMoriRootMenuAction(NSMenu* menu,
+                              NSString* title,
+                              SEL action,
+                              NSString* keyEquivalent,
+                              NSEventModifierFlags modifiers) {
+  EnsureMenuAction(menu, title, action, keyEquivalent, modifiers);
+  for (NSMenuItem* item in menu.itemArray) {
+    if (item.action == action) {
+      item.target = (id)[MoriRoot class];
+      break;
+    }
+  }
+}
+
 void InstallStandardEditMenuShortcuts() {
   NSMenu* editMenu = EnsureTopLevelMenu(@"Edit", 1);
   if (!editMenu) {
@@ -348,6 +444,26 @@ void InstallSidebarMenuShortcut() {
   item.action = @selector(toggleSidebar);
   item.keyEquivalent = @"";
   item.keyEquivalentModifierMask = 0;
+}
+
+void InstallMoriPageActionMenuShortcuts() {
+  NSMenu* fileMenu = FindTopLevelMenu(@"File");
+  NSMenu* editMenu = FindTopLevelMenu(@"Edit");
+  NSMenu* viewMenu = FindTopLevelMenu(@"View");
+
+  EnsureMoriRootMenuAction(fileMenu, @"Print…", @selector(printPage), @"p",
+                           NSEventModifierFlagCommand);
+  EnsureMoriRootMenuAction(fileMenu, @"Share…", @selector(shareCurrentPage), @"i",
+                           NSEventModifierFlagCommand |
+                               NSEventModifierFlagShift);
+  EnsureMoriRootMenuAction(editMenu, @"Find in Page…", @selector(toggleFindBar),
+                           @"f", NSEventModifierFlagCommand);
+  EnsureMoriRootMenuAction(viewMenu, @"Create QR Code…",
+                           @selector(showQRCodeForCurrentPage), @"", 0);
+  EnsureMoriRootMenuAction(viewMenu, @"Translate Page",
+                           @selector(translateCurrentPage), @"", 0);
+  EnsureMoriRootMenuAction(viewMenu, @"Search Tabs…", @selector(showTabSearch),
+                           @"", 0);
 }
 
 id NSObjectFromValue(const base::Value& value) {
@@ -553,52 +669,72 @@ class MoriTabStripBridge : public TabStripModelObserver {
     if (change.type() != TabStripModelChange::kInserted) {
       return;
     }
-    if (g_self_insert_in_progress) {
-      return;  // A MoriBrowserView is inserting its own tab.
-    }
     for (const auto& contents : change.GetInsert()->contents) {
       content::WebContents* wc = contents.contents.get();
-      if (g_mori_browser) {
-        wc->SetDelegate(g_mori_browser);
-      }
-      if (ViewMap().count(wc)) {
-        // A Mori-created tab arrived: the startup blank (if any) can go now
-        // without emptying the strip (which would tear the Browser down).
-        MaybeCloseStartupBlank();
+      if (!wc) {
         continue;
       }
-      const GURL url = wc->GetVisibleURL();
-      const bool startup_blank =
-          ViewMap().empty() &&
-          (url.is_empty() || url.spec() == "about:blank" ||
-           url.host() == "newtab" || url.host() == "new-tab-page");
-      if (startup_blank) {
-        // Mori restores its own session; this engine-created NTP is closed as
-        // soon as a real tab exists (closing it now would empty the strip and
-        // destroy the Browser). Navigate it to about:blank first: the NTP
-        // WebUI renderer can't fully connect without Chrome's views window
-        // and self-terminates after 15s, which would tear down the tab from
-        // under us.
-        startup_blank_ = wc;
-        wc->GetController().LoadURL(GURL("about:blank"), content::Referrer(),
-                                    ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                                    std::string());
+      if (g_deferred_self_insert_contents) {
+        g_deferred_self_insert_contents->push_back(wc->GetWeakPtr());
         continue;
       }
-      // Engine-created tab (window.open, chrome.tabs.create from extension
-      // popups, etc.): stash as orphan and ask the Mori UI to open a tab at
-      // that URL; the resulting MoriBrowserView adopts the orphan. Deliver to
-      // a view that actually has a navDelegate (background runners may not).
-      const std::string spec = url.is_valid() && !url.spec().empty()
-                                   ? url.spec()
-                                   : std::string("about:blank");
-      OrphanMap().emplace(spec, wc);
-      NSLog(@"MORI adopt-orphan url=%s", spec.c_str());
-      [MoriRoot openNewTabWithURL:base::SysUTF8ToNSString(spec)];
+      HandleInsertedWebContents(wc, nullptr);
+    }
+  }
+
+  void ReplayDeferredInsertions(
+      const std::vector<base::WeakPtr<content::WebContents>>& contents,
+      content::WebContents* self_inserted_contents) {
+    for (const auto& weak_contents : contents) {
+      HandleInsertedWebContents(weak_contents.get(), self_inserted_contents);
     }
   }
 
  private:
+  void HandleInsertedWebContents(content::WebContents* wc,
+                                 content::WebContents* self_inserted_contents) {
+    if (!wc || wc == self_inserted_contents) {
+      return;
+    }
+    if (g_mori_browser) {
+      wc->SetDelegate(g_mori_browser);
+    }
+    if (ViewMap().count(wc)) {
+      // A Mori-created tab arrived: the startup blank (if any) can go now
+      // without emptying the strip (which would tear the Browser down).
+      MaybeCloseStartupBlank();
+      return;
+    }
+    const GURL url = wc->GetVisibleURL();
+    const bool startup_blank =
+        ViewMap().empty() &&
+        (url.is_empty() || url.spec() == "about:blank" ||
+         url.host() == "newtab" || url.host() == "new-tab-page");
+    if (startup_blank) {
+      // Mori restores its own session; this engine-created NTP is closed as
+      // soon as a real tab exists (closing it now would empty the strip and
+      // destroy the Browser). Navigate it to about:blank first: the NTP
+      // WebUI renderer can't fully connect without Chrome's views window
+      // and self-terminates after 15s, which would tear down the tab from
+      // under us.
+      startup_blank_ = wc;
+      wc->GetController().LoadURL(GURL("about:blank"), content::Referrer(),
+                                  ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
+                                  std::string());
+      return;
+    }
+    // Engine-created tab (window.open, chrome.tabs.create from extension
+    // popups, etc.): stash as orphan and ask the Mori UI to open a tab at
+    // that URL; the resulting MoriBrowserView adopts the orphan. Deliver to
+    // a view that actually has a navDelegate (background runners may not).
+    const std::string spec = url.is_valid() && !url.spec().empty()
+                                 ? url.spec()
+                                 : std::string("about:blank");
+    RegisterOrphanWebContents(spec, wc);
+    NSLog(@"MORI adopt-orphan url=%s", spec.c_str());
+    [MoriRoot openNewTabWithURL:base::SysUTF8ToNSString(spec)];
+  }
+
   void MaybeCloseStartupBlank() {
     content::WebContents* blank = startup_blank_;
     if (!blank) {
@@ -621,6 +757,8 @@ class MoriTabStripBridge : public TabStripModelObserver {
 
   raw_ptr<content::WebContents> startup_blank_ = nullptr;
 };
+
+static MoriTabStripBridge* g_tab_strip_bridge = nullptr;
 
 // Feeds Mori's DownloadStore (which listens for the CEF-era
 // "MoriDownloadUpdated" NSNotification) from Chrome's real DownloadManager.
@@ -684,8 +822,10 @@ void OnBrowserWindowCreated(Browser* browser) {
     return;
   }
   g_mori_browser = browser;
-  static MoriTabStripBridge* bridge = new MoriTabStripBridge();
-  browser->tab_strip_model()->AddObserver(bridge);
+  if (!g_tab_strip_bridge) {
+    g_tab_strip_bridge = new MoriTabStripBridge();
+  }
+  browser->tab_strip_model()->AddObserver(g_tab_strip_bridge);
   NSLog(@"MORI adopted browser %p", browser);
 }
 
@@ -742,7 +882,6 @@ void EnsureMoriUIStarted(Browser* browser) {
   [NSEvent
       addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown |
                                            NSEventMaskKeyUp |
-                                           NSEventMaskFlagsChanged |
                                            NSEventMaskLeftMouseDown |
                                            NSEventMaskRightMouseDown |
                                            NSEventMaskOtherMouseDown |
@@ -774,15 +913,11 @@ void EnsureMoriUIStarted(Browser* browser) {
                                        }
                                      } else if (event.type ==
                                                 NSEventTypeKeyUp) {
-                                       [MoriRoot releaseShortcutEvent:event];
                                        if (MoriBrowserView* view =
                                                FirstFocusableMoriBrowserView()) {
                                          [view ensureRendererFirstResponderForKeyEvent:
                                                    event];
                                        }
-                                     } else if (event.type ==
-                                                NSEventTypeFlagsChanged) {
-                                       [MoriRoot releaseShortcutEvent:event];
                                      } else if (event.type ==
                                                     NSEventTypeLeftMouseDown ||
                                                 event.type ==
@@ -836,6 +971,7 @@ void EnsureMoriUIStarted(Browser* browser) {
   }
   InstallStandardEditMenuShortcuts();
   InstallSidebarMenuShortcut();
+  InstallMoriPageActionMenuShortcuts();
 }
 
 NSWindow* MoriMainWindow() {
@@ -916,7 +1052,7 @@ Browser* MoriBrowser() {
   }
   if (orphan != OrphanMap().end()) {
     content::WebContents* wc = orphan->second;
-    OrphanMap().erase(orphan);
+    EraseOrphanEntriesForContents(wc);
     [self engineAttachWebContents:wc];
     return;
   }
@@ -925,11 +1061,18 @@ Browser* MoriBrowser() {
                         ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
   params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
   params.window_action = NavigateParams::WindowAction::kNoAction;
-  g_self_insert_in_progress = true;
+  std::vector<base::WeakPtr<content::WebContents>> deferred_insertions;
+  g_deferred_self_insert_contents = &deferred_insertions;
   Navigate(&params);
-  g_self_insert_in_progress = false;
-  if (content::WebContents* wc = params.navigated_or_inserted_contents) {
-    [self engineAttachWebContents:wc];
+  g_deferred_self_insert_contents = nullptr;
+  content::WebContents* self_inserted_contents =
+      params.navigated_or_inserted_contents;
+  if (self_inserted_contents) {
+    [self engineAttachWebContents:self_inserted_contents];
+  }
+  if (mori::g_tab_strip_bridge) {
+    mori::g_tab_strip_bridge->ReplayDeferredInsertions(
+        deferred_insertions, self_inserted_contents);
   }
 }
 
@@ -1056,18 +1199,33 @@ Browser* MoriBrowser() {
 }
 
 - (void)setAudioMuted:(BOOL)muted {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self setAudioMuted:muted];
+      })) {
+    return;
+  }
   if (_webContents) {
     _webContents->SetAudioMuted(muted);
   }
 }
 
 - (BOOL)isAudioMuted {
+  if (!AssertMainThreadForSynchronousReturn(_cmd)) {
+    return NO;
+  }
   return _webContents ? _webContents->IsAudioMuted() : NO;
 }
 
 // MARK: commands
 
 - (void)loadURL:(NSString*)url {
+  if (![NSThread isMainThread]) {
+    NSString* urlCopy = [url copy];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self loadURL:urlCopy];
+    });
+    return;
+  }
   _pendingURL = [url copy];
   if (!_webContents) {
     [self maybeCreateTab];
@@ -1083,24 +1241,89 @@ Browser* MoriBrowser() {
 }
 
 - (void)goBack {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self goBack];
+      })) {
+    return;
+  }
   if (_webContents && _webContents->GetController().CanGoBack()) {
     _webContents->GetController().GoBack();
   }
 }
 
 - (void)goForward {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self goForward];
+      })) {
+    return;
+  }
   if (_webContents && _webContents->GetController().CanGoForward()) {
     _webContents->GetController().GoForward();
   }
 }
 
+- (NSArray<NSDictionary<NSString *, id> *> *)backForwardEntries {
+  NSMutableArray<NSDictionary<NSString *, id> *> *entries =
+      [NSMutableArray array];
+  if (!AssertMainThreadForSynchronousReturn(_cmd)) {
+    return entries;
+  }
+  if (!_webContents) {
+    return entries;
+  }
+  content::NavigationController& controller = _webContents->GetController();
+  const int count = controller.GetEntryCount();
+  const int current = controller.GetCurrentEntryIndex();
+  for (int i = 0; i < count; ++i) {
+    content::NavigationEntry* entry = controller.GetEntryAtIndex(i);
+    if (!entry) {
+      continue;
+    }
+    NSString* title = base::SysUTF16ToNSString(entry->GetTitleForDisplay());
+    NSString* urlString =
+        base::SysUTF8ToNSString(entry->GetVirtualURL().possibly_invalid_spec());
+    [entries addObject:@{
+      @"title" : title ?: @"",
+      @"url" : urlString ?: @"",
+      @"offset" : @(i - current),
+    }];
+  }
+  return entries;
+}
+
+- (void)goToHistoryOffset:(NSInteger)offset {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self goToHistoryOffset:offset];
+      })) {
+    return;
+  }
+  if (!_webContents) {
+    return;
+  }
+  content::NavigationController& controller = _webContents->GetController();
+  const int delta = static_cast<int>(offset);
+  if (controller.CanGoToOffset(delta)) {
+    controller.GoToOffset(delta);
+  }
+}
+
 - (void)reload {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self reload];
+      })) {
+    return;
+  }
   if (_webContents) {
     _webContents->GetController().Reload(content::ReloadType::NORMAL, false);
   }
 }
 
 - (void)reloadIgnoringCache {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self reloadIgnoringCache];
+      })) {
+    return;
+  }
   if (_webContents) {
     _webContents->GetController().Reload(content::ReloadType::BYPASSING_CACHE,
                                          false);
@@ -1108,6 +1331,11 @@ Browser* MoriBrowser() {
 }
 
 - (void)stopLoading {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self stopLoading];
+      })) {
+    return;
+  }
   if (_webContents) {
     _webContents->Stop();
   }
@@ -1116,19 +1344,39 @@ Browser* MoriBrowser() {
 // MARK: zoom
 
 - (void)zoomIn {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self zoomIn];
+      })) {
+    return;
+  }
   [self adjustZoomBy:0.5];
 }
 
 - (void)zoomOut {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self zoomOut];
+      })) {
+    return;
+  }
   [self adjustZoomBy:-0.5];
 }
 
 - (void)resetZoom {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self resetZoom];
+      })) {
+    return;
+  }
   _zoomLevel = 0;
   [self applyZoom];
 }
 
 - (void)setZoomFactor:(double)factor {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self setZoomFactor:factor];
+      })) {
+    return;
+  }
   if (factor <= 0) {
     return;
   }
@@ -1150,6 +1398,13 @@ Browser* MoriBrowser() {
 // MARK: find in page (real FindTabHelper — highlights, tickmarks, ordinals)
 
 - (void)findText:(NSString*)text forward:(BOOL)forward {
+  if (![NSThread isMainThread]) {
+    NSString* textCopy = [text copy];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self findText:textCopy forward:forward];
+    });
+    return;
+  }
   if (!_webContents) {
     return;
   }
@@ -1162,6 +1417,11 @@ Browser* MoriBrowser() {
 }
 
 - (void)stopFinding:(BOOL)clearSelection {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self stopFinding:clearSelection];
+      })) {
+    return;
+  }
   if (!_webContents) {
     return;
   }
@@ -1177,6 +1437,11 @@ Browser* MoriBrowser() {
 // MARK: devtools / print
 
 - (void)showDevTools {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self showDevTools];
+      })) {
+    return;
+  }
   if (_webContents) {
     DevToolsWindow::OpenDevToolsWindow(
         _webContents, DevToolsOpenedByAction::kUnknown);
@@ -1184,6 +1449,11 @@ Browser* MoriBrowser() {
 }
 
 - (void)closeDevTools {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self closeDevTools];
+      })) {
+    return;
+  }
   if (_webContents) {
     if (DevToolsWindow::GetInstanceForInspectedWebContents(_webContents) &&
         g_mori_browser) {
@@ -1196,6 +1466,11 @@ Browser* MoriBrowser() {
 }
 
 - (void)toggleDevTools {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self toggleDevTools];
+      })) {
+    return;
+  }
   if (!_webContents) {
     return;
   }
@@ -1207,7 +1482,17 @@ Browser* MoriBrowser() {
 }
 
 - (void)printPage {
-  // TODO(mori): wire chrome printing (printing::StartPrint).
+  if (DispatchToMainThreadIfNeeded(^{
+        [self printPage];
+      })) {
+    return;
+  }
+  if (!_webContents) {
+    return;
+  }
+  printing::StartPrint(_webContents,
+                       /*print_preview_disabled=*/false,
+                       /*has_selection=*/false);
 }
 
 // MARK: scripting
@@ -1278,6 +1563,11 @@ Browser* MoriBrowser() {
 }
 
 - (BOOL)copyImageAtWindowPoint:(NSPoint)windowPoint {
+  // Synchronous return-value API: callers must be on the main thread because
+  // the copy result cannot be deferred through this signature.
+  if (!AssertMainThreadForSynchronousReturn(_cmd)) {
+    return NO;
+  }
   if (!_webContents) {
     return NO;
   }
@@ -1294,6 +1584,11 @@ Browser* MoriBrowser() {
 }
 
 - (BOOL)saveImageURL:(NSString*)url atWindowPoint:(NSPoint)windowPoint {
+  // Synchronous return-value API: callers must be on the main thread because
+  // the save result cannot be deferred through this signature.
+  if (!AssertMainThreadForSynchronousReturn(_cmd)) {
+    return NO;
+  }
   if (!_webContents) {
     return NO;
   }
@@ -1531,6 +1826,11 @@ Browser* MoriBrowser() {
 }
 
 - (void)focusBrowser {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self focusBrowser];
+      })) {
+    return;
+  }
   if (!_webContents || !g_mori_browser) {
     return;
   }
@@ -1559,6 +1859,11 @@ Browser* MoriBrowser() {
 }
 
 - (void)setTabPinned:(BOOL)pinned {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self setTabPinned:pinned];
+      })) {
+    return;
+  }
   if (!_webContents || !g_mori_browser) {
     return;
   }
@@ -1713,6 +2018,11 @@ static NSString* MoriMediaCommandScript(NSString* action, double value) {
 }
 
 - (void)setPageHidden:(BOOL)hidden {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self setPageHidden:hidden];
+      })) {
+    return;
+  }
   if (!_webContents) {
     return;
   }
@@ -1755,9 +2065,6 @@ static NSString* MoriMediaCommandScript(NSString* action, double value) {
   g_mori_auto_pip = enabled;
 }
 
-+ (void)setAdBlockerEnabled:(BOOL)enabled {
-}
-
 + (BOOL)cancelDownloadWithID:(uint32_t)downloadID {
   content::DownloadManager* manager = mori::MoriDownloadManager();
   if (!manager) {
@@ -1778,6 +2085,11 @@ static NSString* MoriMediaCommandScript(NSString* action, double value) {
 }
 
 - (void)closeBrowser {
+  if (DispatchToMainThreadIfNeeded(^{
+        [self closeBrowser];
+      })) {
+    return;
+  }
   if (!_webContents || !g_mori_browser) {
     return;
   }

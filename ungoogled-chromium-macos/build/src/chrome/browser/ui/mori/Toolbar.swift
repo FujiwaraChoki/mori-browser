@@ -85,12 +85,13 @@ struct Omnibox: View {
 
     var body: some View {
         HStack(spacing: 7) {
-            // The URL display doubles as the launch target. Extension items stay
-            // outside the button so they remain independently clickable.
+            SiteInfoButton(store: store, tab: tab)
+
+            // The URL display doubles as the launch target. Extension items and
+            // the site-info button stay outside so they remain independently
+            // clickable.
             Button(action: { store.presentLauncherForCurrentTab() }) {
                 HStack(spacing: 7) {
-                    leadingIcon
-
                     if displayText.isEmpty {
                         Text("Search or enter address")
                             .font(Typography.ui(Typography.base))
@@ -101,6 +102,7 @@ struct Omnibox: View {
                             .foregroundStyle(p.foreground.color.opacity(0.78))
                             .lineLimit(1)
                             .truncationMode(.tail)
+                            .help(tab.displayURL)
                     }
 
                     Spacer(minLength: 0)
@@ -116,6 +118,8 @@ struct Omnibox: View {
             }
 
             ExtensionToolbarItems(store: store)
+
+            BookmarkStarButton(tab: tab)
 
             ReaderButton(store: store, tab: tab)
 
@@ -133,6 +137,14 @@ struct Omnibox: View {
                 .strokeBorder(p.border.color.opacity(0.35), lineWidth: 1)
         )
     }
+}
+
+private struct SiteInfoButton: View {
+    @ObservedObject var store: BrowserStore
+    @ObservedObject var tab: BrowserTab
+    @ObservedObject private var bookmarks = BookmarkStore.shared
+    @Environment(\.palette) private var p
+    @State private var open = false
 
     @ViewBuilder private var leadingIcon: some View {
         if showsPageIcon {
@@ -161,6 +173,123 @@ struct Omnibox: View {
         if tab.urlString.hasPrefix("https") { return p.mutedForeground.color }
         if tab.urlString.hasPrefix("http") { return p.statusWarningFg.color }
         return p.mutedForeground.color
+    }
+
+    var body: some View {
+        Button { open.toggle() } label: {
+            leadingIcon
+                .frame(width: 22, height: 22)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("Site information")
+        .popover(isPresented: $open, arrowEdge: .bottom) {
+            siteInfoPanel
+        }
+    }
+
+    private var hostText: String {
+        URLComponents(string: tab.urlString)?.host ?? tab.displayURL
+    }
+
+    private var isSecure: Bool {
+        tab.urlString.hasPrefix("https://")
+    }
+
+    private var isInsecureHTTP: Bool {
+        tab.urlString.hasPrefix("http://")
+    }
+
+    private var statusTitle: String {
+        if isSecure { return "Connection is secure" }
+        if isInsecureHTTP { return "Connection is not secure" }
+        if tab.urlString.hasPrefix("mori://") { return "Mori page" }
+        if tab.urlString.isEmpty || tab.urlString == "about:blank" { return "New tab" }
+        return "Page information"
+    }
+
+    @ViewBuilder
+    private var siteInfoPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Icon(name: secureGlyph, size: 17, weight: .semibold)
+                    .foregroundStyle(secureColor)
+                    .frame(width: 24, height: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(statusTitle)
+                        .font(Typography.ui(Typography.base, weight: .semibold))
+                        .foregroundStyle(p.foreground.color)
+                    Text(hostText.isEmpty ? "No site loaded" : hostText)
+                        .font(Typography.ui(Typography.small))
+                        .foregroundStyle(p.mutedForeground.color)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(12)
+
+            Hairline().opacity(0.6)
+
+            VStack(spacing: 2) {
+                SiteInfoRow(icon: "link", title: "Copy Link") {
+                    store.copyCurrentTabURL()
+                    open = false
+                }
+                SiteInfoRow(icon: bookmarks.isBookmarked(tab.urlString) ? "star.fill" : "star",
+                            title: bookmarks.isBookmarked(tab.urlString) ? "Remove Bookmark" : "Bookmark Page") {
+                    store.toggleBookmark()
+                    open = false
+                }
+                SiteInfoRow(icon: "square.and.arrow.up", title: "Share Page") {
+                    store.share()
+                    open = false
+                }
+                SiteInfoRow(icon: "qrcode", title: "Create QR Code") {
+                    store.showQRCode()
+                    open = false
+                }
+                SiteInfoRow(icon: "character.bubble", title: "Translate Page") {
+                    store.translate()
+                    open = false
+                }
+            }
+            .padding(6)
+        }
+        .frame(width: 280)
+        .background(p.popover.color)
+    }
+}
+
+private struct SiteInfoRow: View {
+    let icon: String
+    let title: String
+    let action: () -> Void
+    @Environment(\.palette) private var p
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 9) {
+                Icon(name: icon, size: 14, weight: .medium)
+                    .foregroundStyle(p.mutedForeground.color)
+                    .frame(width: 18)
+                Text(title)
+                    .font(Typography.ui(Typography.base))
+                    .foregroundStyle(p.foreground.color)
+                Spacer()
+            }
+            .padding(.horizontal, 8)
+            .frame(height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.button, style: .continuous)
+                    .fill(hovering ? p.foreground.color.opacity(0.07) : .clear)
+            )
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(Motion.state, value: hovering)
     }
 }
 

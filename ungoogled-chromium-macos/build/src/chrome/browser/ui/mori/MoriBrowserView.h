@@ -75,6 +75,16 @@ typedef void (^MoriJavaScriptResultHandler)(id _Nullable result,
 - (void)reloadIgnoringCache;
 - (void)stopLoading;
 
+/// Back/forward navigation entries for the history popover. Each entry is a
+/// dictionary with keys "title" (NSString), "url" (NSString) and "offset"
+/// (NSNumber: negative = back, 0 = current page, positive = forward), ordered
+/// oldest → newest. Empty when there's no live browser.
+- (NSArray<NSDictionary<NSString *, id> *> *)backForwardEntries;
+
+/// Navigate to a relative history offset (negative = back, positive = forward).
+/// A no-op when the offset is out of range.
+- (void)goToHistoryOffset:(NSInteger)offset;
+
 /// Page zoom. Steps are relative to the browser's current zoom; reset returns
 /// to 100%.
 - (void)zoomIn;
@@ -152,9 +162,6 @@ typedef void (^MoriJavaScriptResultHandler)(id _Nullable result,
 
 /// Set the process-wide auto-PiP default applied to newly loaded pages.
 + (void)setAutoPiPEnabled:(BOOL)enabled;
-
-/// Set the process-wide built-in ad blocker state. Applies to future requests.
-+ (void)setAdBlockerEnabled:(BOOL)enabled;
 
 /// Cancel an active Chromium-owned download by id.
 + (BOOL)cancelDownloadWithID:(uint32_t)downloadID;

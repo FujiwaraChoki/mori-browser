@@ -29,13 +29,16 @@ struct WebContainerView: NSViewRepresentable {
         nsView.freezeSubviewLayout = store.isResizingSidebar
         let justUnfroze = wasFrozen && !store.isResizingSidebar
 
-        // Settings renders as a full page over the web card, so hide Chromium
-        // while it is up. The launcher is hosted in an AppKit overlay above the
-        // web view and should leave the current page visible behind its scrim.
-        MoriBrowserView.setWebContentSuppressed(store.settingsVisible)
+        // Settings — and an agent thread — render as a full page over the web
+        // card, so hide Chromium while either is up. The launcher is hosted in
+        // an AppKit overlay above the web view and leaves the page visible
+        // behind its scrim.
+        let agentForeground = store.selectedTab?.kind == .agent
+        MoriBrowserView.setWebContentSuppressed(store.settingsVisible || agentForeground)
 
-        // Make sure the selected tab is realized.
-        store.selectedTab?.realize()
+        // Realize the selected *web* tab only — an agent tab has no CEF view and
+        // must never be forced to create one.
+        store.selectedWebTab?.realize()
 
         let realizedTabs = store.tabs.filter { $0.hasRealized }
         let liveViews = realizedTabs.map { $0.browserView }
@@ -76,8 +79,10 @@ struct WebContainerView: NSViewRepresentable {
             view.isHidden = hidden
             view.setWebWindowVisible(!hidden)
             // Drive Chromium's page-visibility so backgrounded tabs throttle and
-            // (when enabled) auto-enter Picture-in-Picture on tab switch.
-            view.setPageHidden(hidden)
+            // (when enabled) auto-enter Picture-in-Picture on tab switch. While an
+            // agent thread is foreground its target web tabs are off-screen but
+            // must stay unthrottled so the agent's JS actions run reliably.
+            view.setPageHidden(hidden && !agentForeground)
         }
 
         // Keep the active browser keyboard-focused.
