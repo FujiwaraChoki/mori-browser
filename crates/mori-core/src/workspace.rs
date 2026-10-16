@@ -84,6 +84,12 @@ fn default_space_symbol() -> String {
     "circle".into()
 }
 
+/// Symbols (Lucide names) handed to new spaces in turn, so every space is
+/// recognisable in the switcher. The first space keeps the plain default.
+pub const NEW_SPACE_SYMBOLS: [&str; 10] = [
+    "briefcase", "code", "book-open", "palette", "music", "leaf", "star", "heart", "flame", "globe",
+];
+
 fn yes() -> bool {
     true
 }
@@ -672,10 +678,21 @@ impl Workspace {
     // ---- Spaces ---------------------------------------------------------------
 
     pub fn create_space(&mut self, name: impl Into<String>) -> SpaceId {
-        let space = Space::new(name);
+        let mut space = Space::new(name);
+        space.symbol = self.next_space_symbol().to_string();
         let id = space.id;
         self.spaces.push(space);
         id
+    }
+
+    /// The first symbol in [`NEW_SPACE_SYMBOLS`] no space uses yet; once all
+    /// are taken they repeat in order.
+    pub fn next_space_symbol(&self) -> &'static str {
+        NEW_SPACE_SYMBOLS
+            .iter()
+            .find(|sym| !self.spaces.iter().any(|s| s.symbol == **sym))
+            .copied()
+            .unwrap_or(NEW_SPACE_SYMBOLS[self.spaces.len() % NEW_SPACE_SYMBOLS.len()])
     }
 
     /// Default name for the next new space: "Space N".
@@ -818,6 +835,28 @@ mod tests {
         assert_eq!(ws.active_space, personal);
         assert!(ws.tab(ids[1]).is_none());
         assert!(ws.delete_space(personal).is_none(), "last space is kept");
+    }
+
+    #[test]
+    fn new_spaces_get_distinct_symbols() {
+        let (mut ws, _) = ws_with(0);
+        let first = ws.active().symbol.clone();
+        let a = ws.create_space("A");
+        let b = ws.create_space("B");
+        let symbols: Vec<&str> = [ws.active_space, a, b]
+            .iter()
+            .map(|id| ws.space(*id).unwrap().symbol.as_str())
+            .collect();
+        assert_eq!(symbols, [first.as_str(), NEW_SPACE_SYMBOLS[0], NEW_SPACE_SYMBOLS[1]]);
+        // A symbol freed by deletion is handed out again before new ones.
+        ws.delete_space(a);
+        let c = ws.create_space("C");
+        assert_eq!(ws.space(c).unwrap().symbol, NEW_SPACE_SYMBOLS[0]);
+        // Past the list, symbols repeat instead of failing.
+        for i in 0..NEW_SPACE_SYMBOLS.len() {
+            ws.create_space(format!("S{i}"));
+        }
+        assert!(NEW_SPACE_SYMBOLS.contains(&ws.spaces.last().unwrap().symbol.as_str()));
     }
 
     #[test]
