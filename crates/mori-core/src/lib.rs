@@ -12,6 +12,7 @@ pub mod history;
 pub mod launcher;
 pub mod omnibox;
 pub mod paths;
+pub mod prompts;
 pub mod routes;
 pub mod scripts;
 pub mod settings;
