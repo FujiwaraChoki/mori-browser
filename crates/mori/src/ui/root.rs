@@ -157,6 +157,9 @@ impl Browser {
         if let Some(err) = error {
             card = card.child(self.render_error(err, cx));
         }
+        if let Some(toasts) = self.render_toasts(cx) {
+            card = card.child(toasts);
+        }
         if let Some(dialog) = self.render_js_dialog(cx) {
             card = card.child(dialog);
         }
@@ -313,75 +316,6 @@ impl Browser {
                     })),
             )
     }
-
-    fn render_toasts(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.toasts.is_empty() {
-            return None;
-        }
-        let t = cx.tokens().clone();
-        let toasts: Vec<AnyElement> = self
-            .toasts
-            .iter()
-            .map(|toast| {
-                use crate::browser::ToastStyle as S;
-                let (ic, color) = match toast.style {
-                    S::Info => ("info", t.status_info),
-                    S::Success => ("circle-check", t.status_success),
-                    S::Warning => ("triangle-alert", t.status_warning),
-                    S::Error => ("circle-x", t.destructive),
-                };
-                let id = toast.id;
-                let action = toast.action.clone();
-                h_flex()
-                    .id(("toast", id as usize))
-                    .gap_2()
-                    .px(px(14.))
-                    .py(px(10.))
-                    .rounded(metrics::RADIUS_POPOVER)
-                    .bg(t.popover)
-                    .border_1()
-                    .border_color(t.border.opacity(0.6))
-                    .shadow(t.popover_shadow())
-                    .text_size(metrics::TEXT_BASE)
-                    .text_color(t.foreground)
-                    .cursor_pointer()
-                    .child(icon(ic, px(14.), color))
-                    .child(toast.text.clone())
-                    .when_some(action, |s, (label, action)| {
-                        s.child(
-                            div()
-                                .id(("toast-action", id as usize))
-                                .ml_2()
-                                .px_2()
-                                .py_0p5()
-                                .rounded(metrics::RADIUS_MD)
-                                .bg(t.primary.opacity(0.15))
-                                .text_color(t.primary)
-                                .font_weight(FontWeight::MEDIUM)
-                                .hover(|s| s.bg(t.primary.opacity(0.25)))
-                                .child(label)
-                                .on_click(cx.listener(move |this, _, window, cx| {
-                                    cx.stop_propagation();
-                                    this.run_toast_action(id, action.clone(), window, cx);
-                                })),
-                        )
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| this.dismiss_toast(id, cx)))
-                    .into_any_element()
-            })
-            .collect();
-        Some(
-            v_flex()
-                .absolute()
-                .bottom(px(24.))
-                .left_0()
-                .right_0()
-                .items_center()
-                .gap_2()
-                .children(toasts)
-                .into_any_element(),
-        )
-    }
 }
 
 fn loading_bar(cx: &App) -> impl IntoElement {
@@ -507,7 +441,6 @@ impl Render for Browser {
         let panel = self.render_panel(window, cx);
         let peek = self.render_peek(window, cx);
         let boost = self.boost_editor.clone();
-        let toasts = self.render_toasts(cx);
 
         div()
             .id("mori-root")
@@ -633,7 +566,6 @@ impl Render for Browser {
             .children(boost.map(|b| b.into_any_element()))
             .children(launcher.map(|l| l.into_any_element()))
             .children(menu)
-            .children(toasts)
     }
 }
 

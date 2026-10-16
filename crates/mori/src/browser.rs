@@ -86,7 +86,12 @@ pub struct Toast {
     pub text: SharedString,
     pub style: ToastStyle,
     pub action: Option<(SharedString, ToastAction)>,
+    /// Playing its exit animation; removed shortly after.
+    pub leaving: bool,
 }
+
+/// How long a toast takes to fade out before it is removed.
+pub const TOAST_EXIT: Duration = Duration::from_millis(160);
 
 /// A right-click menu currently on screen.
 #[derive(Clone, Debug)]
@@ -339,6 +344,7 @@ impl Browser {
             text: text.into(),
             style,
             action,
+            leaving: false,
         });
         if self.toasts.len() > 3 {
             self.toasts.remove(0);
@@ -346,6 +352,20 @@ impl Browser {
         cx.notify();
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(ttl).await;
+            this.update(cx, |this, cx| this.dismiss_toast(id, cx)).ok();
+        })
+        .detach();
+    }
+
+    /// Fade a toast out, then remove it.
+    pub fn dismiss_toast(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(toast) = self.toasts.iter_mut().find(|t| t.id == id && !t.leaving) else {
+            return;
+        };
+        toast.leaving = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(TOAST_EXIT).await;
             this.update(cx, |this, cx| {
                 this.toasts.retain(|t| t.id != id);
                 cx.notify();
@@ -353,11 +373,6 @@ impl Browser {
             .ok();
         })
         .detach();
-    }
-
-    pub fn dismiss_toast(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.toasts.retain(|t| t.id != id);
-        cx.notify();
     }
 
     pub fn run_toast_action(

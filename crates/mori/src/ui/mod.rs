@@ -13,3 +13,4 @@ pub mod peek;
 pub mod root;
 pub mod settings;
 pub mod sidebar;
+pub mod toasts;
