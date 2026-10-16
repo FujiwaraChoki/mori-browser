@@ -669,6 +669,7 @@ impl Browser {
         let asleep = live.is_none() && !Browser::is_internal(&record.url);
         let loading = live.is_some_and(|l| l.loading);
         let muted = live.is_some_and(|l| l.muted);
+        let audible = self.is_tab_audible(id);
         let title: SharedString = record.display_title().to_string().into();
         let renaming = self
             .rename
@@ -724,7 +725,9 @@ impl Browser {
                     .into_any_element(),
                 None => div().flex_1().min_w_0().truncate().child(title.clone()).into_any_element(),
             })
-            .when(muted, |s| {
+            // Speaker while the tab plays sound (click to mute), crossed out
+            // while muted (click to unmute).
+            .when(muted || audible, |s| {
                 s.child(
                     div()
                         .id("mute")
@@ -734,7 +737,7 @@ impl Browser {
                         .justify_center()
                         .rounded(metrics::RADIUS_MD)
                         .hover(|s| s.bg(t.sidebar_foreground.opacity(0.10)))
-                        .child(icon("volume-x", px(11.), fg))
+                        .child(icon(if muted { "volume-x" } else { "volume-2" }, px(11.), fg))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
                             this.toggle_mute(id, cx);

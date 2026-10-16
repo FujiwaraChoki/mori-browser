@@ -36,12 +36,19 @@ fn own_id() -> i32 {
     OWN_ID_BASE + (crate::view::next_token() % (i32::MAX - OWN_ID_BASE) as u64) as i32
 }
 
-pub(crate) fn evaluate(view: &Rc<ViewInner>, expression: &str, callback: EvalCallback) {
+/// `user_gesture` makes Blink treat the evaluation as user activation (popups,
+/// autoplay, clipboard writes); background scripts must pass `false`.
+pub(crate) fn evaluate(
+    view: &Rc<ViewInner>,
+    expression: &str,
+    user_gesture: bool,
+    callback: EvalCallback,
+) {
     let params = serde_json::json!({
         "expression": expression,
         "returnByValue": true,
         "awaitPromise": true,
-        "userGesture": true,
+        "userGesture": user_gesture,
     });
     call(
         view,
@@ -61,10 +68,12 @@ pub(crate) fn call(view: &Rc<ViewInner>, method: &str, params: serde_json::Value
     let message = serde_json::json!({ "id": id, "method": method, "params": params });
     view.evals.borrow_mut().insert(id, callback);
     let bytes = message.to_string().into_bytes();
-    if host.send_dev_tools_message(Some(&bytes)) != 1
-        && let Some(cb) = view.evals.borrow_mut().remove(&id)
-    {
-        cb(Err("DevTools message rejected".into()));
+    if host.send_dev_tools_message(Some(&bytes)) != 1 {
+        // End the borrow before the callback, which may evaluate again.
+        let cb = view.evals.borrow_mut().remove(&id);
+        if let Some(cb) = cb {
+            cb(Err("DevTools message rejected".into()));
+        }
     }
 }
 

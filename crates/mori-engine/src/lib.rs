@@ -33,9 +33,10 @@ pub use downloads::{
     resume_download, take_download_updates, unique_path,
 };
 pub use view::{
-    ContextMenuInfo, CursorKind, DialogId, DialogKind, Disposition, FileDialogId, FileDialogMode,
-    FileDialogRequest, Frame, JsDialog, MouseButton, PermissionId, PermissionKind,
-    PermissionRequest, PopupFeatures, PopupFrame, ViewEvent, ViewId, WebView, take_dirty_views,
+    AuthId, AuthRequest, CertErrorId, CertificateError, ContextMenuInfo, CursorKind, DialogId,
+    DialogKind, Disposition, FileDialogId, FileDialogMode, FileDialogRequest, Frame, JsDialog,
+    MouseButton, PermissionId, PermissionKind, PermissionRequest, PopupFeatures, PopupFrame,
+    UnhandledKey, ViewEvent, ViewId, WebView, take_dirty_views,
 };
 
 /// Configuration for [`initialize`].

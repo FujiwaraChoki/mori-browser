@@ -20,13 +20,17 @@ use mori_core::{
     history::HistoryStore,
     omnibox::{self, Resolved},
     persist::Saver,
+    prompts::{Decision, PromptQueue, SitePermissions},
     routes::RouteStore,
     settings::Settings,
     util::host_of,
     workspace::{ClosedTab, FolderId, Slot, SpaceId, TabId, TabRecord, Workspace},
     zoom::ZoomStore,
 };
-use mori_engine::{ContextMenuInfo, JsDialog, PermissionRequest, ViewEvent, WebView};
+use mori_engine::{
+    AuthRequest, CertificateError, ContextMenuInfo, DialogKind, JsDialog, PermissionKind,
+    PermissionRequest, ViewEvent, WebView, keys::KeyInput,
+};
 
 use crate::{
     engine_hub::EngineHub,
@@ -46,7 +50,13 @@ mod popups;
 pub use devtools::DevToolsPane;
 pub use popups::PopupWindow;
 
+type InputState = gpui_kit::component::input::InputState;
+
 pub const NEW_TAB_URL: &str = "mori://newtab";
+
+/// How long a page may take to answer a close request (run `beforeunload`)
+/// before another close request closes it without asking.
+const CLOSE_ANSWER_TIME: Duration = Duration::from_secs(1);
 
 /// Runtime state of a tab whose page is loaded in Chromium.
 pub struct LiveTab {
@@ -68,7 +78,33 @@ pub struct LiveTab {
     /// Opened by a page and has not shown a page yet: if its first
     /// navigation turns into a download, the tab is just dropped.
     pub blank_popup: bool,
+    /// The user asked to close the tab and the page's `beforeunload` is
+    /// running (since when); the tab goes once the page agrees.
+    pub close_requested: Option<Instant>,
     _surface_events: Subscription,
+}
+
+/// The page a prompt belongs to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageOwner {
+    Tab(TabId),
+    Peek,
+}
+
+/// A JavaScript dialog waiting for the user.
+pub struct PendingDialog {
+    pub dialog: JsDialog,
+    /// The text field of a `prompt()`.
+    pub input: Option<Entity<InputState>>,
+    _subscription: Option<Subscription>,
+}
+
+/// An HTTP authentication request waiting for credentials.
+pub struct PendingAuth {
+    pub request: AuthRequest,
+    pub user: Entity<InputState>,
+    pub password: Entity<InputState>,
+    _subscriptions: Vec<Subscription>,
 }
 
 #[derive(Clone, Debug)]
@@ -183,9 +219,14 @@ pub struct Browser {
     pub panel: Option<Panel>,
     pub settings_open: bool,
     pub peek: Option<Peek>,
-    pub dialogs: Vec<(TabId, JsDialog)>,
-    pub dialog_input: Option<Entity<gpui_kit::component::input::InputState>>,
-    pub permissions: Vec<(TabId, PermissionRequest)>,
+    pub dialogs: PromptQueue<PageOwner, PendingDialog>,
+    /// Focus target of an alert/confirm dialog, so Enter answers it.
+    pub dialog_focus: FocusHandle,
+    pub auth_prompts: PromptQueue<PageOwner, PendingAuth>,
+    pub permissions: PromptQueue<PageOwner, PermissionRequest>,
+    pub cert_errors: PromptQueue<PageOwner, CertificateError>,
+    /// Allow/Block answers given this session.
+    site_permissions: SitePermissions<PermissionKind>,
     pub rename: Option<(RenameTarget, Entity<gpui_kit::component::input::InputState>)>,
     rename_events: Option<Subscription>,
     pub boost_editor: Option<Entity<crate::ui::boost_editor::BoostEditor>>,
@@ -201,6 +242,8 @@ pub struct Browser {
     /// A second tab shown beside the selected one.
     pub split: Option<TabId>,
     pub media: HashMap<TabId, crate::ui::media::TabMedia>,
+    /// Tabs with a media check scheduled (see `check_media_soon`).
+    pub media_checks: std::collections::HashSet<TabId>,
     /// Clipboard bridge: last copy sequence seen per view, and the text last
     /// pushed into Chromium's clipboard.
     clip_seq: HashMap<mori_engine::ViewId, u64>,
@@ -258,9 +301,12 @@ impl Browser {
             panel: None,
             settings_open: false,
             peek: None,
-            dialogs: Vec::new(),
-            dialog_input: None,
-            permissions: Vec::new(),
+            dialogs: PromptQueue::default(),
+            dialog_focus: cx.focus_handle(),
+            auth_prompts: PromptQueue::default(),
+            permissions: PromptQueue::default(),
+            cert_errors: PromptQueue::default(),
+            site_permissions: SitePermissions::default(),
             rename: None,
             rename_events: None,
             boost_editor: None,
@@ -273,6 +319,7 @@ impl Browser {
             assistant_visible: false,
             split: None,
             media: HashMap::new(),
+            media_checks: Default::default(),
             clip_seq: HashMap::new(),
             clip_seeded: None,
             library_tab: Default::default(),
@@ -540,6 +587,7 @@ impl Browser {
                 muted: false,
                 opener: None,
                 blank_popup: false,
+                close_requested: None,
                 _surface_events: surface_events,
             },
         );
@@ -559,8 +607,8 @@ impl Browser {
         }
         self.drop_devtools(id, cx);
         self.drop_popup_of(id, cx);
-        self.dialogs.retain(|(t, _)| *t != id);
-        self.permissions.retain(|(t, _)| *t != id);
+        // Closing the view already answered its callbacks.
+        self.forget_prompts(PageOwner::Tab(id));
         cx.notify();
     }
 
@@ -584,7 +632,11 @@ impl Browser {
         self.realize(id, window, cx);
         let split = self.split;
         for (tab, live) in &self.live {
-            live.view.set_hidden(*tab != id && Some(*tab) != split);
+            let hidden = *tab != id && Some(*tab) != split;
+            live.view.set_hidden(hidden);
+            if hidden {
+                live.surface.update(cx, |s, _| s.blur());
+            }
         }
         if let Some(find) = &self.find_bar {
             find.update(cx, |f, cx| f.reset_results(cx));
@@ -596,6 +648,13 @@ impl Browser {
 
     pub fn focus_selected_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.launcher.is_some() || self.rename.is_some() {
+            return;
+        }
+        // A page's open dialog takes the keyboard instead of the page.
+        if let Some(owner) = self.selected().map(PageOwner::Tab)
+            && let Some(handle) = self.modal_focus(owner, cx)
+        {
+            window.focus(&handle, cx);
             return;
         }
         match self.selected_live() {
@@ -643,6 +702,8 @@ impl Browser {
         if let Some(t) = self.ws.tab_mut(id) {
             t.url = url.to_string();
         }
+        // A credentials or certificate question about the old page is moot.
+        self.cancel_navigation_prompts(PageOwner::Tab(id), cx);
         if let Some(live) = self.live.get_mut(&id) {
             live.error = None;
             live.reader = false;
@@ -682,6 +743,34 @@ impl Browser {
             self.toast("Unloaded — kept in folder", ToastStyle::Info, None, cx);
             return;
         }
+        // Let the page run its beforeunload handler (it may ask "Leave
+        // site?"); the tab closes when Chromium reports the page agreed
+        // (`ViewEvent::CloseRequested`). Asking again while the page is still
+        // answering does nothing, so a quick second Ctrl+W can't skip the
+        // page's handler; asking again once it has stopped answering closes
+        // it outright.
+        if let Some(live) = self.live.get_mut(&id)
+            && !live.view.is_closed()
+        {
+            match live.close_requested {
+                None => {
+                    live.close_requested = Some(Instant::now());
+                    live.view.request_close();
+                    return;
+                }
+                Some(at) if at.elapsed() < CLOSE_ANSWER_TIME => return,
+                Some(_) => {}
+            }
+        }
+        if self.dialogs.front(PageOwner::Tab(id)).is_some_and(|d| d.dialog.kind == DialogKind::BeforeUnload) {
+            return;
+        }
+        self.remove_closed_tab(id, window, cx);
+    }
+
+    /// Take a tab out of the space for good (with Undo), once its page has
+    /// agreed to close or was forced to.
+    fn remove_closed_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
         let was_selected = self.selected() == Some(id);
         self.unload(id, cx);
         self.multi_select.retain(|t| *t != id);
@@ -829,6 +918,7 @@ impl Browser {
         if let Some(tab) = self.split.take() {
             if let Some(live) = self.live.get(&tab) {
                 live.view.set_hidden(true);
+                live.surface.update(cx, |s, _| s.blur());
             }
             cx.notify();
         }
@@ -1150,8 +1240,14 @@ impl Browser {
         cx.subscribe(surface, |this, surface, ev: &SurfaceEvent, cx| {
             let view = surface.read(cx).view().clone();
             match ev {
-                SurfaceEvent::Interacted => this.poll_page_clipboard(view, cx),
-                SurfaceEvent::PasteRequested { plain } => this.paste_into(view, *plain, cx),
+                SurfaceEvent::Interacted => {
+                    // A click may also have started or paused media.
+                    if let Some(tab) = this.live.iter().find(|(_, l)| l.view == view).map(|(t, _)| *t) {
+                        this.check_media_soon(tab, cx);
+                    }
+                    this.poll_page_clipboard(view, cx)
+                }
+                SurfaceEvent::PasteRequested { key } => this.paste_key_into(view, key.clone(), cx),
             }
         })
     }
@@ -1187,22 +1283,44 @@ impl Browser {
     /// Paste the system clipboard into a page: seed Chromium's clipboard with
     /// it if it changed, then run the page's paste command.
     pub fn paste_into(&mut self, view: WebView, plain: bool, cx: &mut Context<Self>) {
-        let run = move |view: &WebView| {
+        self.seed_page_clipboard(view, cx, move |view| {
             if plain {
                 view.paste_and_match_style();
             } else {
                 view.paste();
             }
-        };
+        });
+    }
+
+    /// The paste shortcut in a page: seed Chromium's clipboard, then send
+    /// the key itself, so the page sees its keydown (and may handle it) and
+    /// Chromium pastes with genuine paste events otherwise.
+    pub fn paste_key_into(&mut self, view: WebView, key: KeyInput, cx: &mut Context<Self>) {
+        self.seed_page_clipboard(view, cx, move |view| {
+            let mut up = key.clone();
+            up.phase = mori_engine::keys::KeyPhase::Up;
+            up.repeat = false;
+            view.send_key(&key);
+            view.send_key(&up);
+        });
+    }
+
+    fn seed_page_clipboard(
+        &mut self,
+        view: WebView,
+        cx: &mut Context<Self>,
+        then: impl FnOnce(&WebView) + 'static,
+    ) {
         let text = cx.read_from_clipboard().and_then(|c| c.text());
         match text {
             Some(text) if self.clip_seeded.as_deref() != Some(text.as_str()) => {
                 self.clip_seeded = Some(text.clone());
                 let script = mori_core::scripts::clipboard_seed_script(&text);
                 let target = view.clone();
-                view.evaluate(&script, move |_| run(&target));
+                // `execCommand('copy')` needs the user's paste gesture.
+                view.evaluate_as_user(&script, move |_| then(&target));
             }
-            _ => run(&view),
+            _ => then(&view),
         }
     }
 
@@ -1270,6 +1388,9 @@ impl Browser {
         if let Some(old) = self.peek.take() {
             EngineHub::unregister(cx, old.view.id());
             old.view.close();
+            // The old page's questions must not land on the new one.
+            self.forget_prompts(PageOwner::Peek);
+            self.sync_page_modals(cx);
         }
         let (w, h) = self.card_size(window);
         let size = ((w as f32 * 0.74).min(1000.) as i32, (h as f32 * 0.82).min(820.) as i32 - 46);
@@ -1302,6 +1423,7 @@ impl Browser {
         if let Some(peek) = self.peek.take() {
             EngineHub::unregister(cx, peek.view.id());
             peek.view.close();
+            self.forget_prompts(PageOwner::Peek);
             self.focus_selected_page(window, cx);
             cx.notify();
         }
@@ -1315,12 +1437,31 @@ impl Browser {
         record.title = peek.title;
         let id = self.ws.add_tab_after(record, self.selected());
         self.ws.select(id);
+        self.dialogs.reassign(PageOwner::Peek, PageOwner::Tab(id));
+        self.auth_prompts.reassign(PageOwner::Peek, PageOwner::Tab(id));
+        self.permissions.reassign(PageOwner::Peek, PageOwner::Tab(id));
+        self.cert_errors.reassign(PageOwner::Peek, PageOwner::Tab(id));
         self.adopt_view(id, peek.view, window, cx);
         self.select_tab(id, window, cx);
+        self.sync_page_modals(cx);
     }
 
     fn on_peek_events(&mut self, events: Vec<ViewEvent>, window: &mut Window, cx: &mut Context<Self>) {
-        for ev in events {
+        let Some(peek_view) = self.peek.as_ref().map(|p| p.view.clone()) else { return };
+        let mut events = events.into_iter();
+        while let Some(ev) = events.next() {
+            if self.peek.as_ref().is_none_or(|p| p.view != peek_view) {
+                // The Peek became a tab partway through the batch (a popup
+                // promoted it): its remaining events, e.g. a dialog, belong
+                // to that tab now. A closed Peek's are moot.
+                let tab = self.live.iter().find(|(_, l)| l.view == peek_view).map(|(t, _)| *t);
+                if let Some(tab) = tab {
+                    let rest: Vec<ViewEvent> = std::iter::once(ev).chain(events).collect();
+                    self.on_view_events(tab, rest, window, cx);
+                }
+                return;
+            }
+            let Some(ev) = self.on_page_event(PageOwner::Peek, ev, window, cx) else { continue };
             let Some(peek) = self.peek.as_mut() else { return };
             match ev {
                 ViewEvent::TitleChanged(t) => peek.title = t,
@@ -1328,9 +1469,28 @@ impl Browser {
                     peek.view.execute_js(mori_core::scripts::CLIPBOARD_BRIDGE_SCRIPT)
                 }
                 ViewEvent::AddressChanged(u) => peek.url = u,
-                ViewEvent::NewView { view, url, .. } => {
-                    view.close();
-                    self.open_url(&url, true, window, cx);
+                ViewEvent::NewView { view, url, disposition, .. } => {
+                    use mori_engine::Disposition as D;
+                    // Keep the new page alive as a tab so window.opener keeps
+                    // working. A popup (sign-in flows) needs its opener too,
+                    // so the peeked page becomes a tab first.
+                    match disposition {
+                        D::Popup | D::Window => self.promote_peek(window, cx),
+                        D::BackgroundTab => {}
+                        _ => self.close_peek(window, cx),
+                    }
+                    let mut record = TabRecord::new(url.clone());
+                    record.title = url;
+                    let id = self.ws.add_tab_after(record, self.selected());
+                    self.adopt_view(id, view, window, cx);
+                    if disposition == D::BackgroundTab {
+                        if let Some(live) = self.live.get(&id) {
+                            live.view.set_hidden(true);
+                        }
+                    } else {
+                        self.select_tab(id, window, cx);
+                    }
+                    self.schedule_save(cx);
                 }
                 ViewEvent::CloseRequested => self.close_peek(window, cx),
                 ViewEvent::FileDialog(request) => {
@@ -1479,6 +1639,7 @@ impl Browser {
                     | ViewEvent::AudioStateChanged { .. }
                     | ViewEvent::MediaAccessChanged { .. }
             );
+            let Some(ev) = self.on_page_event(PageOwner::Tab(id), ev, window, cx) else { continue };
             match ev {
                 ViewEvent::AddressChanged(url) => {
                     if let Some(t) = self.ws.tab_mut(id) {
@@ -1545,6 +1706,7 @@ impl Browser {
                         live.view.execute_js(mori_core::scripts::CLIPBOARD_BRIDGE_SCRIPT);
                     }
                     self.apply_site_zoom(id);
+                    self.check_media_soon(id, cx);
                 }
                 ViewEvent::LoadError { code, text, url } => {
                     if let Some(live) = self.live.get_mut(&id) {
@@ -1591,10 +1753,12 @@ impl Browser {
                     save = true;
                 }
                 ViewEvent::CloseRequested => {
-                    // A page that closes itself (OAuth popups) returns to its opener.
+                    let asked = self.live.get(&id).is_some_and(|l| l.close_requested.is_some());
                     match self.live.get(&id).and_then(|l| l.opener) {
-                        Some(opener) => self.close_tab_quietly(id, Some(opener), window, cx),
-                        None => self.close_tab(id, true, window, cx),
+                        // A page that closes itself (OAuth popups) returns to its opener.
+                        Some(opener) if !asked => self.close_tab_quietly(id, Some(opener), window, cx),
+                        // The page agreed to the user's close (or called window.close()).
+                        _ => self.remove_closed_tab(id, window, cx),
                     }
                 }
                 ViewEvent::FileDialog(request) => {
@@ -1629,17 +1793,6 @@ impl Browser {
                         });
                     }
                 }
-                ViewEvent::JsDialog(dialog) => {
-                    self.open_dialog(id, dialog, window, cx);
-                }
-                ViewEvent::DialogsReset => {
-                    self.dialogs.retain(|(t, _)| *t != id);
-                    self.dialog_input = None;
-                }
-                ViewEvent::PermissionPrompt(req) => self.permissions.push((id, req)),
-                ViewEvent::PermissionDismissed(pid) => {
-                    self.permissions.retain(|(_, r)| r.id != pid);
-                }
                 ViewEvent::FullscreenChanged(on) => {
                     if let Some(live) = self.live.get_mut(&id) {
                         live.fullscreen = on;
@@ -1663,11 +1816,19 @@ impl Browser {
                 | ViewEvent::Painted
                 | ViewEvent::PopupWidgetChanged
                 | ViewEvent::CursorChanged(_)
-                | ViewEvent::Tooltip(_)
                 | ViewEvent::TextSelectionChanged(_)
                 | ViewEvent::ImeCompositionBounds(_)
                 | ViewEvent::AudioStateChanged { .. }
                 | ViewEvent::MediaAccessChanged { .. } => {}
+                // Answered by `on_page_event`.
+                ViewEvent::Tooltip(_)
+                | ViewEvent::UnhandledKey(_)
+                | ViewEvent::JsDialog(_)
+                | ViewEvent::DialogsReset
+                | ViewEvent::PermissionPrompt(_)
+                | ViewEvent::PermissionDismissed(_)
+                | ViewEvent::AuthRequired(_)
+                | ViewEvent::CertificateError(_) => {}
             }
         }
         if save {
@@ -1703,50 +1864,287 @@ impl Browser {
         Some(live.surface.read(cx).bounds().origin)
     }
 
-    // ---- Dialogs & permissions ---------------------------------------------------------
+    // ---- Page prompts: dialogs, credentials, certificates, permissions ---------------
 
-    fn open_dialog(&mut self, tab: TabId, dialog: JsDialog, window: &mut Window, cx: &mut Context<Self>) {
-        use gpui_kit::component::input::InputState;
-        if dialog.kind == mori_engine::DialogKind::Prompt {
+    fn owner_view(&self, owner: PageOwner) -> Option<WebView> {
+        match owner {
+            PageOwner::Tab(id) => self.live.get(&id).map(|l| l.view.clone()),
+            PageOwner::Peek => self.peek.as_ref().map(|p| p.view.clone()),
+        }
+    }
+
+    fn owner_surface(&self, owner: PageOwner) -> Option<Entity<WebSurface>> {
+        match owner {
+            PageOwner::Tab(id) => self.live.get(&id).map(|l| l.surface.clone()),
+            PageOwner::Peek => self.peek.as_ref().map(|p| p.surface.clone()),
+        }
+    }
+
+    /// Events every page handles the same way, tab or Peek. Returns the
+    /// event when it is not one of them.
+    fn on_page_event(
+        &mut self,
+        owner: PageOwner,
+        ev: ViewEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<ViewEvent> {
+        match ev {
+            ViewEvent::JsDialog(dialog) => self.open_dialog(owner, dialog, window, cx),
+            ViewEvent::DialogsReset => {
+                // Chromium also resets on navigations with no dialog open;
+                // only hand focus back when a dialog actually went away, so
+                // a navigating page doesn't take the keyboard from the chrome.
+                if !self.dialogs.take_owner(owner).is_empty() {
+                    self.sync_page_modals(cx);
+                    self.refocus_owner(owner, window, cx);
+                }
+            }
+            ViewEvent::PermissionPrompt(req) => self.on_permission_request(owner, req, cx),
+            ViewEvent::PermissionDismissed(pid) => {
+                self.permissions.take(|r| r.id == pid);
+            }
+            ViewEvent::AuthRequired(request) => self.open_auth(owner, request, window, cx),
+            ViewEvent::CertificateError(err) => self.cert_errors.push(owner, err),
+            ViewEvent::Tooltip(text) => {
+                // Drawn by the surface itself; the chrome needn't redraw.
+                if let Some(surface) = self.owner_surface(owner) {
+                    surface.update(cx, |s, cx| s.set_tooltip(text, cx));
+                }
+                return None;
+            }
+            ViewEvent::UnhandledKey(key) => {
+                if let Some(surface) = self.owner_surface(owner) {
+                    surface.update(cx, |s, cx| s.run_unhandled_shortcut(key, window, cx));
+                }
+            }
+            ev => return Some(ev),
+        }
+        cx.notify();
+        None
+    }
+
+    /// Gray out (and stop input to) every page with an open dialog or
+    /// credentials prompt.
+    pub fn sync_page_modals(&mut self, cx: &mut Context<Self>) {
+        let owners: Vec<PageOwner> = self
+            .live
+            .keys()
+            .map(|t| PageOwner::Tab(*t))
+            .chain(self.peek.as_ref().map(|_| PageOwner::Peek))
+            .collect();
+        for owner in owners {
+            let modal = self.dialogs.has(owner) || self.auth_prompts.has(owner);
+            if let Some(surface) = self.owner_surface(owner) {
+                surface.update(cx, |s, cx| s.set_inert(modal, cx));
+            }
+        }
+    }
+
+    /// What takes the keyboard while `owner` shows a modal prompt.
+    fn modal_focus(&self, owner: PageOwner, cx: &App) -> Option<FocusHandle> {
+        if let Some(d) = self.dialogs.front(owner) {
+            return Some(match &d.input {
+                Some(input) => input.read(cx).focus_handle(cx),
+                None => self.dialog_focus.clone(),
+            });
+        }
+        self.auth_prompts
+            .front(owner)
+            .map(|a| a.user.read(cx).focus_handle(cx))
+    }
+
+    /// Move focus to `owner`'s next prompt or back to the page, if `owner`
+    /// is what the user is looking at.
+    fn refocus_owner(&mut self, owner: PageOwner, window: &mut Window, cx: &mut Context<Self>) {
+        match owner {
+            PageOwner::Peek => {
+                let target = self
+                    .modal_focus(owner, cx)
+                    .or_else(|| self.peek.as_ref().map(|p| p.surface.read(cx).focus_handle().clone()));
+                if let Some(handle) = target {
+                    window.focus(&handle, cx);
+                }
+            }
+            PageOwner::Tab(id) if self.selected() == Some(id) && self.peek.is_none() => {
+                self.focus_selected_page(window, cx);
+            }
+            PageOwner::Tab(_) => {}
+        }
+    }
+
+    /// The page whose prompts are on top: the Peek if open, else the
+    /// selected tab.
+    pub fn front_owner(&self) -> Option<PageOwner> {
+        if self.peek.is_some() {
+            Some(PageOwner::Peek)
+        } else {
+            self.selected().map(PageOwner::Tab)
+        }
+    }
+
+    fn forget_prompts(&mut self, owner: PageOwner) {
+        self.dialogs.take_owner(owner);
+        self.auth_prompts.take_owner(owner);
+        self.permissions.take_owner(owner);
+        self.cert_errors.take_owner(owner);
+    }
+
+    fn cancel_navigation_prompts(&mut self, owner: PageOwner, cx: &mut Context<Self>) {
+        let Some(view) = self.owner_view(owner) else { return };
+        for auth in self.auth_prompts.take_owner(owner) {
+            view.resolve_auth(auth.request.id, None);
+        }
+        for err in self.cert_errors.take_owner(owner) {
+            view.resolve_certificate_error(err.id, false);
+        }
+        self.sync_page_modals(cx);
+    }
+
+    fn open_dialog(&mut self, owner: PageOwner, dialog: JsDialog, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::input::InputEvent;
+        let id = dialog.id;
+        let (input, subscription) = if dialog.kind == DialogKind::Prompt {
             let default = dialog.default_prompt.clone();
             let input = cx.new(|cx| {
                 let mut s = InputState::new(window, cx);
                 s.set_value(default, window, cx);
                 s
             });
-            input.update(cx, |s, cx| s.focus(window, cx));
-            self.dialog_input = Some(input);
-        }
-        self.dialogs.push((tab, dialog));
-        if self.selected() != Some(tab) {
+            let sub = cx.subscribe_in(&input, window, move |this, _, ev: &InputEvent, window, cx| {
+                if matches!(ev, InputEvent::PressEnter { .. }) {
+                    this.resolve_dialog(id, true, window, cx);
+                }
+            });
+            (Some(input), Some(sub))
+        } else {
+            (None, None)
+        };
+        let leaving = dialog.kind == DialogKind::BeforeUnload;
+        self.dialogs.push(owner, PendingDialog { dialog, input, _subscription: subscription });
+        self.sync_page_modals(cx);
+        // Dialogs from background tabs wait until the tab is shown, as in
+        // Chrome; "Leave site?" for a tab being closed is shown right away.
+        if let PageOwner::Tab(tab) = owner
+            && leaving
+            && self.selected() != Some(tab)
+        {
             self.select_tab(tab, window, cx);
         }
+        self.refocus_owner(owner, window, cx);
         cx.notify();
     }
 
-    pub fn resolve_dialog(&mut self, accept: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.dialogs.is_empty() {
-            return;
+    pub fn resolve_dialog(&mut self, id: mori_engine::DialogId, accept: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((owner, pending)) = self.dialogs.take(|d| d.dialog.id == id) else { return };
+        let text = pending.input.as_ref().map(|i| i.read(cx).value().to_string());
+        if pending.dialog.kind == DialogKind::BeforeUnload
+            && !accept
+            && let PageOwner::Tab(tab) = owner
+            && let Some(live) = self.live.get_mut(&tab)
+        {
+            // "Stay": the tab keeps living and a later close asks again.
+            live.close_requested = None;
         }
-        let (tab, dialog) = self.dialogs.remove(0);
-        let text = self
-            .dialog_input
-            .take()
-            .map(|i| i.read(cx).value().to_string());
-        if let Some(live) = self.live.get(&tab) {
-            live.view.resolve_dialog(dialog.id, accept, text.as_deref());
+        if let Some(view) = self.owner_view(owner) {
+            view.resolve_dialog(id, accept, text.as_deref());
         }
-        self.focus_selected_page(window, cx);
+        self.sync_page_modals(cx);
+        self.refocus_owner(owner, window, cx);
         cx.notify();
     }
 
-    pub fn resolve_permission(&mut self, allow: bool, cx: &mut Context<Self>) {
-        if self.permissions.is_empty() {
-            return;
+    /// Escape: cancel the dialog or credentials prompt on top, if any.
+    pub fn cancel_front_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(owner) = self.front_owner() else { return false };
+        if let Some(id) = self.dialogs.front(owner).map(|d| d.dialog.id) {
+            self.resolve_dialog(id, false, window, cx);
+            return true;
         }
-        let (tab, req) = self.permissions.remove(0);
-        if let Some(live) = self.live.get(&tab) {
-            live.view.resolve_permission(req.id, allow);
+        if let Some(id) = self.auth_prompts.front(owner).map(|a| a.request.id) {
+            self.resolve_auth(id, false, window, cx);
+            return true;
+        }
+        false
+    }
+
+    fn on_permission_request(&mut self, owner: PageOwner, req: PermissionRequest, cx: &mut Context<Self>) {
+        match self.site_permissions.decide(&req.origin, &req.kinds) {
+            Some(decision) => {
+                if let Some(view) = self.owner_view(owner) {
+                    view.resolve_permission(req.id, decision == Decision::Allow);
+                }
+            }
+            None => self.permissions.push(owner, req),
+        }
+        cx.notify();
+    }
+
+    pub fn resolve_permission(&mut self, id: mori_engine::PermissionId, allow: bool, cx: &mut Context<Self>) {
+        let Some((owner, req)) = self.permissions.take(|r| r.id == id) else { return };
+        let decision = if allow { Decision::Allow } else { Decision::Block };
+        self.site_permissions.record(&req.origin, &req.kinds, decision);
+        if let Some(view) = self.owner_view(owner) {
+            view.resolve_permission(id, allow);
+        }
+        // Other requests from the same site this answer covers.
+        while let Some((owner, other)) = self.permissions.take(|r| {
+            self.site_permissions.decide(&r.origin, &r.kinds).is_some()
+        }) {
+            if let Some(view) = self.owner_view(owner) {
+                let allow = self.site_permissions.decide(&other.origin, &other.kinds) == Some(Decision::Allow);
+                view.resolve_permission(other.id, allow);
+            }
+        }
+        cx.notify();
+    }
+
+    fn open_auth(&mut self, owner: PageOwner, request: AuthRequest, window: &mut Window, cx: &mut Context<Self>) {
+        use gpui_kit::component::input::InputEvent;
+        let id = request.id;
+        let user = cx.new(|cx| InputState::new(window, cx).placeholder("Username"));
+        let password = cx.new(|cx| InputState::new(window, cx).placeholder("Password").masked(true));
+        let submit = move |this: &mut Self, _: &Entity<InputState>, ev: &InputEvent, window: &mut Window, cx: &mut Context<Self>| {
+            if matches!(ev, InputEvent::PressEnter { .. }) {
+                this.resolve_auth(id, true, window, cx);
+            }
+        };
+        let subscriptions = vec![
+            cx.subscribe_in(&user, window, submit),
+            cx.subscribe_in(&password, window, submit),
+        ];
+        self.auth_prompts.push(owner, PendingAuth { request, user, password, _subscriptions: subscriptions });
+        self.sync_page_modals(cx);
+        self.refocus_owner(owner, window, cx);
+        cx.notify();
+    }
+
+    /// Answer a credentials prompt: `submit` sends what was typed, otherwise
+    /// the request is cancelled (and the server's 401 page shows).
+    pub fn resolve_auth(&mut self, id: mori_engine::AuthId, submit: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((owner, pending)) = self.auth_prompts.take(|a| a.request.id == id) else { return };
+        if let Some(view) = self.owner_view(owner) {
+            if submit {
+                let user = pending.user.read(cx).value().to_string();
+                let password = pending.password.read(cx).value().to_string();
+                view.resolve_auth(id, Some((&user, &password)));
+            } else {
+                view.resolve_auth(id, None);
+            }
+        }
+        self.sync_page_modals(cx);
+        self.refocus_owner(owner, window, cx);
+        cx.notify();
+    }
+
+    /// Answer a certificate error: proceed to the site anyway, or go back.
+    pub fn resolve_certificate_error(&mut self, id: mori_engine::CertErrorId, proceed: bool, cx: &mut Context<Self>) {
+        let Some((owner, _)) = self.cert_errors.take(|e| e.id == id) else { return };
+        if let Some(view) = self.owner_view(owner) {
+            view.resolve_certificate_error(id, proceed);
+            if !proceed && view.can_go_back() {
+                view.go_back();
+            }
         }
         cx.notify();
     }

@@ -27,6 +27,10 @@ wrap_app! {
             switch("hide-crash-restore-bubble");
             switch("disable-session-crashed-bubble");
             switch("noerrdialogs");
+            // HTTP/proxy auth goes to RequestHandler::get_auth_credentials
+            // (Mori's sign-in prompt) instead of Chrome's login UI, which an
+            // offscreen browser can't show.
+            switch("disable-chrome-login-prompt");
             // Mori draws its own chrome; keep Chromium from trying to use the
             // system keychain prompt flow on Linux desktops without one.
             switch("password-store=basic");
