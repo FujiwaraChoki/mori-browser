@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["crates/mori-core", "crates/mori-engine", "crates/mori"]
+default-members = ["crates/mori"]
+
+[workspace.package]
+version = "3.0.0"
+edition = "2024"
+license = "MIT"
+authors = ["Sami Hindi <sami@samihindi.com>"]
+
+[workspace.dependencies]
+mori-core = { path = "crates/mori-core" }
+mori-engine = { path = "crates/mori-engine" }
+cef = { version = "=154.5.0", default-features = false, features = ["sandbox"] }
+cef-dll-sys = { version = "=154.5.0", features = ["sandbox"] }
+gpui-kit = "=0.7.3"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "6"
+smallvec = "1"
+
+[profile.dev]
+# GPUI is painfully slow unoptimised; keep our own crates debuggable.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 16

@@ -18,3 +18,10 @@ ungoogled-chromium-macos/**
 !ungoogled-chromium-macos/build/src/chrome/browser/ui/
 !ungoogled-chromium-macos/build/src/chrome/browser/ui/mori/
 !ungoogled-chromium-macos/build/src/chrome/browser/ui/mori/**
+
+# Rust / CEF
+target/
+.cef/
+
+# Linux bundles
+dist/

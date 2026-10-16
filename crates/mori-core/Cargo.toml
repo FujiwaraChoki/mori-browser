@@ -1,0 +1,15 @@
+[package]
+name = "mori-core"
+description = "Mori browser state, persistence, and product logic (no UI, no engine)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+url.workspace = true
+uuid.workspace = true
+dirs.workspace = true

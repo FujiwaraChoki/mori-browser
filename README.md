@@ -2,12 +2,15 @@
 
 # 🌲 Mori
 
-**A native macOS browser chrome, built on Chromium.**
+**A calm browser chrome, built on Chromium.**
 
-Mori wraps a real Chromium engine in a hand-built SwiftUI interface: spaces, an
-AI side panel, per-site tweaks, gradient theming, and a command-palette launcher
-while leaving tabs, navigation, downloads, extensions, and permissions to
-Chromium's production browser stack.
+Mori wraps a real Chromium engine in a hand-built interface: spaces, an AI side
+panel, per-site tweaks, gradient theming, and a command-palette launcher, while
+leaving rendering, networking, downloads, and permissions to Chromium.
+
+**Mori 3** is written in Rust with [GPUI](https://www.gpui.rs) and embeds
+Chromium through CEF, so it runs on Linux. **Mori 2** is the original macOS
+SwiftUI chrome compiled into ungoogled-chromium.
 
 </div>
 
@@ -15,10 +18,30 @@ Chromium's production browser stack.
 
 ## What Mori is
 
-Mori is **not** a fork of Chromium's UI and **not** a CEF app. It's a custom
-SwiftUI + Objective-C++ chrome compiled *into* the `chrome` target of an
+Mori is **not** a fork of Chromium's UI. Chromium owns the web; Mori owns
+everything around it.
+
+Mori 3 (Rust, `crates/`):
+
+```
+┌─────────────────────────────────────────────┐
+│  crates/mori        GPUI chrome: sidebar,     │
+│                     launcher, panels, themes  │
+├─────────────────────────────────────────────┤
+│  crates/mori-core   spaces, stores, omnibox,  │
+│                     ranking, theme engine     │
+├─────────────────────────────────────────────┤
+│  crates/mori-engine CEF offscreen browsers,   │
+│                     input, events             │
+├─────────────────────────────────────────────┤
+│  Chromium (CEF)     renderer, network, media  │
+└─────────────────────────────────────────────┘
+```
+
+Mori 2 (macOS) is a custom SwiftUI + Objective-C++ chrome compiled *into* the
+`chrome` target of an
 [ungoogled-chromium](https://github.com/ungoogled-software/ungoogled-chromium)
-checkout. Chromium owns the web; Mori owns everything around it.
+checkout:
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -67,9 +90,28 @@ Start here, then use the focused docs when you need the exact workflow:
 - [docs/SOURCE_LAYOUT.md](docs/SOURCE_LAYOUT.md) - where the first-party code
   lives and which files own each feature area.
 
+## Feature status in Mori 3
+
+Implemented: spaces with per-space themes, pinned tiles, folders, drag and
+drop, split view, the launcher (tabs, history, bookmarks, commands, search),
+Air Traffic Control, Boosts (custom CSS/JS and element zapping), Peek, Reader,
+find in page, sleep and archive timers, the background media mini player,
+downloads, the history/bookmarks/archive library, gradient themes and presets,
+JavaScript dialogs, permission prompts, custom context menus, DevTools,
+screenshots, session restore, single-instance URL hand-off, a system clipboard
+bridge, and the assistant panel (a local Codex app server with browser tools
+and per-action approval).
+
+Not yet ported from Mori 2: Chrome extensions, passkeys, automatic
+Picture-in-Picture, the back/forward history menu, and native drag sessions out
+of web pages.
+
 ## Source layout
 
-The Mori source of truth lives in:
+Mori 3 lives in the Cargo workspace under `crates/` (see
+[docs/SOURCE_LAYOUT.md](docs/SOURCE_LAYOUT.md)).
+
+The Mori 2 source of truth lives in:
 
 ```
 ungoogled-chromium-macos/build/src/chrome/browser/ui/mori/
@@ -83,7 +125,17 @@ For the file-by-file map, see [docs/SOURCE_LAYOUT.md](docs/SOURCE_LAYOUT.md).
 ## Building
 
 Full instructions - including packaging and logging - live in
-[BUILDING.md](BUILDING.md). The short version:
+[BUILDING.md](BUILDING.md).
+
+Mori 3 on Linux:
+
+```sh
+cargo run --release               # downloads CEF into .cef/ on first build
+scripts/package-linux.sh          # self-contained bundle in dist/
+scripts/install-linux.sh          # install to ~/.local
+```
+
+Mori 2 on macOS, the short version:
 
 ```sh
 repo_root="$(git rev-parse --show-toplevel)"
@@ -100,7 +152,7 @@ expected.
 
 > Use `trash`, not `rm -rf`, when replacing app bundles or build directories.
 
-## Running
+## Running Mori 2
 
 ```sh
 open -n out/Default/Mori.app

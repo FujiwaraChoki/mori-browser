@@ -1,0 +1,5 @@
+[env]
+# The cef-dll-sys build script downloads the matching CEF binary distribution
+# here on first build. Kept inside the repo (and git-ignored) so builds are
+# self-contained.
+CEF_PATH = { value = ".cef", relative = true }

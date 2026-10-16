@@ -1,9 +1,14 @@
 # Working in this repo
 
-Mori is now a SwiftUI/AppKit browser chrome embedded into
-ungoogled-chromium. The first-party source lives in
-`ungoogled-chromium-macos/build/src/chrome/browser/ui/mori`; the rest of the
-Chromium checkout is a local build dependency.
+The repo holds two implementations of Mori:
+
+- **Mori 3** (Rust, Linux first): the Cargo workspace in `crates/` - GPUI chrome
+  (`crates/mori`), product logic (`crates/mori-core`), and Chromium via CEF
+  (`crates/mori-engine`).
+- **Mori 2** (macOS): a SwiftUI/AppKit browser chrome embedded into
+  ungoogled-chromium. Its first-party source lives in
+  `ungoogled-chromium-macos/build/src/chrome/browser/ui/mori`; the rest of the
+  Chromium checkout is a local build dependency.
 
 ## Required
 
@@ -12,7 +17,18 @@ Chromium checkout is a local build dependency.
 - If browser automation is needed, use the Playwright CLI.
 - Do not use the Codex Chrome extension for browser testing.
 
-## Build
+## Mori 3 (Rust)
+
+- Build with `cargo build` / `cargo run --release`; CEF downloads into `.cef/`
+  on the first build. Never commit `.cef/`, `target/`, or `dist/`.
+- Put product rules in `mori-core` with unit tests; keep `mori-engine` a thin
+  layer over CEF; UI lives in `crates/mori/src/ui`.
+- Run `cargo test -p mori-core -p mori-engine -p mori` and
+  `cargo clippy --workspace` before handing work back.
+- On Linux there is no `trash` command; use `gio trash <path>`.
+- Test with an isolated profile: `MORI_DATA_DIR=/tmp/mori-test target/debug/mori`.
+
+## Build (Mori 2)
 
 See `BUILDING.md` for the canonical local build, package, run, and logging
 commands. The packaged app used for manual testing is:

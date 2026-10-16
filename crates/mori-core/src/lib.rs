@@ -1,0 +1,33 @@
+//! Mori's browser core: persisted state, product rules and page scripts,
+//! with no UI or engine dependencies so everything here is unit-testable.
+//!
+//! Every store is a plain value with `load(dir)` / `save(dir)` against the
+//! directory from [`paths::data_dir`]; callers decide when to save.
+//! Timestamps are `f64` UNIX seconds ([`paths::now`]).
+
+pub mod archive;
+pub mod bookmarks;
+pub mod boosts;
+pub mod history;
+pub mod launcher;
+pub mod omnibox;
+pub mod paths;
+pub mod routes;
+pub mod scripts;
+pub mod settings;
+pub mod theme;
+pub mod util;
+pub mod workspace;
+
+pub use archive::{ArchiveEntry, ArchiveGroup, ArchiveStore};
+pub use bookmarks::{Bookmark, BookmarkStore};
+pub use boosts::{Boost, BoostStore};
+pub use history::{HistoryEntry, HistoryStore};
+pub use launcher::{Candidate, ItemKind};
+pub use omnibox::Resolved;
+pub use paths::{data_dir, now};
+pub use routes::{Route, RouteStore};
+pub use scripts::MediaCommand;
+pub use settings::{Appearance, NewTabBehavior, SearchEngine, Settings, SidebarPosition};
+pub use theme::{GradientDot, GradientTheme, Palette, Preset, Rgba, SchemeOverride};
+pub use util::host_of;
