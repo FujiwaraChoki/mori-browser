@@ -50,22 +50,20 @@ impl TabRecord {
         }
     }
 
-    /// Custom title if set, else the page title, else "Untitled".
-    pub fn display_title(&self) -> &str {
+    /// Custom title if set, else the page title, else the address without
+    /// its scheme (a page not loaded yet), else "New Tab".
+    pub fn display_title(&self) -> std::borrow::Cow<'_, str> {
+        use std::borrow::Cow;
         if let Some(t) = self.custom_title.as_deref()
             && !t.trim().is_empty()
         {
-            return t;
+            return Cow::Borrowed(t);
         }
-        if self.title.trim().is_empty() {
-            if self.url.is_empty() || self.url == "about:blank" || self.url.starts_with("mori://") {
-                "New Tab"
-            } else {
-                "Untitled"
-            }
-        } else {
-            &self.title
+        if !self.title.trim().is_empty() {
+            return Cow::Borrowed(&self.title);
         }
+        let placeholder = crate::omnibox::placeholder_title(&self.url);
+        if placeholder.is_empty() { Cow::Borrowed("New Tab") } else { Cow::Owned(placeholder) }
     }
 }
 

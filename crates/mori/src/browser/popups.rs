@@ -154,7 +154,7 @@ impl Browser {
         // nothing yet; keep the address it was opened with.
         let url = Some(popup.view.url()).filter(|u| !u.is_empty()).unwrap_or(popup.url);
         let mut record = TabRecord::new(url.clone());
-        record.title = if popup.title.is_empty() { url } else { popup.title };
+        record.title = if popup.title.is_empty() { mori_core::omnibox::placeholder_title(&url) } else { popup.title };
         let id = self.ws.add_child_tab(record, popup.opener, None);
         self.reassign_prompts(PageOwner::Popup, PageOwner::Tab(id));
         self.adopt_view(id, popup.view, window, cx);

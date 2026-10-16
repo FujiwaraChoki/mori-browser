@@ -1027,7 +1027,7 @@ impl Browser {
                 None => {
                     let mut record = TabRecord::new(url.clone());
                     // Shown until the page loads (only the first one does now).
-                    record.title = omnibox::display_url(&url);
+                    record.title = omnibox::placeholder_title(&url);
                     match last_in_space.get(&space) {
                         Some(prev) => self.ws.add_child_tab(record, *prev, None),
                         None => self.ws.add_tab(record, Some(space), Slot::Loose(0)),
@@ -1938,7 +1938,7 @@ impl Browser {
         if Self::is_internal(&t.url) {
             return;
         }
-        let added = self.bookmarks.toggle(&t.url, t.display_title());
+        let added = self.bookmarks.toggle(&t.url, &t.display_title());
         self.toast(
             if added { "Bookmarked" } else { "Removed bookmark" },
             ToastStyle::Success,
@@ -2123,7 +2123,7 @@ impl Browser {
                         continue;
                     }
                     let mut record = TabRecord::new(url.clone());
-                    record.title = url;
+                    record.title = mori_core::omnibox::placeholder_title(&url);
                     let id = match opener {
                         Some(opener) => self.ws.add_child_tab(record, opener, None),
                         None => self.ws.add_new_tab(record),
@@ -2429,7 +2429,7 @@ impl Browser {
                     }
                     let background = disposition == D::BackgroundTab;
                     let mut record = TabRecord::new(url.clone());
-                    record.title = url;
+                    record.title = mori_core::omnibox::placeholder_title(&url);
                     let last_child = self
                         .child_anchor
                         .filter(|(opener, _)| *opener == id)

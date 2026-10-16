@@ -109,6 +109,49 @@ pub fn display_url(url: &str) -> String {
     }
 }
 
+/// Title for a tab whose page has not loaded yet (no `<title>` known): the
+/// address without its scheme, as Zen shows it. `https://github.com` reads
+/// `github.com/`, `file:///tmp/x.html` reads `/tmp/x.html`; internal pages
+/// read empty.
+pub fn placeholder_title(url: &str) -> String {
+    if is_internal_blank(url) {
+        return String::new();
+    }
+    match url::Url::parse(url.trim()) {
+        Ok(u) if u.scheme() == "file" => {
+            let path = u.path().to_string();
+            percent_decode(&path)
+        }
+        Ok(u) if matches!(u.scheme(), "http" | "https") => {
+            let full = u.as_str();
+            let rest = full.split_once("://").map(|(_, r)| r).unwrap_or(full);
+            percent_decode(rest)
+        }
+        _ => url.to_string(),
+    }
+}
+
+/// `%XX` escapes back to text (invalid UTF-8 shown lossily).
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(h), Some(l)) = (hex(bytes[i + 1]), hex(bytes[i + 2]))
+        {
+            out.push((h * 16 + l) as u8);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn is_internal_blank(url: &str) -> bool {
     url == "about:blank" || url.starts_with("mori://")
 }
@@ -328,6 +371,18 @@ fn is_ipv6_literal(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placeholder_titles_drop_the_scheme() {
+        assert_eq!(placeholder_title("https://github.com"), "github.com/");
+        assert_eq!(placeholder_title("https://news.ycombinator.com/item?id=1"), "news.ycombinator.com/item?id=1");
+        assert_eq!(placeholder_title("http://127.0.0.1:8765/a%20b"), "127.0.0.1:8765/a b");
+        assert_eq!(placeholder_title("file:///tmp/claude-1000/x%20y.html"), "/tmp/claude-1000/x y.html");
+        assert_eq!(placeholder_title("mori://newtab"), "");
+        assert_eq!(placeholder_title("about:blank"), "");
+        assert_eq!(placeholder_title("data:text/plain,hi"), "data:text/plain,hi");
+        assert_eq!(placeholder_title("https://x.org/100%"), "x.org/100%");
+    }
 
     fn r(input: &str) -> Resolved {
         resolve(input, &Settings::default())
