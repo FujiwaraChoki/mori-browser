@@ -71,8 +71,9 @@ pub enum Start {
 pub enum PageElsewhere {
     /// No other window has it loaded.
     Nowhere,
-    /// Another window had it loaded and handed it over.
-    Moved(WebView),
+    /// Another window had it loaded and handed it over, with what that
+    /// window knew of its media.
+    Moved(WebView, Option<crate::ui::media::TabMedia>),
     /// Another window has it, waiting for the user; it stays there.
     Busy,
 }
@@ -862,9 +863,10 @@ fn on_browser_changed(source: Entity<Browser>, cx: &mut App) {
     reclaim_pages(cx);
 }
 
-/// Normal windows showing a tab whose page another window let go of (it
-/// closed, or slept or reloaded the page) load it again, rather than
-/// showing an empty card.
+/// Normal windows showing a tab whose page no other window shows any more
+/// (it closed, moved on to another tab, or slept or reloaded the page)
+/// load it again, rather than showing an empty card or a stale "Open in
+/// another window".
 fn reclaim_pages(cx: &mut App) {
     if with(|r| r.quitting || r.opening) {
         return;
@@ -877,17 +879,23 @@ fn reclaim_pages(cx: &mut App) {
                 .flatten()
                 .filter(|t| !b.live.contains_key(t))
                 .filter(|t| b.ws.tab(*t).is_some_and(|r| !Browser::is_internal(&r.url)))
-                .filter(|t| window_showing(b, *t, cx).is_none())
+                .filter(|t| mori_core::windows::takes_page(false, page_elsewhere(b, *t, cx)))
                 .collect()
         };
         if orphans.is_empty() {
             continue;
         }
         update_in(handle, &browser, cx, |b, window, cx| {
+            let mut changed = false;
             for tab in orphans {
                 b.realize(tab, window, cx);
+                changed |= b.live.contains_key(&tab);
             }
-            cx.notify();
+            // (A page waiting for an answer elsewhere stays there; no
+            // notify then, or this would run again and again.)
+            if changed {
+                cx.notify();
+            }
         });
     }
 }
@@ -1039,15 +1047,20 @@ impl Browser {
 }
 
 /// Whether another window shows `tab` (selected or in its split view).
-fn shown_in_other_window(b: &Browser, tab: TabId, cx: &App) -> bool {
-    let me = b.window_handle.window_id();
-    browsers(Some(WindowKind::Normal))
-        .iter()
-        .filter(|(h, ..)| h.window_id() != me)
-        .any(|(_, other, _)| {
-            let o = other.read(cx);
-            o.live.contains_key(&tab) && (o.selected() == Some(tab) || o.split == Some(tab))
-        })
+pub(crate) fn shown_in_other_window(b: &Browser, tab: TabId, cx: &App) -> bool {
+    window_showing(b, tab, cx).is_some()
+}
+
+/// What other windows do with `tab`'s page.
+pub(crate) fn page_elsewhere(b: &Browser, tab: TabId, cx: &App) -> mori_core::windows::OtherWindowPage {
+    use mori_core::windows::OtherWindowPage as P;
+    if shown_in_other_window(b, tab, cx) {
+        P::Shown
+    } else if b.kind == WindowKind::Normal && pages_in_other_windows(b, cx).contains(&tab) {
+        P::Loaded
+    } else {
+        P::Nowhere
+    }
 }
 
 /// Tabs whose pages other windows have loaded.
@@ -1078,30 +1091,42 @@ pub fn take_page_from_other_window(b: &Browser, tab: TabId, cx: &mut App) -> Pag
                 .live
                 .get(&tab)
                 .is_some_and(|l| l.surface.read(cx).focus_handle().is_focused(window));
+            let media = o.media.get(&tab).cloned();
             let view = o.detach_page(tab, cx);
             // Keys pressed there next would go to a page that isn't there.
             if view.is_some() && had_focus {
                 o.focus_selected_page(window, cx);
             }
-            view
+            view.map(|v| (v, media))
         });
         // (Without its window, e.g. while it is being updated, the page
         // still moves.)
-        let detached = detached.unwrap_or_else(|| other.update(cx, |o, cx| o.detach_page(tab, cx)));
+        let detached = detached.unwrap_or_else(|| {
+            other.update(cx, |o, cx| {
+                let media = o.media.get(&tab).cloned();
+                o.detach_page(tab, cx).map(|v| (v, media))
+            })
+        });
         return match detached {
-            Some(view) => PageElsewhere::Moved(view),
+            Some((view, media)) => PageElsewhere::Moved(view, media),
             None => PageElsewhere::Busy,
         };
     }
     PageElsewhere::Nowhere
 }
 
-/// The window that has the page of `tab` loaded, if another one.
+/// The other window that shows the page of `tab` (selected or in its
+/// split view). A page merely loaded in another window's background
+/// doesn't count: selecting it moves it here.
 pub fn window_showing(b: &Browser, tab: TabId, cx: &App) -> Option<WindowId> {
     let me = b.window_handle.window_id();
     browsers(Some(WindowKind::Normal))
         .into_iter()
-        .find(|(h, other, _)| h.window_id() != me && other.read(cx).live.contains_key(&tab))
+        .filter(|(h, ..)| h.window_id() != me)
+        .find(|(_, other, _)| {
+            let o = other.read(cx);
+            o.live.contains_key(&tab) && (o.selected() == Some(tab) || o.split == Some(tab))
+        })
         .map(|(h, ..)| h.window_id())
 }
 
@@ -1301,6 +1326,8 @@ fn hand_to_normal_window(record: TabRecord, view: Option<WebView>, cx: &mut App)
             // The little window's surface took the last frame.
             view.invalidate();
             b.adopt_view(id, view, window, cx);
+            // It may be playing: the speaker and mini player follow it.
+            b.check_media_soon(id, cx);
         }
         b.select_tab(id, window, cx);
     });

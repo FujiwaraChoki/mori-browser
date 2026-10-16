@@ -207,10 +207,43 @@ impl WindowSession {
     }
 }
 
+/// What another window does with a tab's running page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OtherWindowPage {
+    /// No other window has it loaded.
+    Nowhere,
+    /// Another window has it loaded but shows another tab.
+    Loaded,
+    /// Another window shows it (selected or in its split view).
+    Shown,
+}
+
+/// Whether a window selecting a tab loads its page here, taking it from
+/// another window that has it. Only a tab the user `chose` (a sidebar
+/// click, the switcher, the launcher) takes a page another window is
+/// showing; a tab selected for them (a space's remembered tab, a window
+/// pointing at a page that went away) leaves it there and says where it is.
+pub fn takes_page(chosen: bool, elsewhere: OtherWindowPage) -> bool {
+    chosen || elsewhere != OtherWindowPage::Shown
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{paths::test_support::TempDir, workspace::TabRecord};
+
+    #[test]
+    fn only_a_chosen_tab_takes_a_page_another_window_shows() {
+        // Window A shows favorite F; window B switches to a space whose
+        // remembered tab is F: A keeps it.
+        assert!(!takes_page(false, OtherWindowPage::Shown));
+        // B clicks F in the sidebar: it moves.
+        assert!(takes_page(true, OtherWindowPage::Shown));
+        // A page kept in another window's background moves either way, and
+        // one nobody has loads.
+        assert!(takes_page(false, OtherWindowPage::Loaded));
+        assert!(takes_page(false, OtherWindowPage::Nowhere));
+    }
 
     fn two_spaces() -> (Workspace, SpaceId, SpaceId, Vec<TabId>) {
         let mut ws = Workspace::new();

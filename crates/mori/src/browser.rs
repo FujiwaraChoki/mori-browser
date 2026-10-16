@@ -820,12 +820,18 @@ impl Browser {
         // Another window may have the page loaded: it moves here, unless
         // it is waiting for the user there.
         match crate::windows::take_page_from_other_window(self, id, cx) {
-            PageElsewhere::Moved(view) => {
+            PageElsewhere::Moved(view, media) => {
                 let (width, height) = self.card_size(window);
                 view.resize(width, height, window.scale_factor());
                 // The old window's surface took the last frame.
                 view.invalidate();
                 self.adopt_view(id, view, window, cx);
+                // Its media comes along (the speaker, Picture-in-Picture on
+                // leaving it, the mini player); read it again to be sure.
+                if let Some(media) = media {
+                    self.media.insert(id, media);
+                }
+                self.check_media_soon(id, cx);
                 // The running page is where it was; nothing to restore.
                 self.pending_scroll.remove(&id);
                 return;
@@ -972,6 +978,19 @@ impl Browser {
     /// Select a tab. A tab in a split pair shows the pair (its left tab
     /// selected) and makes the clicked tab's pane the active one.
     pub fn select_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_tab_with(id, true, window, cx);
+    }
+
+    /// [`select_tab`] for a tab the user didn't pick themselves (a space's
+    /// remembered selection): a page another window is showing stays
+    /// there, and this window says where it is.
+    ///
+    /// [`select_tab`]: Browser::select_tab
+    pub fn select_tab_passively(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        self.select_tab_with(id, false, window, cx);
+    }
+
+    fn select_tab_with(&mut self, id: TabId, steal: bool, window: &mut Window, cx: &mut Context<Self>) {
         let previous_space = self.ws.active_space;
         let previous = [self.selected(), self.split];
         let previous_selected = previous[0];
@@ -997,13 +1016,21 @@ impl Browser {
         self.settings_open = false;
         self.multi_select.clear();
         self.child_anchor = None;
-        self.realize(left, window, cx);
+        // Only a page the user chose moves here from a window showing it.
+        let may_take =
+            |this: &Self, tab: TabId, cx: &App| mori_core::windows::takes_page(steal, crate::windows::page_elsewhere(this, tab, cx));
+        if may_take(self, left, cx) {
+            self.realize(left, window, cx);
+        }
         self.split = None;
         if let Some(right) = right {
-            self.realize(right, window, cx);
+            let take = may_take(self, right, cx);
+            if take {
+                self.realize(right, window, cx);
+            }
             if self.live.contains_key(&right) {
                 self.split = Some(right);
-            } else {
+            } else if take {
                 // Its page can't be shown (an internal page): no ghost pane.
                 self.ws.remove_split(right);
             }
@@ -1760,7 +1787,9 @@ impl Browser {
             .selected
             .or_else(|| self.ws.active().visible().first().copied());
         match target {
-            Some(id) => self.select_tab(id, window, cx),
+            // The space's remembered tab: not a choice of that page, so a
+            // window showing it keeps it.
+            Some(id) => self.select_tab_passively(id, window, cx),
             None => {
                 self.open_blank_tab(window, cx);
             }
