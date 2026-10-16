@@ -288,7 +288,7 @@ pub struct Browser {
     pub zapping: Option<TabId>,
     pub sidebar_peek: bool,
     /// Pending auto-hide of the floating sidebar; dropping it cancels.
-    sidebar_hide: Option<Task<()>>,
+    pub sidebar_hide: Option<Task<()>>,
     pub sidebar_drag: Option<f32>,
     /// A horizontal swipe over the sidebar (switches spaces).
     pub sidebar_swipe: crate::ui::sidebar::SidebarSwipe,
@@ -338,6 +338,24 @@ pub struct Browser {
     pub library_search: Option<Entity<gpui_kit::component::input::InputState>>,
     pub settings_inputs: Option<crate::ui::settings::SettingsInputs>,
     pub passwords_ui: crate::passwords::PasswordsUi,
+
+    /// Tabs in the order they were last looked at (Ctrl+Tab).
+    pub recent_tabs: mori_core::tab_switcher::RecentTabs,
+    pub tab_switcher: Option<crate::ui::tab_switcher::TabSwitcher>,
+    pub thumbnails: crate::ui::tab_switcher::Thumbnails,
+    pub tab_hover: crate::ui::tab_switcher::TabHover,
+    pub cheatsheet: Option<(Entity<crate::ui::cheatsheet::Cheatsheet>, Subscription)>,
+    pub capture: Option<crate::ui::capture::CaptureMode>,
+    /// Where captures go, as last chosen in the capture toolbar.
+    pub capture_destination: crate::screenshot::Destination,
+    pub import: crate::ui::import::ImportState,
+    pub onboarding: Option<crate::ui::onboarding::OnboardingStep>,
+    /// Sidebar slide animations (compact mode, Ctrl+S, the floating sidebar).
+    pub sidebar_fx: crate::ui::root::SidebarFx,
+    /// When the user last clicked in the window or pressed Enter / Space; a
+    /// pinned tab's request to peek a link (PINNED_PEEK_SCRIPT) is only
+    /// honoured right after one.
+    pub click_at: Option<Instant>,
 
     pub focus_handle: FocusHandle,
     pub(crate) window_handle: AnyWindowHandle,
@@ -444,6 +462,17 @@ impl Browser {
             library_search: None,
             settings_inputs: None,
             passwords_ui: Default::default(),
+            recent_tabs: Default::default(),
+            tab_switcher: None,
+            thumbnails: Default::default(),
+            tab_hover: Default::default(),
+            cheatsheet: None,
+            capture: None,
+            capture_destination: Default::default(),
+            import: Default::default(),
+            onboarding: None,
+            sidebar_fx: Default::default(),
+            click_at: None,
             focus_handle: cx.focus_handle(),
             window_handle: window.window_handle(),
             saver,
@@ -493,6 +522,8 @@ impl Browser {
         this.start_maintenance(cx);
         this.start_media_polling(cx);
         this.start_privacy(cx);
+        this.init_recent_tabs();
+        this.maybe_start_onboarding(window, cx);
         this
     }
 
@@ -764,14 +795,16 @@ impl Browser {
     /// right size before their first layout.
     fn card_size(&self, window: &Window) -> (i32, i32) {
         let b = window.viewport_size();
-        let sidebar = if self.settings.sidebar_visible {
+        // Little Mori has a header instead of the sidebar.
+        let sidebar = if self.settings.docks_sidebar() && self.kind != WindowKind::Little {
             self.settings.clamped_sidebar_width()
         } else {
             0.
         };
+        let gutters = 2. * f32::from(crate::ui::root::card_inset(&self.settings));
         (
-            (f32::from(b.width) - sidebar - 16.).max(100.) as i32,
-            (f32::from(b.height) - 16.).max(100.) as i32,
+            (f32::from(b.width) - sidebar - gutters).max(100.) as i32,
+            (f32::from(b.height) - gutters).max(100.) as i32,
         )
     }
 
@@ -949,6 +982,7 @@ impl Browser {
         if !self.ws.select(left) {
             return;
         }
+        self.note_tab_selected(id);
         // Tabs leaving the screen were in use until now.
         let now = mori_core::paths::now();
         for tab in previous.into_iter().flatten().chain([id]) {
@@ -1603,6 +1637,7 @@ impl Browser {
 
     pub fn toggle_pin(&mut self, id: TabId, cx: &mut Context<Self>) {
         self.ws.toggle_pin(id);
+        self.sync_pinned_peek(id);
         self.schedule_save(cx);
         cx.notify();
     }
@@ -1620,6 +1655,7 @@ impl Browser {
                 cx,
             );
         }
+        self.sync_pinned_peek(id);
         self.schedule_save(cx);
         cx.notify();
     }
@@ -2779,6 +2815,7 @@ impl Browser {
                         live.view.execute_js(mori_core::scripts::CLIPBOARD_BRIDGE_SCRIPT);
                         live.view.execute_js(mori_core::page_actions::PEEK_LINK_SCRIPT);
                     }
+                    self.sync_pinned_peek(id);
                     self.apply_site_zoom(id);
                     self.check_media_soon(id, cx);
                     self.apply_generic_cosmetics(id, cx);
@@ -2884,6 +2921,11 @@ impl Browser {
                     }
                 }
                 ViewEvent::ContextMenu(info) => {
+                    // The menu opens at the pane that was right-clicked; a
+                    // page that isn't on screen can't ask for one.
+                    if !self.visible_tabs().contains(&Some(id)) {
+                        continue;
+                    }
                     if let Some(origin) = self.card_origin(id, cx) {
                         let position =
                             origin + point(px(info.x as f32), px(info.y as f32));
@@ -2924,6 +2966,8 @@ impl Browser {
                         && self.alt_click_at.take().is_some_and(|t| t.elapsed() < Duration::from_secs(2))
                     {
                         self.peek_url(&url, window, cx);
+                    } else if let Some(url) = mori_core::page_actions::pinned_peek_request(&message) {
+                        self.on_pinned_peek_request(id, url, window, cx);
                     }
                 }
                 // The site-info popover shows the count of the page on screen.
@@ -3425,12 +3469,10 @@ impl Browser {
 
     // ---- Window --------------------------------------------------------------------------
 
+    /// Ctrl+S. In compact mode it brings the sidebar back for good.
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.settings.sidebar_visible = !self.settings.sidebar_visible;
-        self.sidebar_peek = false;
-        self.sidebar_hide = None;
-        self.schedule_save(cx);
-        cx.notify();
+        let visible = self.settings.compact_mode || !self.settings.sidebar_visible;
+        self.set_sidebar_layout(visible, false, cx);
     }
 
     /// The pointer moved to `x` in a window `width` wide (or left the window,
@@ -3438,7 +3480,7 @@ impl Browser {
     /// as a floating card; it hides again once the pointer has stayed away
     /// from it for a moment, unless a menu or rename opened from it is up.
     pub fn track_sidebar_peek(&mut self, x: Option<f32>, width: f32, cx: &mut Context<Self>) {
-        if self.settings.sidebar_visible {
+        if self.settings.docks_sidebar() {
             return;
         }
         let left = self.settings.sidebar_position == mori_core::settings::SidebarPosition::Left;
@@ -3447,13 +3489,18 @@ impl Browser {
         match from_edge {
             Some(d) if d <= SIDEBAR_REVEAL_EDGE => {
                 self.sidebar_hide = None;
-                if !self.sidebar_peek {
-                    self.sidebar_peek = true;
-                    cx.notify();
+                if !self.sidebar_peek || self.sidebar_fx.peek_leaving() {
+                    self.show_sidebar_peek(cx);
                 }
             }
             _ if !self.sidebar_peek => {}
-            Some(d) if d <= reach => self.sidebar_hide = None,
+            Some(d) if d <= reach => {
+                self.sidebar_hide = None;
+                // Back over it while it slides out: it slides back in.
+                if self.sidebar_fx.peek_leaving() {
+                    self.show_sidebar_peek(cx);
+                }
+            }
             _ if self.menu.is_some() || self.rename.is_some() => self.sidebar_hide = None,
             _ => {
                 if self.sidebar_hide.is_none() {
@@ -3462,8 +3509,7 @@ impl Browser {
                         this.update(cx, |this, cx| {
                             this.sidebar_hide = None;
                             if this.menu.is_none() && this.rename.is_none() {
-                                this.sidebar_peek = false;
-                                cx.notify();
+                                this.hide_sidebar_peek(cx);
                             }
                         })
                         .ok();

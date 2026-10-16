@@ -873,7 +873,7 @@ impl Workspace {
     }
 
     /// Every tab shown with `space`: favorites, then the space's tabs.
-    fn ordered_in(&self, space: SpaceId) -> Vec<TabId> {
+    pub fn ordered_in(&self, space: SpaceId) -> Vec<TabId> {
         let mut out = self.favorites.clone();
         if let Some(s) = self.space(space) {
             out.extend(s.ordered());

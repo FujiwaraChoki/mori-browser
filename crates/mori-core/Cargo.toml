@@ -21,3 +21,5 @@ addr = { version = "0.15", default-features = false, features = ["psl"] }
 # Passwords: wiping secrets from memory, and the generator's random source.
 zeroize = "1"
 getrandom = "0.4"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-decode", "safe-encode", "checked-decode"] }

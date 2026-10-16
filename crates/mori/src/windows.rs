@@ -1512,7 +1512,8 @@ fn offer_default_browser(cx: &mut App) {
             let Some((handle, browser, _)) = browsers(Some(WindowKind::Normal)).into_iter().next() else { return };
             update_in(handle, &browser, cx, |b, _, cx| {
                 b.settings.default_browser_offered = true;
-                if is_default == Some(false) {
+                // The welcome's last step offers it instead.
+                if is_default == Some(false) && b.onboarding.is_none() {
                     b.toast(
                         "Make Mori your default browser?",
                         ToastStyle::Info,

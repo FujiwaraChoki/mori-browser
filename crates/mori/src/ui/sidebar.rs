@@ -1590,6 +1590,7 @@ impl Browser {
                     }
                 }),
             )
+            .on_hover(cx.listener(move |this, hovered: &bool, window, cx| this.hover_tab_row(id, *hovered, window, cx)))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |this, ev: &MouseDownEvent, _, cx| {

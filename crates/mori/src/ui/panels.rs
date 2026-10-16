@@ -481,7 +481,7 @@ impl Browser {
 /// Seconds east of UTC for grouping the archive by local day:
 /// `MORI_UTC_OFFSET` if set, else the C library's local time zone. (This
 /// runs on every render of the Archive tab, so it must not spawn anything.)
-fn local_utc_offset() -> i64 {
+pub(crate) fn local_utc_offset() -> i64 {
     if let Some(offset) = std::env::var("MORI_UTC_OFFSET").ok().and_then(|v| v.parse().ok()) {
         return offset;
     }

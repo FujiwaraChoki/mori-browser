@@ -233,6 +233,12 @@ impl WebSurface {
         Some((self.image_size.0, self.image_size.1, bytes))
     }
 
+    /// Engine frame generation of the frame [`Self::snapshot_bgra`] returns,
+    /// so callers can tell whether the page repainted since.
+    pub fn frame_generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Bounds in window coordinates as of the last paint.
     pub fn bounds(&self) -> Bounds<Pixels> {
         self.bounds

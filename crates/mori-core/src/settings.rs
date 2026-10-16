@@ -179,6 +179,19 @@ pub struct Settings {
     /// Pop a playing video out into Picture-in-Picture when its tab leaves
     /// the screen.
     pub auto_pip: bool,
+    /// Compact mode (Zen): the sidebar is hidden and slides in over the page
+    /// from the window edge; the page fills the window.
+    pub compact_mode: bool,
+    /// The first-run welcome (theme, import) was finished or skipped. New
+    /// profiles start without it; settings saved before it existed count
+    /// as onboarded, so existing users don't get the welcome again.
+    #[serde(default = "onboarded_before_welcome")]
+    pub onboarded: bool,
+    /// Ctrl+Tab switches tabs in recently used order (with an overlay);
+    /// off, it walks the sidebar order.
+    pub ctrl_tab_recent_order: bool,
+    /// Links from pinned tabs to other sites open in Peek (Arc).
+    pub peek_links_from_pinned: bool,
 }
 
 impl Default for Settings {
@@ -204,6 +217,10 @@ impl Default for Settings {
             do_not_track: false,
             block_third_party_cookies: false,
             auto_pip: true,
+            compact_mode: false,
+            onboarded: false,
+            ctrl_tab_recent_order: true,
+            peek_links_from_pinned: true,
         }
     }
 }
@@ -232,6 +249,17 @@ impl Settings {
     /// sidebar on launch", otherwise as it was when Mori last quit.
     pub fn launch_sidebar_visible(&self) -> bool {
         self.show_sidebar_on_launch || self.sidebar_visible
+    }
+
+    /// Whether the sidebar takes its column next to the page (rather than
+    /// being hidden or floating in compact mode).
+    pub fn docks_sidebar(&self) -> bool {
+        self.sidebar_visible && !self.compact_mode
+    }
+
+    /// Whether to show the first-run welcome.
+    pub fn needs_onboarding(&self) -> bool {
+        !self.onboarded
     }
 
     /// The URL a new tab should load.
@@ -263,6 +291,10 @@ impl Settings {
             format!("{template}{encoded}")
         }
     }
+}
+
+fn onboarded_before_welcome() -> bool {
+    true
 }
 
 /// Percent-encode a search query: everything except ASCII alphanumerics and
@@ -329,6 +361,33 @@ mod tests {
         assert!(!s.launch_sidebar_visible(), "hidden last time stays hidden");
         s.sidebar_visible = true;
         assert!(s.launch_sidebar_visible(), "shown last time stays shown");
+    }
+
+    #[test]
+    fn compact_mode_undocks_the_sidebar() {
+        let mut s = Settings::default();
+        assert!(s.docks_sidebar());
+        s.compact_mode = true;
+        assert!(!s.docks_sidebar());
+        s.compact_mode = false;
+        s.sidebar_visible = false;
+        assert!(!s.docks_sidebar());
+    }
+
+    #[test]
+    fn onboarding_only_for_new_profiles() {
+        let tmp = TempDir::new();
+        let fresh = Settings::load(tmp.path());
+        assert!(fresh.needs_onboarding(), "a new profile gets the welcome");
+        // Until it's done, even after a restart.
+        fresh.save(tmp.path()).unwrap();
+        assert!(Settings::load(tmp.path()).needs_onboarding());
+        let done = Settings { onboarded: true, ..fresh };
+        assert!(!done.needs_onboarding());
+        // Settings saved before the welcome existed: not onboarded again.
+        let old: Settings = serde_json::from_str(r#"{"sidebar_width":200}"#).unwrap();
+        assert!(!old.needs_onboarding());
+        assert!(old.ctrl_tab_recent_order && old.peek_links_from_pinned && !old.compact_mode);
     }
 
     #[test]
