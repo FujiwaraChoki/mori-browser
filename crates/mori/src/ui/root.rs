@@ -109,9 +109,11 @@ impl Browser {
         };
 
         let live = self.selected_live();
-        let loading = live.is_some_and(|l| l.loading) && !self.settings_open;
         let error = live.and_then(|l| l.error.clone()).filter(|_| !self.settings_open);
-        let status = live.and_then(|l| l.status.clone()).filter(|_| !self.settings_open);
+        // Link targets hide while a menu or the launcher covers the page.
+        let status = live
+            .and_then(|l| l.status.clone())
+            .filter(|_| !self.settings_open && self.menu.is_none() && self.launcher.is_none());
         let fullscreen = live.is_some_and(|l| l.fullscreen);
 
         let mut card = div()
@@ -119,32 +121,26 @@ impl Browser {
             .relative()
             .size_full()
             .bg(t.card)
-            .when(!fullscreen, |s| {
-                s.rounded(metrics::RADIUS)
-                    .border_1()
-                    .border_color(t.border.opacity(0.7))
-                    .shadow(t.card_shadow())
-            })
+            .when(!fullscreen, |s| s.rounded(metrics::CARD_RADIUS).shadow(t.card_shadow()))
             .child(content);
 
-        if loading {
-            card = card.child(loading_bar(cx));
-        }
         if let Some(status) = status {
+            // Zen's status panel: flush in the card's bottom-left corner,
+            // only the inner corner rounded.
             card = card.child(
                 div()
                     .absolute()
-                    .bottom(px(8.))
-                    .left(px(8.))
-                    .max_w(px(480.))
-                    .px_2()
-                    .py_1()
-                    .rounded(metrics::RADIUS_MD)
-                    .bg(t.popover)
-                    .border_1()
-                    .border_color(t.border.opacity(0.6))
-                    .text_size(metrics::TEXT_SMALL)
-                    .text_color(t.muted_foreground)
+                    .bottom_0()
+                    .left_0()
+                    .max_w(relative(0.5))
+                    .px(px(8.))
+                    .py(px(4.))
+                    .rounded_tr(metrics::CARD_RADIUS)
+                    .when(!fullscreen, |s| s.rounded_bl(metrics::CARD_RADIUS))
+                    .bg(if t.dark { rgb(0x2B2B2E).into() } else { t.popover })
+                    .when(!t.dark, |s| s.border_t_1().border_r_1().border_color(t.popover_border()))
+                    .text_size(metrics::TEXT_BASE)
+                    .text_color(t.foreground.opacity(0.9))
                     .truncate()
                     .child(status),
             );
@@ -177,7 +173,6 @@ impl Browser {
         let id = self.split?;
         let live = self.live.get(&id)?;
         let t = cx.tokens().clone();
-        let loading = live.loading;
         Some(
             div()
                 .id("split-card")
@@ -186,12 +181,9 @@ impl Browser {
                 .min_w_0()
                 .h_full()
                 .bg(t.card)
-                .rounded(metrics::RADIUS)
-                .border_1()
-                .border_color(t.border.opacity(0.7))
+                .rounded(metrics::CARD_RADIUS)
                 .shadow(t.card_shadow())
                 .child(live.surface.clone())
-                .when(loading, |s| s.child(loading_bar(cx)))
                 .child(
                     div()
                         .id("close-split")
@@ -205,7 +197,7 @@ impl Browser {
                         .rounded_full()
                         .bg(t.popover.opacity(0.9))
                         .border_1()
-                        .border_color(t.border.opacity(0.6))
+                        .border_color(t.popover_border())
                         .cursor_pointer()
                         .child(icon("x", px(10.), t.foreground))
                         .on_click(cx.listener(|this, _, _, cx| this.close_split(cx))),
@@ -223,7 +215,7 @@ impl Browser {
             .items_center()
             .justify_center()
             .bg(t.card)
-            .rounded(metrics::RADIUS)
+            .rounded(metrics::CARD_RADIUS)
             .child(
                 v_flex()
                     .max_w(px(360.))
@@ -340,7 +332,7 @@ impl Browser {
                     .rounded(metrics::RADIUS_POPOVER)
                     .bg(t.popover)
                     .border_1()
-                    .border_color(t.border.opacity(0.6))
+                    .border_color(t.popover_border())
                     .shadow(t.popover_shadow())
                     .text_size(metrics::TEXT_BASE)
                     .text_color(t.foreground)
@@ -384,32 +376,30 @@ impl Browser {
     }
 }
 
-fn loading_bar(cx: &App) -> impl IntoElement {
+/// Zen's page-load indicator: a small pill in the gutter above the web
+/// card, pulsing while the page loads.
+fn loading_pill(cx: &App) -> impl IntoElement {
     let t = cx.tokens();
-    let color = t.muted_foreground;
+    let color = if t.dark { white().opacity(0.22) } else { black().opacity(0.2) };
     div()
         .absolute()
-        .bottom(px(1.))
-        .left(px(10.))
-        .right(px(10.))
-        .h(px(2.))
-        .overflow_hidden()
+        .top(px(1.5))
+        .left_0()
+        .right_0()
+        .flex()
+        .justify_center()
         .child(
             div()
-                .h_full()
-                .w(relative(0.28))
+                .w(px(64.))
+                .h(px(5.))
                 .rounded_full()
-                .bg(linear_gradient(
-                    90.,
-                    linear_color_stop(color.opacity(0.0), 0.),
-                    linear_color_stop(color.opacity(0.7), 1.),
-                ))
+                .bg(color)
                 .with_animation(
-                    "loading-sweep",
-                    Animation::new(std::time::Duration::from_millis(1100))
+                    "loading-pulse",
+                    Animation::new(std::time::Duration::from_millis(1200))
                         .repeat()
                         .with_easing(ease_in_out),
-                    |el, delta| el.ml(relative(delta * 0.72)),
+                    |el, delta| el.opacity(0.35 + 0.65 * (delta * std::f32::consts::PI).sin()),
                 ),
         )
 }
@@ -421,6 +411,10 @@ impl Render for Browser {
         let show_sidebar = self.settings.sidebar_visible && !fullscreen;
         let left = self.settings.sidebar_position == SidebarPosition::Left;
         let inset = if fullscreen { px(0.) } else { metrics::CARD_INSET };
+        let loading = !self.settings_open
+            && !fullscreen
+            && (self.selected_live().is_some_and(|l| l.loading)
+                || self.split.and_then(|id| self.live.get(&id)).is_some_and(|l| l.loading));
 
         let sidebar = show_sidebar.then(|| self.render_sidebar(false, window, cx));
         let resize_handle = show_sidebar.then(|| self.render_resize_handle(left, cx));
@@ -434,6 +428,7 @@ impl Render for Browser {
             .filter(|_| self.assistant_visible && !fullscreen);
 
         let web_column = div()
+            .relative()
             .flex_1()
             .min_w_0()
             .h_full()
@@ -444,7 +439,8 @@ impl Render for Browser {
             .flex()
             .gap(metrics::CARD_INSET)
             .child(div().flex_1().min_w_0().h_full().child(card))
-            .children(split_card);
+            .children(split_card)
+            .when(loading, |s| s.child(loading_pill(cx)));
 
         let mut row = h_flex().size_full().items_stretch();
         if left {
@@ -480,18 +476,27 @@ impl Render for Browser {
         });
         let floating = (self.sidebar_peek && !show_sidebar && !fullscreen).then(|| {
             let sidebar = self.render_sidebar(true, window, cx);
+            // Opaque, with the space's wash painted inside it, so the page
+            // never reads through the tab list.
             div()
                 .id("sidebar-peek")
                 .absolute()
-                .top(px(8.))
-                .bottom(px(8.))
-                .when(left, |s| s.left(px(8.)))
-                .when(!left, |s| s.right(px(8.)))
+                .top(px(4.))
+                .bottom(px(4.))
+                .when(left, |s| s.left(px(4.)))
+                .when(!left, |s| s.right(px(4.)))
                 .rounded(metrics::RADIUS)
-                .bg(t.sidebar.opacity(if t.dark { 0.92 } else { 0.95 }))
+                .overflow_hidden()
+                .bg(t.sidebar)
                 .border_1()
-                .border_color(t.sidebar_border.opacity(0.7))
-                .shadow(t.overlay_shadow())
+                .border_color(t.popover_border())
+                .shadow(vec![BoxShadow {
+                    color: black().opacity(t.shadow_alpha(0.18, 0.45)),
+                    offset: point(px(0.), px(8.)),
+                    blur_radius: px(28.),
+                    spread_radius: px(0.),
+                    inset: false,
+                }])
                 .occlude()
                 .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                     if !*hovered && this.menu.is_none() {
@@ -499,6 +504,7 @@ impl Render for Browser {
                         cx.notify();
                     }
                 }))
+                .children(self.render_wash(cx))
                 .child(sidebar)
         });
 
@@ -517,7 +523,7 @@ impl Render for Browser {
             .size_full()
             .bg(t.sidebar)
             .text_color(t.foreground)
-            .font_family(".SystemUIFont")
+            .font_family(crate::theme::ui_font().family.clone())
             .text_size(metrics::TEXT_BASE)
             .on_action(cx.listener(|this, _: &NewTab, window, cx| {
                 this.open_launcher(LauncherMode::NewTab, window, cx)
