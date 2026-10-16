@@ -384,7 +384,7 @@ impl Browser {
             .child(match renaming {
                 Some(input) => div()
                     .flex_1()
-                    .child(Input::new(&input).appearance(false).bordered(false))
+                    .child(rename_input(&input, metrics::TEXT_LABEL, FontWeight::SEMIBOLD, cx))
                     .into_any_element(),
                 None => div()
                     .flex_1()
@@ -564,7 +564,7 @@ impl Browser {
             .child(match renaming {
                 Some(input) => div()
                     .flex_1()
-                    .child(Input::new(&input).appearance(false).bordered(false))
+                    .child(rename_input(&input, metrics::TEXT_BASE, FontWeight::MEDIUM, cx))
                     .into_any_element(),
                 None => div()
                     .flex_1()
@@ -734,7 +734,7 @@ impl Browser {
             .child(match renaming {
                 Some(input) => div()
                     .flex_1()
-                    .child(Input::new(&input).appearance(false).bordered(false))
+                    .child(rename_input(&input, metrics::TEXT_BASE, FontWeight::NORMAL, cx))
                     .into_any_element(),
                 None => div().flex_1().min_w_0().truncate().child(title.clone()).into_any_element(),
             })
@@ -936,6 +936,27 @@ impl Browser {
                     })),
             )
     }
+}
+
+/// An inline rename field that sits exactly where its label was: no padding,
+/// the label's size and weight, and a thin accent underline while editing.
+fn rename_input(
+    input: &Entity<gpui_kit::component::input::InputState>,
+    size: Pixels,
+    weight: FontWeight,
+    cx: &App,
+) -> impl IntoElement {
+    let t = cx.tokens();
+    let field = Input::new(input)
+        .appearance(false)
+        .bordered(false)
+        .focus_bordered(false)
+        .px_0()
+        .py_0()
+        .text_size(size)
+        .font_weight(weight);
+    // `Input::h` only sizes multi-line inputs; the style height applies here.
+    div().border_b_1().border_color(t.primary.opacity(0.6)).child(Styled::h(field, size + px(6.)))
 }
 
 /// Minimize / maximize / close buttons, shown only when Mori draws its own
