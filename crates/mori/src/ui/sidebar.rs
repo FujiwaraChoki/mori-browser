@@ -857,6 +857,8 @@ impl Browser {
                     .items_center()
                     .justify_center()
                     .rounded(metrics::RADIUS)
+                    .relative()
+                    .child(crate::ui::menus::anchor_probe(crate::ui::menus::space_chip_anchor(id)))
                     .opacity(if is_active { 1.0 } else { 0.45 })
                     .hover(|s| s.opacity(if is_active { 1.0 } else { 0.75 }).bg(t.ghost_hover()))
                     .cursor_pointer()

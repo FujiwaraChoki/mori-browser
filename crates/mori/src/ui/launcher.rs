@@ -324,7 +324,7 @@ impl Launcher {
         // Completions come first, but matches always keep MIN_ITEMS rows.
         let free = MAX_ROWS.saturating_sub(rows.len() + usize::from(ask));
         let item_room = free.saturating_sub(suggestions.len()).max(MIN_ITEMS).min(ranked.len());
-        rows.extend(suggestions.into_iter().take(free - item_room));
+        rows.extend(suggestions.into_iter().take(free.saturating_sub(item_room)));
         rows.extend(ranked.into_iter().take(item_room).map(Row::Item));
         if ask {
             rows.push(Row::Ask(q.to_string()));

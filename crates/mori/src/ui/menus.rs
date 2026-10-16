@@ -652,13 +652,14 @@ fn web_entries(b: &Browser, tab: TabId, info: &mori_engine::ContextMenuInfo) -> 
 
 thread_local! {
     /// Last painted bounds of menu triggers, per window (see [`anchor_probe`]).
-    static ANCHORS: RefCell<HashMap<(WindowId, &'static str), Bounds<Pixels>>> = RefCell::default();
+    static ANCHORS: RefCell<HashMap<(WindowId, SharedString), Bounds<Pixels>>> = RefCell::default();
 }
 
 /// An invisible overlay that records where its (relatively positioned)
 /// parent was painted, so a menu opened from it can be placed beside it
 /// instead of on top of it. Look the bounds up with [`anchor_bounds`].
-pub fn anchor_probe(key: &'static str) -> impl IntoElement {
+pub fn anchor_probe(key: impl Into<SharedString>) -> impl IntoElement {
+    let key = key.into();
     canvas(
         move |bounds, window, _| {
             let id = window.window_handle().window_id();
@@ -670,9 +671,14 @@ pub fn anchor_probe(key: &'static str) -> impl IntoElement {
     .inset_0()
 }
 
-pub fn anchor_bounds(key: &'static str, window: &Window) -> Option<Bounds<Pixels>> {
+pub fn anchor_bounds(key: impl Into<SharedString>, window: &Window) -> Option<Bounds<Pixels>> {
     let id = window.window_handle().window_id();
-    ANCHORS.with(|a| a.borrow().get(&(id, key)).copied())
+    ANCHORS.with(|a| a.borrow().get(&(id, key.into())).copied())
+}
+
+/// Anchor key of a space's chip in the sidebar's space switcher.
+pub fn space_chip_anchor(space: SpaceId) -> SharedString {
+    format!("space-chip-{space}").into()
 }
 
 /// Top-left corner for a menu of `size` in a `viewport`, as (x, y).
@@ -736,11 +742,14 @@ impl Browser {
         }
         let height: f32 = list.iter().map(Entry::height).sum::<f32>() + MENU_PADDING * 2. + 2.;
         let viewport = window.viewport_size();
-        let anchor = match menu.kind {
+        // Opened from a known trigger (the click landed on it): sit beside it.
+        let anchor = match &menu.kind {
             MenuKind::NewMenu => anchor_bounds(NEW_MENU_ANCHOR, window),
             MenuKind::SiteInfo => anchor_bounds(crate::ui::site_info::OMNIBOX_ANCHOR, window),
+            MenuKind::Space(sid) => anchor_bounds(space_chip_anchor(*sid), window),
             _ => None,
         }
+        .filter(|b| b.contains(&menu.position))
         .map(|b| [f32::from(b.left()), f32::from(b.top()), f32::from(b.right()), f32::from(b.bottom())]);
         let (x, y) = place_menu(
             (f32::from(viewport.width), f32::from(viewport.height)),
