@@ -233,21 +233,29 @@ impl Tokens {
     /// match a translucent surface exactly (title fade-outs). `None` while a
     /// gradient wash is showing, because the sidebar is not one colour then.
     pub fn opaque_on_sidebar(&self, layer: Hsla) -> Option<Hsla> {
+        self.opaque_on_sidebar_layers(&[layer])
+    }
+
+    /// Like [`Self::opaque_on_sidebar`] for several layers painted bottom to
+    /// top, e.g. a drop shadow that shows through a translucent row.
+    pub fn opaque_on_sidebar_layers(&self, layers: &[Hsla]) -> Option<Hsla> {
         if !self.gradient.is_none() {
             return None;
         }
-        let (top, bottom) = (layer.to_rgb(), self.sidebar.to_rgb());
-        let a = top.a;
-        let mix = |t: f32, b: f32| t * a + b * (1.0 - a);
-        Some(
-            Rgba32 {
-                r: mix(top.r, bottom.r),
-                g: mix(top.g, bottom.g),
-                b: mix(top.b, bottom.b),
+        let mut out = self.sidebar.to_rgb();
+        for layer in layers {
+            let top = layer.to_rgb();
+            let a = top.a;
+            let mix = |t: f32, b: f32| t * a + b * (1.0 - a);
+            out = Rgba32 {
+                r: mix(top.r, out.r),
+                g: mix(top.g, out.g),
+                b: mix(top.b, out.b),
                 a: 1.0,
-            }
-            .into(),
-        )
+            };
+        }
+        out.a = 1.0;
+        Some(out.into())
     }
 
     pub fn ghost_hover(&self) -> Hsla {

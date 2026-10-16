@@ -153,7 +153,8 @@ impl Browser {
                     .child(self.render_loose(window, cx)),
             )
             .children(self.render_media_strip(cx))
-            .child(self.render_bottom_bar(cx).pl(pl).pr(pr))
+            // The bar's own -4/-3px margins give back 7px of the padding.
+            .child(self.render_bottom_bar(f32::from(width - pl - pr) + 7., cx).pl(pl).pr(pr))
     }
 
     fn render_header(&mut self, left: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
@@ -191,20 +192,7 @@ impl Browser {
                 icon_button("toggle-sidebar", if left { "panel-left" } else { "panel-right" }, button, true, cx)
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
             )
-            .child(
-                // Empty header space moves the window (client-side decorations).
-                div()
-                    .id("window-drag")
-                    .flex_1()
-                    .h_full()
-                    .on_mouse_down(MouseButton::Left, |ev: &MouseDownEvent, window, _| {
-                        if ev.click_count == 2 {
-                            window.zoom_window();
-                        } else {
-                            window.start_window_move();
-                        }
-                    }),
-            )
+            .child(window_drag_area("window-drag"))
             .when(has_downloads, |s| {
                 s.child(
                     div()
@@ -262,11 +250,20 @@ impl Browser {
                     })),
             );
 
-        let nav = nav.children(window_controls(window, cx));
+        // The window buttons don't fit next to the toolbar at Zen's sidebar
+        // width, so they get a row of their own above it.
+        let controls = window_controls(window, cx).map(|controls| {
+            h_flex()
+                .h(px(24.))
+                .mr(px(-3.))
+                .child(window_drag_area("window-drag-controls"))
+                .child(controls)
+        });
         v_flex()
             .pt(px(6.))
             .pb(px(10.))
             .gap(px(7.))
+            .children(controls)
             .child(nav)
             .child(self.render_omnibox(cx))
     }
@@ -292,7 +289,7 @@ impl Browser {
             None
         };
         // Page actions appear on hover, or stay while they show state.
-        let action = |id: &'static str, glyph: &str, active: bool, color: Hsla| {
+        let action = |id: &'static str, glyph: &'static str, color: Hsla, toggles_reader: bool, cx: &mut Context<Self>| {
             div()
                 .id(id)
                 .size(px(26.))
@@ -301,15 +298,25 @@ impl Browser {
                 .items_center()
                 .justify_center()
                 .rounded(px(7.))
-                .when(!active, |s| s.hidden().group_hover("omnibox", |s| s.flex()))
                 .hover(|s| s.bg(t.tab_hover()))
                 .cursor_pointer()
                 .child(icon(glyph, px(14.), color))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    if toggles_reader {
+                        this.toggle_reader(cx);
+                    } else {
+                        this.toggle_bookmark(cx);
+                    }
+                }))
         };
+        let reader_color = if reader { t.primary } else { muted };
+        let star_color = if bookmarked { t.status_warning } else { muted };
 
-        h_flex()
+        let mut pill = h_flex()
             .id("omnibox")
             .group("omnibox")
+            .relative()
             .h(metrics::PILL_HEIGHT)
             .pl(px(11.))
             .pr(px(4.))
@@ -333,23 +340,56 @@ impl Browser {
                         s.text_color(t.sidebar_foreground.opacity(if t.dark { 0.75 } else { 0.68 }))
                             .child(host)
                     }),
-            )
-            .when(is_web, |s| {
-                s.child(
-                    action("reader", "book-open-text", reader, if reader { t.primary } else { muted })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.toggle_reader(cx);
-                        })),
-                )
-                .child(
-                    action("bookmark", "star", bookmarked, if bookmarked { t.status_warning } else { muted })
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.toggle_bookmark(cx);
-                        })),
-                )
-            })
+            );
+        if !is_web {
+            return pill;
+        }
+        // Hover may only toggle visibility here, never `display`: GPUI
+        // panics when an element's display differs between prepaint and
+        // paint, which happens whenever the layout shifts under a resting
+        // pointer (a menu closing, a row disappearing).
+        match t.opaque_on_sidebar(t.tile_rest()) {
+            // The host keeps the whole pill until hover; the actions then
+            // slide in over its end on the pill's own colour.
+            Some(backing) => {
+                pill = pill
+                    .when(reader, |s| s.child(action("reader", "book-open-text", reader_color, true, cx)))
+                    .when(bookmarked, |s| s.child(action("bookmark", "star", star_color, false, cx)))
+                    .child(
+                        h_flex()
+                            .absolute()
+                            .top(px(4.))
+                            .bottom(px(4.))
+                            .right(px(4.))
+                            .invisible()
+                            .group_hover("omnibox", |s| s.visible())
+                            .child(div().w(px(16.)).h_full().bg(fade_to(backing)))
+                            .child(
+                                h_flex()
+                                    .h_full()
+                                    .items_center()
+                                    .gap(px(7.))
+                                    .bg(backing)
+                                    .child(action("reader-hover", "book-open-text", reader_color, true, cx))
+                                    .child(action("bookmark-hover", "star", star_color, false, cx)),
+                            ),
+                    );
+            }
+            // Under a gradient wash the pill has no single colour to cover
+            // the host with, so the actions keep their space.
+            None => {
+                pill = pill
+                    .child(
+                        action("reader", "book-open-text", reader_color, true, cx)
+                            .when(!reader, |s| s.invisible().group_hover("omnibox", |s| s.visible())),
+                    )
+                    .child(
+                        action("bookmark", "star", star_color, false, cx)
+                            .when(!bookmarked, |s| s.invisible().group_hover("omnibox", |s| s.visible())),
+                    );
+            }
+        }
+        pill
     }
 
     fn render_space_header(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -724,17 +764,19 @@ impl Browser {
         // Long titles fade into the row instead of ending in an ellipsis.
         // The fade needs the row's exact colour, which a gradient wash
         // doesn't have; those themes keep the ellipsis.
-        let fade = t.opaque_on_sidebar(row_bg.unwrap_or(transparent_black())).map(|base| {
+        // A selected row's shadow is painted under its translucent fill and
+        // shows through it, so it is part of the colour the fade must match.
+        let mut layers: Vec<Hsla> = Vec::new();
+        if selected {
+            layers.extend(t.tab_selected_shadow().iter().map(|s| s.color));
+        }
+        layers.extend(row_bg);
+        let fade = t.opaque_on_sidebar_layers(&layers).map(|base| {
             let hover = (!selected).then(|| t.opaque_on_sidebar(t.tab_hover())).flatten();
             (base, hover)
         });
-        let fade_out = |color: Hsla| {
-            linear_gradient(
-                90.,
-                linear_color_stop(color.opacity(0.), 0.),
-                linear_color_stop(color, 1.),
-            )
-        };
+        let fade_out = fade_to;
+        let renaming_row = renaming.is_some();
         let title_el: AnyElement = match renaming {
             Some(input) => div()
                 .flex_1()
@@ -776,9 +818,31 @@ impl Browser {
                 .hover(|s| s.bg(if t.dark { white().opacity(0.10) } else { black().opacity(0.07) }))
         };
 
+        let mute_button = |button_id: &'static str, cx: &mut Context<Self>| {
+            row_button(button_id)
+                .child(icon("volume-x", px(12.), fg.opacity(0.7)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.toggle_mute(id, cx);
+                }))
+        };
+        let close_button = |cx: &mut Context<Self>| {
+            row_button("close")
+                .child(icon("x", px(12.), fg.opacity(0.7)))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.close_tab(id, true, window, cx);
+                }))
+        };
+        // The row's colour while hovered, when it is a single opaque colour.
+        let hover_backing = fade
+            .filter(|_| !renaming_row)
+            .map(|(base, hover)| hover.unwrap_or(base));
+
         h_flex()
             .id(SharedString::from(format!("tab-row-{id}")))
             .group(group.clone())
+            .relative()
             .h(metrics::ROW_HEIGHT)
             .pl(px(7.))
             .pr(px(6.))
@@ -807,27 +871,36 @@ impl Browser {
                     }),
             )
             .child(title_el)
-            .when(muted, |s| {
-                s.child(
-                    row_button("mute")
-                        .child(icon("volume-x", px(12.), fg.opacity(0.7)))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.toggle_mute(id, cx);
-                        })),
-                )
+            .when(muted, |s| s.child(mute_button("mute", cx)))
+            // Close appears on hover only, for the selected row too (Zen).
+            // Hover may only toggle visibility, never `display`: GPUI panics
+            // when an element's display differs between prepaint and paint,
+            // which happens whenever rows shift under a resting pointer.
+            .map(|row| match hover_backing {
+                // The title keeps the whole row until hover; the buttons then
+                // cover its end on the row's own (hover) colour.
+                Some(backing) => row.child(
+                    h_flex()
+                        .absolute()
+                        .top(px(2.))
+                        .bottom(px(2.))
+                        .right(px(6.))
+                        .invisible()
+                        .group_hover(group.clone(), |s| s.visible())
+                        .child(div().w(px(24.)).h_full().bg(fade_to(backing)))
+                        .child(
+                            h_flex()
+                                .h_full()
+                                .items_center()
+                                .bg(backing)
+                                .when(muted, |s| s.child(mute_button("mute-hover", cx)))
+                                .child(close_button(cx)),
+                        ),
+                ),
+                // Under a gradient wash (or while renaming) there is no single
+                // colour to cover the title with, so the button keeps its slot.
+                None => row.child(close_button(cx).invisible().group_hover(group.clone(), |s| s.visible())),
             })
-            .child(
-                // Close appears on hover only, for the selected row too (Zen).
-                row_button("close")
-                    .hidden()
-                    .group_hover(group, |s| s.flex())
-                    .child(icon("x", px(12.), fg.opacity(0.7)))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.close_tab(id, true, window, cx);
-                    })),
-            )
             .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                 let m = ev.modifiers();
                 if m.secondary() {
@@ -890,7 +963,8 @@ impl Browser {
             .into_any_element()
     }
 
-    fn render_bottom_bar(&mut self, cx: &mut Context<Self>) -> Div {
+    /// The bottom bar; `bar_width` is the width its buttons and chips share.
+    fn render_bottom_bar(&mut self, bar_width: f32, cx: &mut Context<Self>) -> Div {
         let t = cx.tokens().clone();
         let active = self.ws.active_space;
         let ai = self.settings.ai_integration_enabled;
@@ -906,12 +980,16 @@ impl Browser {
         let hover = if t.dark { white().opacity(0.45) } else { black().opacity(0.42) };
         // Zen spaces its dots 32px apart; with more spaces they close up to
         // fit between the buttons before the row starts to scroll.
-        let width = self.sidebar_drag.unwrap_or(self.settings.clamped_sidebar_width());
         let buttons = if ai { 3. } else { 2. };
-        let room = width - buttons * f32::from(button);
-        let pitch = (room / self.ws.spaces.len().max(1) as f32).clamp(20., 32.);
+        let room = bar_width - buttons * f32::from(button);
+        let count = self.ws.spaces.len().max(1) as f32;
+        let pitch = (room / count).clamp(16., 32.);
         let chip = px(pitch.min(24.));
         let gap = px((pitch - 24.).max(0.));
+        // Centred while they fit; once they overflow they start at the left
+        // edge so the row can scroll to every chip (centring would push the
+        // first ones out of reach).
+        let overflow = pitch * count > room + 0.5;
         let chips: Vec<AnyElement> = if self.ws.spaces.len() < 2 {
             Vec::new()
         } else {
@@ -982,7 +1060,7 @@ impl Browser {
             .ml(px(-4.))
             .mr(px(-3.))
             .child(
-                icon_button("library", "library-big", button, true, cx).on_click(cx.listener(
+                icon_button("library", "library-big", button, true, cx).flex_none().on_click(cx.listener(
                     |this, _, _, cx| {
                         this.panel = (this.panel != Some(Panel::Library)).then_some(Panel::Library);
                         cx.notify();
@@ -992,6 +1070,7 @@ impl Browser {
             .when(ai, |s| {
                 s.child(
                     icon_button("assistant", "sparkles", button, true, cx)
+                        .flex_none()
                         .when(ai_open, |b| b.bg(t.primary.opacity(0.2)))
                         .on_click(cx.listener(|this, _, window, cx| this.toggle_assistant(window, cx))),
                 )
@@ -1001,7 +1080,7 @@ impl Browser {
                     .id("space-switcher")
                     .flex_1()
                     .min_w_0()
-                    .justify_center()
+                    .when(!overflow, |s| s.justify_center())
                     .gap(gap)
                     .overflow_x_scroll()
                     .children(chips),
@@ -1030,6 +1109,16 @@ impl Browser {
     }
 }
 
+/// A horizontal fade from transparent into `color`, laid over the end of
+/// text that runs under something drawn on `color`.
+fn fade_to(color: Hsla) -> Background {
+    linear_gradient(
+        90.,
+        linear_color_stop(color.opacity(0.), 0.),
+        linear_color_stop(color, 1.),
+    )
+}
+
 /// A lettered tile for a site without a favicon, coloured from its host so
 /// pins stay tellable apart.
 fn monogram(host: &str, cx: &App) -> AnyElement {
@@ -1049,6 +1138,22 @@ fn monogram(host: &str, cx: &App) -> AnyElement {
         .text_color(white())
         .child(letter.to_string())
         .into_any_element()
+}
+
+/// Empty header space that moves the window (client-side decorations);
+/// a double click maximizes.
+fn window_drag_area(id: &'static str) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_1()
+        .h_full()
+        .on_mouse_down(MouseButton::Left, |ev: &MouseDownEvent, window, _| {
+            if ev.click_count == 2 {
+                window.zoom_window();
+            } else {
+                window.start_window_move();
+            }
+        })
 }
 
 /// Minimize / maximize / close buttons, shown only when Mori draws its own

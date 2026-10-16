@@ -58,7 +58,10 @@ impl Browser {
         cx.notify();
     }
 
-    fn render_wash(&self, cx: &App) -> Option<AnyElement> {
+    /// The space's gradient wash (and grain), filling its parent. `radius`
+    /// rounds the wash to match a rounded parent; GPUI's clipping is
+    /// rectangular, so `overflow_hidden` alone leaves square corners.
+    fn render_wash(&self, radius: Pixels, cx: &App) -> Option<AnyElement> {
         let t = cx.tokens();
         let wash = t.wash.clone()?;
         let grain = t.grain.clone();
@@ -67,7 +70,7 @@ impl Browser {
             canvas(
                 |_, _, _| (),
                 move |bounds, _, window, _| {
-                    let _ = window.paint_image(bounds, bounds, Corners::default(), wash, 0, false);
+                    let _ = window.paint_image(bounds, bounds, Corners::all(radius), wash, 0, false);
                     if let Some(grain) = grain {
                         let tile = px(128.);
                         let mut y = bounds.origin.y;
@@ -504,7 +507,7 @@ impl Render for Browser {
                         cx.notify();
                     }
                 }))
-                .children(self.render_wash(cx))
+                .children(self.render_wash(metrics::RADIUS, cx))
                 .child(sidebar)
         });
 
@@ -630,7 +633,7 @@ impl Render for Browser {
             .on_action(cx.listener(|this, _: &SelectSpace7, w, cx| select_space(this, 7, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSpace8, w, cx| select_space(this, 8, w, cx)))
             .on_action(cx.listener(|this, _: &SelectSpace9, w, cx| select_space(this, 9, w, cx)))
-            .children(self.render_wash(cx))
+            .children(self.render_wash(px(0.), cx))
             .child(row)
             .children(edge_peek)
             .children(floating)
