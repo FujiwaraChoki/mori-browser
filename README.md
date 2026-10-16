@@ -69,7 +69,9 @@ checkout:
 | 🎨 **Gradient themes** | Wash the chrome in a custom hue/saturation gradient that derives a matching accent. |
 | 🔍 **Launcher** | A Spotlight-style ⌘T command palette to search, jump to open tabs, or pick from history. |
 | 💤 **Sleep & archive** | Stale tabs sleep to save memory and archive restorably instead of vanishing. |
-| 🔑 **Passkeys, downloads, media** | Native passkey auth, a downloads panel, and picture-in-picture media controls. |
+| 🔑 **Passkeys, downloads, media** | Native passkey auth (Mori 2), a downloads panel, and picture-in-picture media controls. |
+| ⭐ **Favorites, pinned & Today** | Mori 3: Arc/Zen's shared favorites grid, pinned tabs that remember their URL, and auto-archiving Today tabs. |
+| 🛡️ **Blocker & passwords** | Mori 3: built-in ad/tracker blocking and a keyring-backed password manager with autofill. |
 
 ## Security status
 
@@ -92,24 +94,44 @@ Start here, then use the focused docs when you need the exact workflow:
 
 ## Feature status in Mori 3
 
-Implemented: spaces with per-space themes, pinned tiles, folders, drag and
-drop, split view, the launcher (tabs, history, bookmarks, commands, search),
-Air Traffic Control, Boosts (custom CSS/JS and element zapping), Peek, Reader,
-find in page, sleep and archive timers, the background media mini player,
-downloads, the history/bookmarks/archive library, gradient themes and presets,
-JavaScript dialogs, permission prompts, custom context menus, DevTools,
-screenshots, session restore, single-instance URL hand-off, a system clipboard
-bridge, and the assistant panel (a local Codex app server with browser tools
-and per-action approval).
+Mori 3 follows Arc's and Zen's model and look: a slim sidebar beside a rounded
+web card, with Zen's palette and the system UI font.
 
-Windows and profiles: several windows over the same spaces, each with its own
-space and tab and all restored on start; private windows that write nothing to
-disk; Little Mori, a small window for links opened from other apps; a profile
-per space for separate logins; and making Mori the default browser.
+- **Organising:** shared Favorites (Zen's Essentials grid) above per-space
+  pinned tabs that remember their pinned URL, with Ctrl+W unloading a pin
+  instead of closing it. Today's tabs sit below the divider, with Clear and
+  auto-archive. Also: nested folders, multi-select, drag and drop everywhere,
+  a space editor (icon, emoji, gradient theme), space switching with
+  Ctrl+Alt+←/→ or a two-finger swipe, split view, Peek/Glance, and Air
+  Traffic Control.
+- **Getting around:** a Zen-style command bar (Ctrl+T / Ctrl+L) with tabs,
+  history, bookmarks, commands and live search suggestions; a Ctrl+Tab
+  recent-tab switcher with thumbnails; tab hover previews; a keyboard
+  shortcut cheatsheet (Ctrl+/); and compact mode (Ctrl+Alt+C), with the
+  sidebar on the left or right.
+- **Windows and profiles:** several windows over the same spaces, all restored
+  on start. Also: private windows that write nothing to disk; Little Mori, a
+  small window for links opened from other apps; a profile per space for
+  separate logins; and making Mori the default browser.
+- **Privacy and passwords:** a built-in content blocker (EasyList +
+  EasyPrivacy, with per-site exceptions), clearing browsing data, cookie and
+  site-permission management, and third-party cookie blocking. Saved
+  passwords live in the system keyring (Secret Service), with save and update
+  prompts, autofill, a generator, and CSV import and export.
+- **Web platform:** JavaScript dialogs, permission prompts, HTTP sign-in and
+  certificate-error pages, file choosers, in-page drag and drop, printing,
+  downloads with pause and resume, per-site zoom, DevTools, desktop
+  notifications, an audio indicator, and the media mini player with
+  Picture-in-Picture.
+- **Also:** onboarding with import from Chrome/Chromium/Brave/Vivaldi,
+  Firefox, Zen and Arc. Plus Boosts, Reader, find in page, page capture
+  (visible, region, full page), session restore, a system clipboard bridge,
+  and the assistant panel (a local Codex app server with browser tools and
+  per-action approval).
 
-Not yet ported from Mori 2: Chrome extensions, passkeys, automatic
-Picture-in-Picture, the back/forward history menu, and native drag sessions out
-of web pages.
+Not done yet: Chrome extensions (CEF's windowless mode can't host them),
+passkeys, back/forward history across a restart, and dragging links or images
+out of web pages into other apps.
 
 ## Source layout
 
