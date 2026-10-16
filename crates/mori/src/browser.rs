@@ -20,6 +20,7 @@ use mori_core::{
     omnibox::{self, Resolved},
     routes::RouteStore,
     settings::Settings,
+    site_permissions::{Decision, SitePermissionStore},
     util::host_of,
     workspace::{ClosedTab, FolderId, Slot, SpaceId, TabId, TabRecord, Workspace},
 };
@@ -102,6 +103,8 @@ pub enum MenuKind {
     Space(SpaceId),
     Sidebar,
     NewMenu,
+    /// Connection, permissions and zoom for the selected page (URL pill).
+    SiteInfo,
 }
 
 #[derive(Clone, Debug)]
@@ -143,6 +146,7 @@ pub struct Browser {
     pub archive: ArchiveStore,
     pub routes: RouteStore,
     pub boosts: BoostStore,
+    pub site_permissions: SitePermissionStore,
     pub favicons: Favicons,
     pub data_dir: PathBuf,
 
@@ -205,6 +209,7 @@ impl Browser {
             archive: ArchiveStore::load(&data_dir),
             routes: RouteStore::load(&data_dir),
             boosts: BoostStore::load(&data_dir),
+            site_permissions: SitePermissionStore::load(&data_dir),
             favicons: Favicons::new(data_dir.join("favicons")),
             ws,
             settings,
@@ -305,6 +310,7 @@ impl Browser {
             ("archive", self.archive.save(dir)),
             ("routes", self.routes.save(dir)),
             ("boosts", self.boosts.save(dir)),
+            ("site permissions", self.site_permissions.save(dir)),
         ];
         for (what, result) in results {
             if let Err(e) = result {
@@ -1630,7 +1636,16 @@ impl Browser {
                     self.dialogs.retain(|(t, _)| *t != id);
                     self.dialog_input = None;
                 }
-                ViewEvent::PermissionPrompt(req) => self.permissions.push((id, req)),
+                ViewEvent::PermissionPrompt(req) => {
+                    // A remembered answer for every kind asked skips the prompt.
+                    let keys: Option<Vec<&str>> =
+                        req.kinds.iter().map(|k| crate::ui::site_info::permission_key(*k)).collect();
+                    let remembered = keys.and_then(|keys| self.site_permissions.answer(&req.origin, &keys));
+                    match (remembered, self.live.get(&id)) {
+                        (Some(allow), Some(live)) => live.view.resolve_permission(req.id, allow),
+                        _ => self.permissions.push((id, req)),
+                    }
+                }
                 ViewEvent::PermissionDismissed(pid) => {
                     self.permissions.retain(|(_, r)| r.id != pid);
                 }
@@ -1748,6 +1763,11 @@ impl Browser {
         if let Some(live) = self.live.get(&tab) {
             live.view.resolve_permission(req.id, allow);
         }
+        let decision = if allow { Decision::Allow } else { Decision::Block };
+        for key in req.kinds.iter().filter_map(|k| crate::ui::site_info::permission_key(*k)) {
+            self.site_permissions.set(&req.origin, key, decision);
+        }
+        self.schedule_save(cx);
         cx.notify();
     }
 

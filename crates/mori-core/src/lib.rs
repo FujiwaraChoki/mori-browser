@@ -16,6 +16,7 @@ pub mod paths;
 pub mod routes;
 pub mod scripts;
 pub mod settings;
+pub mod site_permissions;
 pub mod theme;
 pub mod util;
 pub mod workspace;

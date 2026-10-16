@@ -26,7 +26,9 @@ use crate::{
     },
 };
 
-type Handler = Rc<dyn Fn(&mut Browser, &mut Window, &mut Context<Browser>)>;
+pub(crate) type Handler = Rc<dyn Fn(&mut Browser, &mut Window, &mut Context<Browser>)>;
+/// Draws a custom menu row; it may attach its own listeners.
+pub(crate) type CustomRow = Rc<dyn Fn(&mut Window, &mut Context<Browser>) -> AnyElement>;
 
 const MENU_WIDTH: f32 = 268.;
 const MENU_PADDING: f32 = 4.;
@@ -52,7 +54,18 @@ pub enum Entry {
         handler: Handler,
     },
     Header(SharedString),
+    /// Muted explanatory text.
+    Note(SharedString),
     Separator,
+    /// A row with a switch; clicking it runs `handler` and keeps the menu open.
+    Switch {
+        label: SharedString,
+        icon: &'static str,
+        on: bool,
+        handler: Handler,
+    },
+    /// A row drawn by the caller, `height` px tall; the menu stays open.
+    Custom { height: f32, render: CustomRow },
     /// The space glyph picker: every symbol, the current one marked.
     Icons { space: SpaceId, current: String },
 }
@@ -61,8 +74,9 @@ impl Entry {
     fn height(&self) -> f32 {
         match self {
             Entry::Separator => SEPARATOR_HEIGHT,
-            Entry::Header(_) => HEADER_HEIGHT,
-            Entry::Item { .. } => ITEM_HEIGHT,
+            Entry::Header(_) | Entry::Note(_) => HEADER_HEIGHT,
+            Entry::Item { .. } | Entry::Switch { .. } => ITEM_HEIGHT,
+            Entry::Custom { height, .. } => *height,
             Entry::Icons { .. } => {
                 let rows = crate::ui::sidebar::SPACE_SYMBOLS.len().div_ceil(ICON_COLUMNS);
                 rows as f32 * ICON_CELL + 8.
@@ -71,7 +85,7 @@ impl Entry {
     }
 }
 
-fn item(
+pub(crate) fn item(
     label: impl Into<SharedString>,
     icon: &'static str,
     handler: impl Fn(&mut Browser, &mut Window, &mut Context<Browser>) + 'static,
@@ -86,7 +100,7 @@ fn item(
     }
 }
 
-trait EntryExt {
+pub(crate) trait EntryExt {
     fn shortcut(self, keys: &'static str) -> Self;
     fn enabled(self, enabled: bool) -> Self;
     fn destructive(self) -> Self;
@@ -113,7 +127,7 @@ impl EntryExt for Entry {
     }
 }
 
-fn cmd(label: impl Into<SharedString>, icon: &'static str, command: Command) -> Entry {
+pub(crate) fn cmd(label: impl Into<SharedString>, icon: &'static str, command: Command) -> Entry {
     item(label, icon, move |b, w, cx| commands::run(b, command, w, cx))
 }
 
@@ -228,6 +242,7 @@ fn entries(b: &Browser, kind: &MenuKind) -> Vec<Entry> {
             Entry::Separator,
             cmd("Settings", "settings", Command::Settings).shortcut("secondary-,"),
         ],
+        MenuKind::SiteInfo => crate::ui::site_info::site_info_entries(b),
         MenuKind::NewMenu => vec![
             cmd("New Space", "layers", Command::NewSpace),
             item("New Folder", "folder-plus", |b, w, cx| b.new_folder(Vec::new(), w, cx)),
@@ -719,6 +734,7 @@ impl Browser {
         let viewport = window.viewport_size();
         let anchor = match menu.kind {
             MenuKind::NewMenu => anchor_bounds(NEW_MENU_ANCHOR, window),
+            MenuKind::SiteInfo => anchor_bounds(crate::ui::site_info::OMNIBOX_ANCHOR, window),
             _ => None,
         }
         .map(|b| [f32::from(b.left()), f32::from(b.top()), f32::from(b.right()), f32::from(b.bottom())]);
@@ -751,6 +767,44 @@ impl Browser {
                     .text_color(t.muted_foreground)
                     .truncate()
                     .child(text)
+                    .into_any_element(),
+                Entry::Note(text) => div()
+                    .min_h(px(HEADER_HEIGHT))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .text_size(metrics::TEXT_LABEL)
+                    .text_color(t.muted_foreground)
+                    .child(text)
+                    .into_any_element(),
+                Entry::Custom { render, .. } => render(window, cx),
+                Entry::Switch {
+                    label,
+                    icon: ic,
+                    on,
+                    handler,
+                } => h_flex()
+                    .id(("menu-switch", i))
+                    .h(px(ITEM_HEIGHT))
+                    .flex_none()
+                    .px(px(10.))
+                    .gap(px(10.))
+                    .rounded(px(5.))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(hover_bg))
+                    .child(icon(ic, px(15.), t.foreground.opacity(0.6)))
+                    .child(div().flex_1().min_w_0().truncate().child(label))
+                    .child(
+                        div()
+                            .w(px(28.))
+                            .h(px(16.))
+                            .flex_none()
+                            .p(px(2.))
+                            .rounded_full()
+                            .bg(if on { t.primary } else { t.foreground.opacity(0.18) })
+                            .child(div().size(px(12.)).rounded_full().bg(white()).when(on, |s| s.ml(px(12.)))),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| handler(this, window, cx)))
                     .into_any_element(),
                 Entry::Icons { space, current } => self.render_icon_grid(space, &current, cx),
                 Entry::Item {

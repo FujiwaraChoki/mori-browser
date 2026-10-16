@@ -276,6 +276,7 @@ impl Browser {
 
         h_flex()
             .id("omnibox")
+            .relative()
             .h(px(30.))
             .px(px(11.))
             .gap(px(7.))
@@ -287,7 +288,30 @@ impl Browser {
             .on_click(cx.listener(|this, _, window, cx| {
                 this.open_launcher(LauncherMode::Address, window, cx)
             }))
-            .child(div().flex_none().size(px(16.)).flex().items_center().justify_center().child(lead))
+            .child(crate::ui::menus::anchor_probe(crate::ui::site_info::OMNIBOX_ANCHOR))
+            // The leading icon opens site info (connection, permissions, zoom).
+            .child(
+                div()
+                    .id("site-info")
+                    .flex_none()
+                    .size(px(20.))
+                    .mx(px(-2.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(metrics::RADIUS_MD)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(t.ghost_hover()))
+                    .child(lead)
+                    .on_click(cx.listener(|this, ev: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.menu = Some(OpenMenu {
+                            kind: MenuKind::SiteInfo,
+                            position: ev.position(),
+                        });
+                        cx.notify();
+                    })),
+            )
             .child(
                 div()
                     .flex_1()
