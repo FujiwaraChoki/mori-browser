@@ -599,6 +599,11 @@ impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::windows::use_theme(self.window_handle, cx);
         self.sync_view_visibility(cx);
+        // Icons this frame (or a lazily drawn list in the last one) asked
+        // for but don't have are fetched once the frame is built.
+        self.favicons.fetch_wanted(cx);
+        let favicons = self.favicons.clone();
+        cx.defer(move |cx| favicons.fetch_wanted(cx));
         let t = cx.tokens().clone();
         let fullscreen = self.selected_live().is_some_and(|l| l.fullscreen);
         // Little Mori has a compact header instead of the sidebar.

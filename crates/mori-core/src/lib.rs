@@ -12,6 +12,7 @@ pub mod capture;
 pub mod cheatsheet;
 pub mod content_blocker;
 pub mod downloads;
+pub mod favicon_fetch;
 pub mod history;
 pub mod import;
 pub mod launcher;

@@ -22,7 +22,7 @@ url.workspace = true
 uuid.workspace = true
 smallvec.workspace = true
 dirs.workspace = true
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "ico", "jpeg", "gif", "webp"] }
 # Assistant: Codex app-server client (localhost WebSocket, no TLS).
 futures = "0.3"
 libc = "0.2"
