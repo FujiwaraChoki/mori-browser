@@ -942,9 +942,10 @@ impl Workspace {
     }
 
     /// Pair `left` and `right` into a split view. Both must be different
-    /// tabs in the same space; any pair either was in is dissolved. Unless
-    /// one of them is pinned, `right` moves next to `left` in the sidebar so
-    /// the pair shows as one row.
+    /// tabs in the same space; any pair either was in is dissolved. When both
+    /// sit in the same list (loose, or the same folder), `right` moves next
+    /// to `left` so the pair shows as one row; a tab is never moved into or
+    /// out of a folder or the pinned grid by pairing it.
     pub fn create_split(&mut self, left: TabId, right: TabId) -> bool {
         let (Some(l), Some(r)) = (self.location(left), self.location(right)) else {
             return false;
@@ -952,7 +953,7 @@ impl Workspace {
         if left == right || l.space != r.space {
             return false;
         }
-        if !l.slot.is_pinned() && !r.slot.is_pinned() {
+        if !l.slot.is_pinned() && l.slot.same_list(&r.slot) {
             self.move_tab(right, l.space, l.slot.with_index(l.slot.index() + 1));
         }
         let Some(space) = self.space_mut(l.space) else {
@@ -1331,6 +1332,19 @@ mod tests {
         ws.close_tab(ids[3]);
         assert!(ws.split_of(ids[1]).is_none());
         assert!(!ws.create_split(ids[1], ids[1]));
+    }
+
+    #[test]
+    fn pairing_never_moves_a_tab_into_or_out_of_a_folder() {
+        let (mut ws, ids) = ws_with(3);
+        let space = ws.active_space;
+        let f = ws.create_folder(space, "Work", &[ids[0]]).unwrap();
+        assert!(ws.create_split(ids[0], ids[2]));
+        assert_eq!(ws.active().folder(f).unwrap().tab_ids, vec![ids[0]]);
+        assert_eq!(ws.active().loose, vec![ids[1], ids[2]]);
+        assert!(ws.create_split(ids[2], ids[0]));
+        assert_eq!(ws.active().folder(f).unwrap().tab_ids, vec![ids[0]]);
+        assert_eq!(ws.split_of(ids[0]).unwrap().tabs, [ids[2], ids[0]]);
     }
 
     #[test]
