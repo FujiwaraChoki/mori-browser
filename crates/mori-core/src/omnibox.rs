@@ -5,7 +5,7 @@ use std::net::Ipv6Addr;
 
 use url::Url;
 
-use crate::settings::Settings;
+use crate::settings::{SearchEngine, Settings, encode_query};
 
 /// Schemes that are navigated to verbatim.
 pub const ALLOWED_SCHEMES: [&str; 9] = [
@@ -111,6 +111,89 @@ pub fn display_url(url: &str) -> String {
 
 fn is_internal_blank(url: &str) -> bool {
     url == "about:blank" || url.starts_with("mori://")
+}
+
+/// The short source shown after a launcher row's title: the host without a
+/// leading `www.` (`file://` paths and host-less URLs as [`display_host`]).
+pub fn row_host(url: &str) -> String {
+    let host = display_host(url);
+    crate::util::strip_www(&host).to_string()
+}
+
+/// True when `a` and `b` are the same page: equal after parsing, ignoring
+/// the fragment and a lone trailing `/` path.
+pub fn same_page(a: &str, b: &str) -> bool {
+    fn key(url: &str) -> String {
+        match Url::parse(url.trim()) {
+            Ok(mut u) => {
+                u.set_fragment(None);
+                let s = u.to_string();
+                s.strip_suffix('/').map(str::to_string).unwrap_or(s)
+            }
+            Err(_) => url.trim().to_string(),
+        }
+    }
+    !a.trim().is_empty() && key(a) == key(b)
+}
+
+// ---- Search suggestions -----------------------------------------------------
+
+/// Most search completions the launcher shows under the first row.
+pub const MAX_SUGGESTIONS: usize = 4;
+
+/// The completion endpoint (OpenSearch suggestions JSON) for `engine`, or
+/// `None` when it has none (custom engines) or the query is blank.
+pub fn suggest_url(engine: SearchEngine, query: &str) -> Option<String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return None;
+    }
+    let q = encode_query(query);
+    Some(match engine {
+        SearchEngine::Google => {
+            format!("https://suggestqueries.google.com/complete/search?client=firefox&ie=utf-8&oe=utf-8&q={q}")
+        }
+        SearchEngine::DuckDuckGo => format!("https://duckduckgo.com/ac/?type=list&q={q}"),
+        SearchEngine::Bing => format!("https://api.bing.com/osjson.aspx?query={q}"),
+        SearchEngine::Brave => format!("https://search.brave.com/api/suggest?q={q}"),
+        SearchEngine::Custom => return None,
+    })
+}
+
+/// Completions from a suggestion response: the OpenSearch form
+/// `["query", ["a", "b", …]]` or DuckDuckGo's `[{"phrase": "a"}, …]`.
+/// Blank entries, the query itself and case-insensitive duplicates are
+/// dropped; at most `limit` are kept. Unparseable bodies yield nothing.
+pub fn parse_suggestions(body: &str, query: &str, limit: usize) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Vec::new();
+    };
+    let Some(array) = value.as_array() else {
+        return Vec::new();
+    };
+    let raw: Vec<&str> = match array.get(1).and_then(|v| v.as_array()) {
+        Some(list) => list.iter().filter_map(|v| v.as_str()).collect(),
+        None => array
+            .iter()
+            .filter_map(|v| v.get("phrase").and_then(|p| p.as_str()))
+            .collect(),
+    };
+    let query = query.trim().to_lowercase();
+    let mut seen = vec![query];
+    let mut out = Vec::new();
+    for s in raw {
+        if out.len() >= limit {
+            break;
+        }
+        let s = s.trim();
+        let lower = s.to_lowercase();
+        if s.is_empty() || seen.contains(&lower) {
+            continue;
+        }
+        seen.push(lower);
+        out.push(s.to_string());
+    }
+    out
 }
 
 /// The scheme of `text` if it starts with a syntactically valid one
@@ -338,5 +421,54 @@ mod tests {
         assert_eq!(display_url("mori://settings"), "");
         assert_eq!(display_url("about:blank"), "");
         assert_eq!(display_url("https://a.com/"), "https://a.com/");
+        assert_eq!(row_host("https://www.wikipedia.org/wiki/X"), "wikipedia.org");
+        assert_eq!(row_host("https://en.wikipedia.org/"), "en.wikipedia.org");
+        assert_eq!(row_host("mori://settings"), "");
+    }
+
+    #[test]
+    fn same_pages() {
+        assert!(same_page("https://a.com/", "https://a.com"));
+        assert!(same_page("https://a.com/x#top", "https://a.com/x"));
+        assert!(same_page("HTTPS://A.com/x", "https://a.com/x"));
+        assert!(!same_page("https://a.com/x", "https://a.com/y"));
+        assert!(!same_page("https://a.com/?q=1", "https://a.com/?q=2"));
+        assert!(!same_page("", ""));
+    }
+
+    #[test]
+    fn suggestion_endpoints() {
+        assert_eq!(
+            suggest_url(SearchEngine::Google, "rust lang").as_deref(),
+            Some("https://suggestqueries.google.com/complete/search?client=firefox&ie=utf-8&oe=utf-8&q=rust%20lang")
+        );
+        assert_eq!(
+            suggest_url(SearchEngine::DuckDuckGo, "a&b").as_deref(),
+            Some("https://duckduckgo.com/ac/?type=list&q=a%26b")
+        );
+        assert_eq!(
+            suggest_url(SearchEngine::Bing, "x").as_deref(),
+            Some("https://api.bing.com/osjson.aspx?query=x")
+        );
+        assert_eq!(
+            suggest_url(SearchEngine::Brave, "x").as_deref(),
+            Some("https://search.brave.com/api/suggest?q=x")
+        );
+        assert_eq!(suggest_url(SearchEngine::Custom, "x"), None);
+        assert_eq!(suggest_url(SearchEngine::Google, "  "), None);
+    }
+
+    #[test]
+    fn suggestion_parsing() {
+        let open_search = r#"["git",["git","GitHub","git clone","github","gitlab","git rebase"]]"#;
+        assert_eq!(
+            parse_suggestions(open_search, "git", 4),
+            ["GitHub", "git clone", "gitlab", "git rebase"]
+        );
+        let ddg = r#"[{"phrase":"wiki"},{"phrase":"wikipedia"},{"phrase":" "},{"phrase":"wikiHow"}]"#;
+        assert_eq!(parse_suggestions(ddg, "Wiki", 4), ["wikipedia", "wikiHow"]);
+        assert!(parse_suggestions("not json", "x", 4).is_empty());
+        assert!(parse_suggestions(r#"{"a":1}"#, "x", 4).is_empty());
+        assert!(parse_suggestions(r#"["x",["a","b"]]"#, "x", 0).is_empty());
     }
 }

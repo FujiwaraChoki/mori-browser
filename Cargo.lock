@@ -4095,6 +4095,7 @@ dependencies = [
  "serde_json",
  "smallvec",
  "tungstenite",
+ "ureq",
  "url",
  "uuid",
 ]

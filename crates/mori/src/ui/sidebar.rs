@@ -595,16 +595,23 @@ impl Browser {
         let t = cx.tokens().clone();
         let space = self.ws.active().clone();
         let space_id = space.id;
+        // While Ctrl+T's bar is open the row reads as the tab being created.
+        let creating = self
+            .launcher
+            .as_ref()
+            .is_some_and(|l| l.read(cx).mode() == LauncherMode::NewTab);
+        let new_tab_fg = if creating { t.sidebar_foreground } else { t.muted_foreground };
         let new_tab = h_flex()
             .id("new-tab-row")
             .h(metrics::ROW_HEIGHT)
             .px(px(9.))
             .gap(px(9.))
             .rounded(metrics::RADIUS)
-            .text_color(t.muted_foreground)
-            .hover(|s| s.bg(t.ghost_hover()))
+            .text_color(new_tab_fg)
+            .when(creating, |s| s.bg(t.tab_selected()))
+            .when(!creating, |s| s.hover(|s| s.bg(t.ghost_hover())))
             .cursor_pointer()
-            .child(icon("plus", px(15.), t.muted_foreground))
+            .child(icon("plus", px(15.), new_tab_fg))
             .child("New Tab")
             .on_click(cx.listener(|this, _, window, cx| this.open_launcher(LauncherMode::NewTab, window, cx)))
             .drag_over::<DraggedTab>(move |s, _, _, _| s.bg(t.primary.opacity(0.14)))

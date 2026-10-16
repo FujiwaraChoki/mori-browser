@@ -914,7 +914,7 @@ impl Browser {
                 .map(|t| omnibox::display_url(&t.url))
                 .unwrap_or_default(),
         };
-        let candidates = crate::ui::launcher::candidates(self, mode);
+        let candidates = crate::ui::launcher::candidates(self);
         let launcher = cx.new(|cx| Launcher::new(mode, prefill, candidates, window, cx));
         let sub = cx.subscribe_in(&launcher, window, |this, _, ev: &LauncherEvent, window, cx| {
             this.on_launcher_event(ev, window, cx);
