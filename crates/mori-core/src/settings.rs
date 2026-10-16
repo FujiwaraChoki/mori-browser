@@ -143,7 +143,6 @@ pub struct Settings {
     pub show_sidebar_on_launch: bool,
     pub sidebar_position: SidebarPosition,
     pub sidebar_width: f32,
-    pub auto_pip: bool,
     /// 0 = never sleep idle tabs.
     pub auto_sleep_minutes: u32,
     /// 0 = never archive idle tabs.
@@ -165,7 +164,6 @@ impl Default for Settings {
             show_sidebar_on_launch: true,
             sidebar_position: SidebarPosition::Left,
             sidebar_width: SIDEBAR_DEFAULT_WIDTH,
-            auto_pip: true,
             auto_sleep_minutes: 60,
             auto_archive_hours: 24,
             agent_auto_approve_safe_reads: false,
@@ -192,6 +190,12 @@ impl Settings {
         }
         self.sidebar_width
             .clamp(SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+    }
+
+    /// Whether the sidebar shows when Mori starts: always with "Show
+    /// sidebar on launch", otherwise as it was when Mori last quit.
+    pub fn launch_sidebar_visible(&self) -> bool {
+        self.show_sidebar_on_launch || self.sidebar_visible
     }
 
     /// The URL a new tab should load.
@@ -265,6 +269,35 @@ mod tests {
         assert_eq!(s.search_engine, SearchEngine::Brave);
         assert_eq!(s.auto_sleep_minutes, 60);
         assert_eq!(s.homepage_url, "mori://newtab");
+    }
+
+    #[test]
+    fn launch_sidebar_visibility() {
+        let mut s = Settings {
+            sidebar_visible: false,
+            ..Settings::default()
+        };
+        assert!(s.launch_sidebar_visible(), "show on launch wins");
+        s.show_sidebar_on_launch = false;
+        assert!(!s.launch_sidebar_visible(), "hidden last time stays hidden");
+        s.sidebar_visible = true;
+        assert!(s.launch_sidebar_visible(), "shown last time stays shown");
+    }
+
+    #[test]
+    fn new_tab_url_follows_behavior() {
+        let mut s = Settings::default();
+        assert_eq!(s.new_tab_url(), "mori://newtab");
+        s.homepage_url = "https://start.test/".into();
+        assert_eq!(s.new_tab_url(), "https://start.test/");
+        s.new_tab_behavior = NewTabBehavior::Blank;
+        assert_eq!(s.new_tab_url(), "about:blank");
+    }
+
+    #[test]
+    fn old_settings_with_removed_keys_load() {
+        let s: Settings = serde_json::from_str(r#"{"auto_pip":true,"sidebar_width":300}"#).unwrap();
+        assert_eq!(s.sidebar_width, 300.0);
     }
 
     #[test]

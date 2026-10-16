@@ -49,6 +49,13 @@ impl Browser {
     fn on_download_updates(&mut self, updates: Vec<DownloadUpdate>, window: &mut Window, cx: &mut Context<Self>) {
         let mut save = false;
         for update in updates {
+            // Remember which tab started it, so its page isn't slept mid-way.
+            if let Some(tab) = update
+                .source
+                .and_then(|v| self.live.iter().find(|(_, l)| l.view.id() == v).map(|(t, _)| *t))
+            {
+                self.download_tabs.insert(update.id, tab);
+            }
             let name = update.filename.clone();
             let path = update.path.clone();
             match self.downloads.apply(progress_of(&update), mori_core::paths::now()) {

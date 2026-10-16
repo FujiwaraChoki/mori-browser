@@ -90,8 +90,8 @@ impl ArchiveStore {
 
     /// Archive a page now. Blank and `mori://` pages are skipped; an existing
     /// entry for the same URL is replaced so the newest sits on top. Returns
-    /// whether an entry was added.
-    pub fn add(&mut self, url: &str, title: &str, favicon_url: Option<String>) -> bool {
+    /// the new entry's id (for undo), or `None` if nothing was added.
+    pub fn add(&mut self, url: &str, title: &str, favicon_url: Option<String>) -> Option<Uuid> {
         self.add_at(url, title, favicon_url, paths::now())
     }
 
@@ -102,15 +102,16 @@ impl ArchiveStore {
         title: &str,
         favicon_url: Option<String>,
         time: f64,
-    ) -> bool {
+    ) -> Option<Uuid> {
         if url.is_empty() || url == "about:blank" || url.starts_with("mori://") {
-            return false;
+            return None;
         }
+        let id = Uuid::new_v4();
         self.entries.retain(|e| e.url != url);
         self.entries.insert(
             0,
             ArchiveEntry {
-                id: Uuid::new_v4(),
+                id,
                 url: url.to_string(),
                 title: if title.is_empty() {
                     url.to_string()
@@ -122,7 +123,7 @@ impl ArchiveStore {
             },
         );
         self.entries.truncate(MAX_ARCHIVE_ENTRIES);
-        true
+        Some(id)
     }
 
     /// Remove and return an entry (e.g. when it is reopened).
@@ -207,16 +208,17 @@ mod tests {
     fn add_dedupe_group() {
         let tmp = TempDir::new();
         let mut a = ArchiveStore::default();
-        assert!(!a.add("about:blank", "", None));
-        assert!(!a.add("mori://newtab", "", None));
-        assert!(a.add_at("https://old.com/", "Old", None, NOW - 30.0 * 86400.0));
-        assert!(a.add_at("https://a.com/", "", None, NOW - 86400.0));
-        assert!(a.add_at(
+        assert!(a.add("about:blank", "", None).is_none());
+        assert!(a.add("mori://newtab", "", None).is_none());
+        assert!(a.add_at("https://old.com/", "Old", None, NOW - 30.0 * 86400.0).is_some());
+        assert!(a.add_at("https://a.com/", "", None, NOW - 86400.0).is_some());
+        let newest = a.add_at(
             "https://a.com/",
             "A",
             Some("https://a.com/f.ico".into()),
-            NOW - 60.0
-        ));
+            NOW - 60.0,
+        );
+        assert_eq!(newest, Some(a.list()[0].id));
         assert_eq!(a.list().len(), 2);
         assert_eq!(a.list()[0].title, "A");
         let groups = a.grouped(NOW, 0);
@@ -228,6 +230,16 @@ mod tests {
         assert_eq!(ArchiveStore::load(tmp.path()), a);
         let id = a.list()[0].id;
         assert_eq!(a.remove(id).map(|e| e.url), Some("https://a.com/".into()));
+    }
+
+    #[test]
+    fn undo_archive_removes_the_new_entry() {
+        let mut a = ArchiveStore::default();
+        a.add("https://keep.com/", "Keep", None);
+        let id = a.add("https://undo.com/", "Undo", None).unwrap();
+        assert_eq!(a.remove(id).map(|e| e.url), Some("https://undo.com/".into()));
+        assert_eq!(a.list().len(), 1);
+        assert_eq!(a.list()[0].url, "https://keep.com/");
     }
 
     #[test]

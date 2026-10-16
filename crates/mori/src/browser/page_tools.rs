@@ -45,7 +45,7 @@ impl Browser {
     /// (`< 0`), or back to 100% (`0`). Zoom is per site: every tab on the
     /// host follows, and it is remembered.
     pub fn zoom(&mut self, direction: f64, cx: &mut Context<Self>) {
-        let Some(id) = self.selected() else { return };
+        let Some(id) = self.active_tab() else { return };
         let Some(live) = self.live.get(&id) else { return };
         let step = if direction > 0.0 { 1 } else if direction < 0.0 { -1 } else { 0 };
         let level = zoom::step(live.view.zoom_level(), step);
@@ -72,7 +72,7 @@ impl Browser {
 
     /// Zoom level of the selected page's site, for the address bar.
     pub fn selected_zoom_level(&self) -> f64 {
-        self.selected()
+        self.active_tab()
             .and_then(|id| self.ws.tab(id))
             .and_then(|t| host_of(&t.url))
             .map(|host| self.zoom.level(&host))
@@ -166,7 +166,7 @@ impl Browser {
 
     /// Print the selected page (⌘P / the Print command).
     pub fn print_selected(&mut self, cx: &mut Context<Self>) {
-        if let Some(id) = self.selected() {
+        if let Some(id) = self.active_tab() {
             self.print_tab(id, cx);
         }
     }

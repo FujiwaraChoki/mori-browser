@@ -26,6 +26,18 @@ pub struct DraggedTab {
     pub id: TabId,
     pub title: SharedString,
     pub favicon: Option<Arc<RenderImage>>,
+    /// Where it was picked up, to show which side of a row it will land on.
+    pub origin: Option<(SpaceId, Slot)>,
+}
+
+impl DraggedTab {
+    /// Whether dropping onto `target` moves the tab down (or right) within
+    /// its own list, so it lands after the target rather than before.
+    fn lands_after(&self, space: SpaceId, target: Slot) -> bool {
+        self.origin.is_some_and(|(s, from)| {
+            s == space && from.same_list(&target) && from.index() < target.index()
+        })
+    }
 }
 
 impl Render for DraggedTab {
@@ -51,7 +63,10 @@ impl Render for DraggedTab {
 /// Where a dropped tab lands.
 #[derive(Clone, Copy, Debug)]
 pub enum DropTarget {
+    /// Before the given position.
     Slot(SpaceId, Slot),
+    /// Onto a row or pinned tile: the tab takes that row's place.
+    Onto(SpaceId, Slot),
     FolderEnd(SpaceId, mori_core::workspace::FolderId),
     LooseEnd(SpaceId),
     PinnedEnd(SpaceId),
@@ -75,6 +90,9 @@ impl Browser {
         match target {
             DropTarget::Slot(space, slot) => {
                 self.ws.move_tab(tab, space, slot);
+            }
+            DropTarget::Onto(space, slot) => {
+                self.ws.move_tab_onto(tab, space, slot);
             }
             DropTarget::FolderEnd(space, folder) => {
                 let end = self
@@ -146,7 +164,7 @@ impl Browser {
 
     fn render_header(&mut self, left: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
         let t = cx.tokens().clone();
-        let live = self.selected_live();
+        let live = self.active_live();
         let (can_back, can_fwd, loading) = live
             .map(|l| (l.can_go_back, l.can_go_forward, l.loading))
             .unwrap_or((false, false, false));
@@ -245,14 +263,14 @@ impl Browser {
 
     fn render_omnibox(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.tokens().clone();
-        let record = self.selected().and_then(|id| self.ws.tab(id)).cloned();
+        let record = self.active_tab().and_then(|id| self.ws.tab(id)).cloned();
         let url = record.as_ref().map(|r| r.url.clone()).unwrap_or_default();
         let host = omnibox::display_host(&url);
-        let loading = self.selected_live().is_some_and(|l| l.loading);
+        let loading = self.active_live().is_some_and(|l| l.loading);
         let is_web = url.starts_with("http://") || url.starts_with("https://");
         let bookmarked = is_web && self.bookmarks.contains(&url);
-        let reader = self.selected_live().is_some_and(|l| l.reader);
-        let fav = self.selected().and_then(|id| self.favicon_for(id));
+        let reader = self.active_live().is_some_and(|l| l.reader);
+        let fav = self.active_tab().and_then(|id| self.favicon_for(id));
         let zoom = self.selected_zoom_level();
         let zoom_label = (is_web && !mori_core::zoom::is_default(zoom))
             .then(|| format!("{}%", mori_core::zoom::percent_for_level(zoom)));
@@ -429,7 +447,7 @@ impl Browser {
                 .into_any_element();
         }
         let columns = if pins.len() >= 4 { 4 } else { 3 };
-        let selected = self.selected();
+        let selected = self.active_tab();
         let tiles: Vec<AnyElement> = pins
             .iter()
             .enumerate()
@@ -437,6 +455,7 @@ impl Browser {
                 let id = *id;
                 let fav = self.favicon_for(id);
                 let is_selected = selected == Some(id);
+                let in_split = !is_selected && self.visible_split_member(id);
                 let loading = self.live.get(&id).is_some_and(|l| l.loading);
                 let asleep = !self.live.contains_key(&id);
                 let title: SharedString = self
@@ -455,6 +474,7 @@ impl Browser {
                     .justify_center()
                     .rounded(metrics::RADIUS)
                     .bg(if is_selected { t.tab_selected() } else { t.tile_rest() })
+                    .when(in_split, |s| s.bg(t.tab_selected().opacity(0.55)))
                     .when(is_selected, |s| s.shadow(vec![BoxShadow {
                         color: black().opacity(t.shadow_alpha(0.15, 0.05)),
                         offset: point(px(0.), px(0.8)),
@@ -493,22 +513,56 @@ impl Browser {
                             id,
                             title,
                             favicon: fav,
+                            origin: Some((space_id, Slot::Pinned(i))),
                         },
                         |d, _, _, cx| cx.new(|_| d.clone()),
                     )
-                    .drag_over::<DraggedTab>(move |s, _, _, _| s.border_1().border_color(t.primary.opacity(0.7)))
+                    .drag_over::<DraggedTab>(move |s, d, _, _| {
+                        let s = s.border_color(t.primary.opacity(0.8));
+                        if d.lands_after(space_id, Slot::Pinned(i)) {
+                            s.border_r_2()
+                        } else {
+                            s.border_l_2()
+                        }
+                    })
                     .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
-                        this.drop_tab(d.id, DropTarget::Slot(space_id, Slot::Pinned(i)), window, cx)
+                        this.drop_tab(d.id, DropTarget::Onto(space_id, Slot::Pinned(i)), window, cx)
                     }))
                     .into_any_element()
             })
             .collect();
+        let space_id = space.id;
+        // While a tab is dragged, an extra cell after the last tile pins it
+        // at the end; drops on the grid's gaps do the same.
+        // Resize drags (sidebar edge, split divider) aren't tab drags.
+        let tab_drag = cx.has_active_drag()
+            && cx.active_drag_cursor_style() != Some(CursorStyle::ResizeColumn);
+        let end_cell = tab_drag.then(|| {
+            div()
+                .id("pin-end")
+                .h(px(48.))
+                .rounded(metrics::RADIUS)
+                .border_1()
+                .border_dashed()
+                .border_color(t.sidebar_foreground.opacity(0.18))
+                .drag_over::<DraggedTab>(move |s, _, _, _| {
+                    s.bg(t.primary.opacity(0.14)).border_color(t.primary.opacity(0.7))
+                })
+                .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
+                    this.drop_tab(d.id, DropTarget::PinnedEnd(space_id), window, cx)
+                }))
+        });
         div()
+            .id("pinned-grid")
             .grid()
             .grid_cols(columns)
             .gap(px(6.))
             .py_1()
             .children(tiles)
+            .children(end_cell)
+            .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
+                this.drop_tab(d.id, DropTarget::PinnedEnd(space_id), window, cx)
+            }))
             .into_any_element()
     }
 
@@ -570,11 +624,12 @@ impl Browser {
                 s.child(div().size(px(5.)).rounded_full().bg(t.primary))
             })
             .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
+                // A double-click renames. Its first click already toggled
+                // the folder, so the second one toggles it back.
+                this.ws.update_folder(fid, |f| f.is_expanded = !f.is_expanded);
                 if ev.click_count() == 2 {
                     this.begin_rename(RenameTarget::Folder(fid), window, cx);
-                    return;
                 }
-                this.ws.update_folder(fid, |f| f.is_expanded = !f.is_expanded);
                 this.schedule_save(cx);
                 cx.notify();
             }))
@@ -597,15 +652,53 @@ impl Browser {
             }));
         let mut col = v_flex().gap(px(2.)).child(header);
         if expanded {
-            for (i, id) in folder.tab_ids.clone().into_iter().enumerate() {
-                col = col.child(
-                    div()
-                        .pl(px(16.))
-                        .child(self.render_tab_row(id, Slot::Folder(fid, i), space, window, cx)),
-                );
-            }
+            let rows = self.render_tab_rows(&folder.tab_ids, |i| Slot::Folder(fid, i), space, window, cx);
+            col = col.children(rows.into_iter().map(|row| div().pl(px(16.)).child(row)));
         }
         col
+    }
+
+    /// Rows for one list of tabs. A split pair whose tabs sit next to each
+    /// other shows as one grouped row.
+    fn render_tab_rows(
+        &mut self,
+        ids: &[TabId],
+        slot: impl Fn(usize) -> Slot,
+        space: SpaceId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let mut rows = Vec::new();
+        let mut i = 0;
+        while i < ids.len() {
+            let id = ids[i];
+            let partner = self.ws.split_of(id).and_then(|g| g.partner(id));
+            if partner.is_some() && ids.get(i + 1).copied() == partner {
+                let first = self.render_tab_row(id, slot(i), space, window, cx);
+                let second = self.render_tab_row(ids[i + 1], slot(i + 1), space, window, cx);
+                rows.push(self.render_split_pair(id, first, second, cx));
+                i += 2;
+            } else {
+                rows.push(self.render_tab_row(id, slot(i), space, window, cx));
+                i += 1;
+            }
+        }
+        rows
+    }
+
+    /// Two rows of a split pair, side by side in one frame.
+    fn render_split_pair(&self, id: TabId, first: AnyElement, second: AnyElement, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.tokens().clone();
+        h_flex()
+            .id(SharedString::from(format!("split-pair-{id}")))
+            .gap(px(2.))
+            .p(px(2.))
+            .rounded(metrics::RADIUS_LG)
+            .border_1()
+            .border_color(t.sidebar_foreground.opacity(0.12))
+            .child(div().flex_1().min_w_0().child(first))
+            .child(div().flex_1().min_w_0().child(second))
+            .into_any_element()
     }
 
     fn render_loose(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -628,25 +721,27 @@ impl Browser {
             .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
                 this.drop_tab(d.id, DropTarget::Slot(space_id, Slot::Loose(0)), window, cx)
             }));
-        let mut col = v_flex().gap(px(2.)).pb(px(10.)).child(new_tab);
-        for (i, id) in space.loose.iter().enumerate() {
-            col = col.child(self.render_tab_row(*id, Slot::Loose(i), space_id, window, cx));
-        }
-        col.child(
-            div()
-                .id("loose-end")
-                .h(px(24.))
-                .rounded(metrics::RADIUS)
-                .drag_over::<DraggedTab>(move |s, _, _, _| {
-                    s.bg(t.primary.opacity(0.14))
-                        .border_1()
-                        .border_dashed()
-                        .border_color(t.primary.opacity(0.7))
-                })
-                .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
-                    this.drop_tab(d.id, DropTarget::LooseEnd(space_id), window, cx)
-                })),
-        )
+        let rows = self.render_tab_rows(&space.loose, Slot::Loose, space_id, window, cx);
+        v_flex()
+            .gap(px(2.))
+            .pb(px(10.))
+            .child(new_tab)
+            .children(rows)
+            .child(
+                div()
+                    .id("loose-end")
+                    .h(px(24.))
+                    .rounded(metrics::RADIUS)
+                    .drag_over::<DraggedTab>(move |s, _, _, _| {
+                        s.bg(t.primary.opacity(0.14))
+                            .border_1()
+                            .border_dashed()
+                            .border_color(t.primary.opacity(0.7))
+                    })
+                    .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
+                        this.drop_tab(d.id, DropTarget::LooseEnd(space_id), window, cx)
+                    })),
+            )
     }
 
     fn render_tab_row(
@@ -662,9 +757,9 @@ impl Browser {
             return div().into_any_element();
         };
         let fav = self.favicon_for(id);
-        let selected = self.selected() == Some(id);
+        let selected = self.active_tab() == Some(id);
         let multi = self.multi_select.contains(&id);
-        let in_split = self.split == Some(id);
+        let in_split = self.visible_split_member(id);
         let live = self.live.get(&id);
         let asleep = live.is_none() && !Browser::is_internal(&record.url);
         let loading = live.is_some_and(|l| l.loading);
@@ -814,12 +909,20 @@ impl Browser {
                     id,
                     title,
                     favicon: fav,
+                    origin: Some((space, slot)),
                 },
                 |d, _, _, cx| cx.new(|_| d.clone()),
             )
-            .drag_over::<DraggedTab>(move |s, _, _, _| s.border_t_2().border_color(t.primary.opacity(0.8)))
+            .drag_over::<DraggedTab>(move |s, d, _, _| {
+                let s = s.border_color(t.primary.opacity(0.8));
+                if d.lands_after(space, slot) {
+                    s.border_b_2()
+                } else {
+                    s.border_t_2()
+                }
+            })
             .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
-                this.drop_tab(d.id, DropTarget::Slot(space, slot), window, cx)
+                this.drop_tab(d.id, DropTarget::Onto(space, slot), window, cx)
             }))
             .into_any_element()
     }
@@ -902,10 +1005,7 @@ impl Browser {
             )
             .child(
                 icon_button("settings", "settings", px(30.), true, cx).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.settings_open = !this.settings_open;
-                        cx.notify();
-                    },
+                    |this, _, window, cx| this.toggle_settings(window, cx),
                 )),
             )
             .child(

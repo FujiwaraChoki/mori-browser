@@ -81,11 +81,7 @@ fn main() {
                 let browser = browser.clone();
                 window
                     .update(cx, |_, window, cx| {
-                        browser.update(cx, |b, cx| {
-                            for url in &urls {
-                                b.open_input(url, true, window, cx);
-                            }
-                        });
+                        browser.update(cx, |b, cx| b.open_external_urls(&urls, window, cx));
                         window.activate_window();
                     })
                     .ok();

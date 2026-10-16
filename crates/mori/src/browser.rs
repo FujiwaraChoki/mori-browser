@@ -18,18 +18,22 @@ use mori_core::{
     boosts::{self, BoostStore},
     downloads::DownloadStore,
     history::HistoryStore,
+    maintenance::{self, TabActivity},
+    navigation,
     omnibox::{self, Resolved},
     persist::Saver,
     prompts::{Decision, PromptQueue, SitePermissions},
-    routes::RouteStore,
+    routes::{Route, RouteStore},
     settings::Settings,
     util::host_of,
-    workspace::{ClosedTab, FolderId, Slot, SpaceId, TabId, TabRecord, Workspace},
+    workspace::{
+        ClosedTab, DeletedSpace, FolderId, Slot, SpaceId, TabId, TabRecord, Workspace,
+    },
     zoom::ZoomStore,
 };
 use mori_engine::{
-    AuthRequest, CertificateError, ContextMenuInfo, DialogKind, JsDialog, PermissionKind,
-    PermissionRequest, ViewEvent, WebView, keys::KeyInput,
+    AuthRequest, CertificateError, ContextMenuInfo, DialogKind, DownloadId, JsDialog,
+    PermissionKind, PermissionRequest, ViewEvent, WebView, keys::KeyInput,
 };
 
 use crate::{
@@ -52,7 +56,12 @@ pub use popups::PopupWindow;
 
 type InputState = gpui_kit::component::input::InputState;
 
-pub const NEW_TAB_URL: &str = "mori://newtab";
+/// How far from the window edge the pointer reveals a hidden sidebar.
+const SIDEBAR_REVEAL_EDGE: f32 = 6.;
+/// How far past the floating sidebar the pointer may stray before it hides.
+const SIDEBAR_HIDE_MARGIN: f32 = 24.;
+/// How long the pointer must stay away before the floating sidebar hides.
+const SIDEBAR_HIDE_DELAY: Duration = Duration::from_millis(300);
 
 /// How long a page may take to answer a close request (run `beforeunload`)
 /// before another close request closes it without asking.
@@ -125,6 +134,15 @@ pub enum ToastStyle {
 #[derive(Clone, Debug)]
 pub enum ToastAction {
     UndoClose(Box<ClosedTab>),
+    /// Undo a bulk close ("Close Other Tabs"), in closing order.
+    UndoCloseMany(Vec<ClosedTab>),
+    /// Undo "Archive Tab": reopen it and drop the archive entry it made.
+    UndoArchive {
+        closed: Box<ClosedTab>,
+        entry: uuid::Uuid,
+    },
+    UndoDeleteSpace(Box<(DeletedSpace, Vec<Route>)>),
+    UndoClearHistory(Box<HistoryStore>),
     Unpin(TabId),
     OpenDownloads,
     /// Show a file in the file manager.
@@ -182,6 +200,7 @@ pub struct Peek {
     pub title: String,
     pub url: String,
     _surface_events: Subscription,
+    pub loading: bool,
 }
 
 pub struct Browser {
@@ -195,9 +214,10 @@ pub struct Browser {
     pub favicons: Favicons,
 
     pub live: HashMap<TabId, LiveTab>,
-    pub closed_stack: Vec<ClosedTab>,
     pub downloads: DownloadStore,
     pub downloads_dir: PathBuf,
+    /// Which tab started each download, so its page isn't slept mid-way.
+    download_tabs: HashMap<DownloadId, TabId>,
     pub zoom: ZoomStore,
     /// DevTools docked next to the page of these tabs.
     pub devtools: HashMap<TabId, DevToolsPane>,
@@ -233,14 +253,30 @@ pub struct Browser {
     boost_events: Option<Subscription>,
     pub zapping: Option<TabId>,
     pub sidebar_peek: bool,
+    /// Pending auto-hide of the floating sidebar; dropping it cancels.
+    sidebar_hide: Option<Task<()>>,
     pub sidebar_drag: Option<f32>,
     pub multi_select: Vec<TabId>,
     /// The assistant panel, kept alive while hidden so its conversation and
     /// Codex server survive toggling.
     pub assistant: Option<Entity<crate::ui::assistant::AssistantPanel>>,
     pub assistant_visible: bool,
-    /// A second tab shown beside the selected one.
+    /// The right pane of the split view on screen. The selected tab is
+    /// always the left pane; the pair itself lives in the workspace.
     pub split: Option<TabId>,
+    /// Whether the right split pane (rather than the selected tab) has the
+    /// user's attention: toolbar, omnibox and page shortcuts act on it.
+    pub split_focused: bool,
+    /// Divider drag in progress: the left pane's share of the web area.
+    pub split_drag: Option<f32>,
+    /// The last background tab opened from a page (opener, child), so the
+    /// next one lands after it.
+    child_anchor: Option<(TabId, TabId)>,
+    /// Typed addresses Mori upgraded to https, retried over http if the
+    /// https load fails.
+    typed_https: HashMap<TabId, String>,
+    /// Scroll offsets to restore once a woken or restored page loads.
+    pending_scroll: HashMap<TabId, f64>,
     pub media: HashMap<TabId, crate::ui::media::TabMedia>,
     /// Tabs with a media check scheduled (see `check_media_soon`).
     pub media_checks: std::collections::HashSet<TabId>,
@@ -255,6 +291,9 @@ pub struct Browser {
     pub focus_handle: FocusHandle,
     window_handle: AnyWindowHandle,
     saver: Saver,
+    /// `MORI_START_URL` sessions are throwaway: the real session file is
+    /// never overwritten.
+    ephemeral_session: bool,
     save_scheduled: bool,
     last_maintenance: Instant,
     _subscriptions: Vec<Subscription>,
@@ -265,9 +304,10 @@ impl Browser {
         let data_dir = mori_core::paths::data_dir();
         let settings = Settings::load(&data_dir);
         let mut ws = Workspace::load(&data_dir);
-        if let Ok(url) = std::env::var("MORI_START_URL") {
+        let start_url = std::env::var("MORI_START_URL").ok();
+        if let Some(url) = &start_url {
             ws = Workspace::new();
-            ws.add_tab(TabRecord::new(url), None, Slot::Loose(0));
+            ws.add_new_tab(TabRecord::new(url.clone()));
         }
 
         let downloads = DownloadStore::load(&data_dir);
@@ -283,9 +323,9 @@ impl Browser {
             ws,
             settings,
             live: HashMap::new(),
-            closed_stack: Vec::new(),
             downloads,
             downloads_dir: mori_core::paths::downloads_dir(),
+            download_tabs: HashMap::new(),
             zoom,
             devtools: HashMap::new(),
             popup: None,
@@ -313,11 +353,17 @@ impl Browser {
             boost_events: None,
             zapping: None,
             sidebar_peek: false,
+            sidebar_hide: None,
             sidebar_drag: None,
             multi_select: Vec::new(),
             assistant: None,
             assistant_visible: false,
             split: None,
+            split_focused: false,
+            split_drag: None,
+            child_anchor: None,
+            typed_https: HashMap::new(),
+            pending_scroll: HashMap::new(),
             media: HashMap::new(),
             media_checks: Default::default(),
             clip_seq: HashMap::new(),
@@ -328,11 +374,12 @@ impl Browser {
             focus_handle: cx.focus_handle(),
             window_handle: window.window_handle(),
             saver,
+            ephemeral_session: start_url.is_some(),
             save_scheduled: false,
             last_maintenance: Instant::now(),
             _subscriptions: Vec::new(),
         };
-        this.settings.sidebar_visible = this.settings.show_sidebar_on_launch;
+        this.settings.sidebar_visible = this.settings.launch_sidebar_visible();
 
         let appearance = cx.observe_window_appearance(window, |this, window, cx| {
             this.apply_theme(Some(window), cx);
@@ -354,7 +401,7 @@ impl Browser {
         this.apply_theme(Some(window), cx);
 
         if this.ws.tabs.is_empty() {
-            this.new_tab_with_url(NEW_TAB_URL, window, cx);
+            this.open_blank_tab(window, cx);
         } else {
             let selected = this
                 .ws
@@ -395,8 +442,13 @@ impl Browser {
     pub fn save_now(&mut self) {
         use mori_core::{archive, bookmarks, boosts, downloads, history, routes, settings, workspace, zoom};
         let saver = &mut self.saver;
+        let session = if self.ephemeral_session {
+            Ok(false)
+        } else {
+            saver.stage(workspace::SESSION_FILE, &self.ws)
+        };
         let results = [
-            ("session", saver.stage(workspace::SESSION_FILE, &self.ws)),
+            ("session", session),
             ("settings", saver.stage(settings::SETTINGS_FILE, &self.settings)),
             ("history", saver.stage(history::HISTORY_FILE, &self.history)),
             ("bookmarks", saver.stage(bookmarks::BOOKMARKS_FILE, &self.bookmarks)),
@@ -481,9 +533,31 @@ impl Browser {
         self.dismiss_toast(id, cx);
         match action {
             ToastAction::UndoClose(closed) => {
-                let tab = self.ws.restore_tab(*closed);
-                self.closed_stack.pop();
+                let tab = self.ws.undo_close(*closed);
                 self.select_tab(tab, window, cx);
+            }
+            ToastAction::UndoCloseMany(closed) => {
+                // Reverse closing order puts every tab back at its old index.
+                for c in closed.into_iter().rev() {
+                    self.ws.undo_close(c);
+                }
+                self.schedule_save(cx);
+            }
+            ToastAction::UndoArchive { closed, entry } => {
+                self.archive.remove(entry);
+                let tab = self.ws.restore_tab(*closed);
+                self.select_tab(tab, window, cx);
+            }
+            ToastAction::UndoDeleteSpace(deleted) => {
+                let (deleted, routes) = *deleted;
+                let space = self.ws.restore_space(deleted);
+                self.routes.restore(routes);
+                self.switch_space(space, window, cx);
+                self.schedule_save(cx);
+            }
+            ToastAction::UndoClearHistory(cleared) => {
+                self.history.restore(*cleared);
+                self.schedule_save(cx);
             }
             ToastAction::Unpin(tab) => {
                 self.ws.unpin(tab);
@@ -509,16 +583,39 @@ impl Browser {
         self.ws.selected()
     }
 
+    /// The selected tab's page: the main (left) web card.
     pub fn selected_live(&self) -> Option<&LiveTab> {
         self.selected().and_then(|id| self.live.get(&id))
     }
 
+    /// The tab whose page has the user's attention: the focused split pane,
+    /// else the selected tab. Toolbar buttons, the omnibox, Ctrl+W and page
+    /// shortcuts act on it.
+    pub fn active_tab(&self) -> Option<TabId> {
+        match self.split {
+            Some(s) if self.split_focused && self.live.contains_key(&s) => Some(s),
+            _ => self.selected(),
+        }
+    }
+
+    pub fn active_live(&self) -> Option<&LiveTab> {
+        self.active_tab().and_then(|id| self.live.get(&id))
+    }
+
+    /// The page that page commands (back, reload, find, print…) go to: the
+    /// active pane's view.
     pub fn selected_view(&self) -> Option<WebView> {
-        self.selected_live().map(|l| l.view.clone())
+        self.active_live().map(|l| l.view.clone())
     }
 
     pub fn is_internal(url: &str) -> bool {
         url.is_empty() || url.starts_with("mori://") || url == "about:blank"
+    }
+
+    /// Internal pages that show Mori's new-tab page (`about:blank` stays a
+    /// plain blank page, for "New tab opens: Blank page").
+    pub fn shows_new_tab_page(url: &str) -> bool {
+        url.is_empty() || url.starts_with("mori://")
     }
 
     /// Size of the web card in logical pixels, for creating views at the
@@ -552,6 +649,10 @@ impl Browser {
     fn adopt_view(&mut self, id: TabId, view: WebView, window: &mut Window, cx: &mut Context<Self>) {
         let surface = cx.new(|cx| WebSurface::new(view.clone(), cx));
         let surface_events = self.watch_surface(&surface, cx);
+        let scroll_y = self.ws.tab(id).map(|t| t.scroll_y).unwrap_or_default();
+        if scroll_y > 0.0 {
+            self.pending_scroll.insert(id, scroll_y);
+        }
         let weak = cx.entity().downgrade();
         let handle = self.window_handle;
         EngineHub::register(cx, &surface, move |_, events, cx| {
@@ -596,10 +697,31 @@ impl Browser {
         }
     }
 
+    /// In a split view, the pane whose page holds keyboard focus (after a
+    /// click into it) becomes the active one.
+    fn sync_split_focus(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let Some(split) = self.split else { return };
+        let has_focus = |live: Option<&LiveTab>| {
+            live.is_some_and(|l| l.surface.read(cx).focus_handle().is_focused(window))
+        };
+        let focused = if has_focus(self.live.get(&split)) {
+            true
+        } else if has_focus(self.selected_live()) {
+            false
+        } else {
+            return;
+        };
+        if self.split_focused != focused {
+            self.split_focused = focused;
+            cx.notify();
+        }
+    }
+
     /// Drop a tab's Chromium page but keep the tab (sleep).
     pub fn unload(&mut self, id: TabId, cx: &mut Context<Self>) {
         if self.split == Some(id) {
             self.split = None;
+            self.split_focused = false;
         }
         if let Some(live) = self.live.remove(&id) {
             EngineHub::unregister(cx, live.view.id());
@@ -609,33 +731,58 @@ impl Browser {
         self.drop_popup_of(id, cx);
         // Closing the view already answered its callbacks.
         self.forget_prompts(PageOwner::Tab(id));
+        self.pending_scroll.remove(&id);
         cx.notify();
     }
 
+    /// Select a tab. A tab in a split pair shows the pair (its left tab
+    /// selected) and makes the clicked tab's pane the active one.
     pub fn select_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
         let previous_space = self.ws.active_space;
-        let previous_selected = self.selected();
-        if !self.ws.select(id) {
+        let previous = [self.selected(), self.split];
+        let (left, right) = match self.ws.split_of(id) {
+            Some(pair) => (pair.tabs[0], Some(pair.tabs[1])),
+            None => (id, None),
+        };
+        if !self.ws.select(left) {
             return;
+        }
+        // Tabs leaving the screen were in use until now.
+        let now = mori_core::paths::now();
+        for tab in previous.into_iter().flatten().chain([id]) {
+            if let Some(t) = self.ws.tab_mut(tab) {
+                t.last_accessed = now;
+            }
         }
         if previous_space != self.ws.active_space {
             self.apply_theme(Some(window), cx);
         }
         self.settings_open = false;
         self.multi_select.clear();
-        if self.split == Some(id) {
-            self.split = previous_selected.filter(|p| *p != id);
+        self.child_anchor = None;
+        self.realize(left, window, cx);
+        self.split = None;
+        if let Some(right) = right {
+            self.realize(right, window, cx);
+            if self.live.contains_key(&right) {
+                self.split = Some(right);
+            } else {
+                // Its page can't be shown (an internal page): no ghost pane.
+                self.ws.remove_split(right);
+            }
         }
-        if self.split.is_some_and(|s| self.ws.space_of(s) != Some(self.ws.active_space)) {
-            self.split = None;
-        }
-        self.realize(id, window, cx);
+        self.split_focused = self.split.is_some() && self.split == Some(id);
         let split = self.split;
         for (tab, live) in &self.live {
-            let hidden = *tab != id && Some(*tab) != split;
+            let hidden = *tab != left && Some(*tab) != split;
             live.view.set_hidden(hidden);
             if hidden {
                 live.surface.update(cx, |s, _| s.blur());
+            }
+        }
+        for tab in previous.into_iter().flatten() {
+            if tab != left && Some(tab) != split {
+                self.capture_scroll(tab, cx);
             }
         }
         if let Some(find) = &self.find_bar {
@@ -646,18 +793,25 @@ impl Browser {
         cx.notify();
     }
 
+    /// Give keyboard focus to the active page (the focused split pane or the
+    /// selected tab), or to the window when it shows no page.
     pub fn focus_selected_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.launcher.is_some() || self.rename.is_some() {
             return;
         }
+        if self.settings_open {
+            // The settings page covers the pages; keys go to the window.
+            window.focus(&self.focus_handle, cx);
+            return;
+        }
         // A page's open dialog takes the keyboard instead of the page.
-        if let Some(owner) = self.selected().map(PageOwner::Tab)
+        if let Some(owner) = self.active_tab().map(PageOwner::Tab)
             && let Some(handle) = self.modal_focus(owner, cx)
         {
             window.focus(&handle, cx);
             return;
         }
-        match self.selected_live() {
+        match self.active_live() {
             Some(live) => {
                 let handle = live.surface.read(cx).focus_handle().clone();
                 window.focus(&handle, cx);
@@ -666,41 +820,166 @@ impl Browser {
         }
     }
 
+    /// Focus the active page once the current event has been handled, for
+    /// callers without a window.
+    fn focus_page_later(&self, cx: &mut Context<Self>) {
+        let weak = cx.entity().downgrade();
+        let handle = self.window_handle;
+        cx.defer(move |cx| {
+            handle
+                .update(cx, |_, window, cx| {
+                    weak.update(cx, |this, cx| this.focus_selected_page(window, cx)).ok();
+                })
+                .ok();
+        });
+    }
+
+    /// A click anywhere in the window has been handled. A click into a split
+    /// pane makes it the active pane. A click on plain chrome (toolbar,
+    /// sidebar background, space header) focuses the window itself; give the
+    /// keyboard back to the page unless something that takes typing is open.
+    pub fn after_click(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.sync_split_focus(window, cx);
+        let typing_elsewhere = self.launcher.is_some()
+            || self.rename.is_some()
+            || self.settings_open
+            || self.menu.is_some()
+            || self.boost_editor.is_some()
+            || self.peek.is_some()
+            || self.popup.is_some()
+            || !self.dialogs.is_empty()
+            || !self.auth_prompts.is_empty();
+        if !typing_elsewhere && self.focus_handle.is_focused(window) && self.active_live().is_some() {
+            self.focus_selected_page(window, cx);
+        }
+    }
+
+    /// Add a tab at the top of the active space's tab list and select it.
     pub fn new_tab_with_url(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) -> TabId {
-        let record = TabRecord::new(url);
-        let id = self.ws.add_tab_after(record, self.selected().filter(|s| !self.ws.is_pinned(*s)));
+        let id = self.ws.add_new_tab(TabRecord::new(url));
         self.select_tab(id, window, cx);
         id
     }
 
-    /// Open user input (URL or search) in a new tab or the current one.
-    pub fn open_input(&mut self, input: &str, new_tab: bool, window: &mut Window, cx: &mut Context<Self>) {
-        let url = match omnibox::resolve(input, &self.settings) {
-            Resolved::Url(u) | Resolved::Search(u) => u,
-        };
-        self.open_url(&url, new_tab, window, cx);
+    /// Open a fresh tab as "New tab opens" says. A blank one also opens the
+    /// launcher, so typing right away goes somewhere.
+    pub fn open_blank_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) -> TabId {
+        let url = self.settings.new_tab_url().to_string();
+        let id = self.new_tab_with_url(&url, window, cx);
+        if Self::is_internal(&url) {
+            cx.defer_in(window, move |this, window, cx| {
+                let still_blank = this.selected() == Some(id)
+                    && this.ws.tab(id).is_some_and(|t| Self::is_internal(&t.url));
+                let busy = this.launcher.is_some() || this.rename.is_some() || this.settings_open;
+                if still_blank && !busy {
+                    this.open_launcher(LauncherMode::NewTab, window, cx);
+                }
+            });
+        }
+        id
     }
 
-    pub fn open_url(&mut self, url: &str, new_tab: bool, window: &mut Window, cx: &mut Context<Self>) {
-        // An empty "New Tab" page is reused rather than left behind.
-        let selected_is_blank = self
-            .selected()
-            .and_then(|id| self.ws.tab(id))
-            .is_some_and(|t| Self::is_internal(&t.url) && !self.settings_open);
-        if new_tab && selected_is_blank {
-            if let Some(id) = self.selected() {
-                self.navigate(id, url, window, cx);
-            }
-        } else if new_tab || self.selected().is_none() {
-            self.new_tab_with_url(url, window, cx);
-        } else if let Some(id) = self.selected() {
-            self.navigate(id, url, window, cx);
+    /// Open user input (URL or search) in a new tab or the active one.
+    pub fn open_input(&mut self, input: &str, new_tab: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let (url, upgraded) = self.resolve_typed(input);
+        let id = self.open_url_in_tab(&url, new_tab, window, cx);
+        if upgraded {
+            self.typed_https.insert(id, url);
         }
     }
 
+    /// The URL for typed input, and whether Mori upgraded it to https (so a
+    /// failed load retries over http). LAN addresses open over http.
+    fn resolve_typed(&self, input: &str) -> (String, bool) {
+        match omnibox::resolve(input, &self.settings) {
+            Resolved::Url(u) => {
+                let url = navigation::typed_url(input, &u);
+                let upgraded = navigation::is_upgraded(input, &url);
+                (url, upgraded)
+            }
+            Resolved::Search(u) => (u, false),
+        }
+    }
+
+    pub fn open_url(&mut self, url: &str, new_tab: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_url_in_tab(url, new_tab, window, cx);
+    }
+
+    /// [`Browser::open_url`], returning the tab that loads it.
+    fn open_url_in_tab(&mut self, url: &str, new_tab: bool, window: &mut Window, cx: &mut Context<Self>) -> TabId {
+        // An empty "New Tab" page is reused rather than left behind.
+        let active = self.active_tab();
+        let active_is_blank = active
+            .and_then(|id| self.ws.tab(id))
+            .is_some_and(|t| Self::is_internal(&t.url) && !self.settings_open);
+        match active {
+            Some(id) if !new_tab || active_is_blank => {
+                self.navigate(id, url, window, cx);
+                id
+            }
+            _ => self.new_tab_with_url(url, window, cx),
+        }
+    }
+
+    /// Open links handed to Mori from outside (command line, another app).
+    /// Air Traffic Control sends each into the space its rule names; the
+    /// first link is selected and the rest follow it in order.
+    pub fn open_external_urls(&mut self, inputs: &[String], window: &mut Window, cx: &mut Context<Self>) {
+        let mut first: Option<TabId> = None;
+        let mut last_in_space: HashMap<SpaceId, TabId> = HashMap::new();
+        for input in inputs {
+            let (url, upgraded) = self.resolve_typed(input);
+            let space = self
+                .routes
+                .match_url(&url)
+                .map(|r| r.context_id)
+                .filter(|s| self.ws.space(*s).is_some())
+                .unwrap_or(self.ws.active_space);
+            let reusable = self
+                .selected()
+                .filter(|_| first.is_none() && space == self.ws.active_space && !self.settings_open)
+                .filter(|id| self.ws.tab(*id).is_some_and(|t| Self::is_internal(&t.url)));
+            let id = match reusable {
+                Some(id) => {
+                    self.navigate(id, &url, window, cx);
+                    id
+                }
+                None => {
+                    let mut record = TabRecord::new(url.clone());
+                    // Shown until the page loads (only the first one does now).
+                    record.title = omnibox::display_url(&url);
+                    match last_in_space.get(&space) {
+                        Some(prev) => self.ws.add_child_tab(record, *prev, None),
+                        None => self.ws.add_tab(record, Some(space), Slot::Loose(0)),
+                    }
+                }
+            };
+            if upgraded {
+                self.typed_https.insert(id, url);
+            }
+            last_in_space.insert(space, id);
+            first.get_or_insert(id);
+        }
+        let Some(first) = first else { return };
+        let routed = self.ws.space_of(first).filter(|s| *s != self.ws.active_space);
+        self.select_tab(first, window, cx);
+        if let Some(space) = routed.and_then(|s| self.ws.space(s)) {
+            let name = space.name.clone();
+            self.toast(format!("Opened in {name}"), ToastStyle::Info, None, cx);
+        }
+        self.schedule_save(cx);
+    }
+
     pub fn navigate(&mut self, id: TabId, url: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.typed_https.remove(&id);
+        // A new address starts at the top, not at the old page's offset.
+        self.pending_scroll.remove(&id);
+        if self.settings_open && self.active_tab() == Some(id) {
+            self.set_settings_open(false, window, cx);
+        }
         if let Some(t) = self.ws.tab_mut(id) {
             t.url = url.to_string();
+            t.scroll_y = 0.0;
         }
         // A credentials or certificate question about the old page is moot.
         self.cancel_navigation_prompts(PageOwner::Tab(id), cx);
@@ -708,6 +987,10 @@ impl Browser {
             live.error = None;
             live.reader = false;
             if Self::is_internal(url) {
+                // A split pane can only show web pages.
+                if self.split == Some(id) {
+                    self.ws.remove_split(id);
+                }
                 self.unload(id, cx);
             } else {
                 live.view.load_url(url);
@@ -733,12 +1016,28 @@ impl Browser {
             return;
         }
         if !force && self.ws.folder_of(id).is_some() {
+            // Unloading a split pane ends its pair; otherwise selecting the
+            // neighbour (often its partner) would load it straight back.
+            if self.ws.remove_split(id) && self.visible_split_member(id) {
+                self.split = None;
+                self.split_focused = false;
+                let visible = self.selected();
+                for (tab, live) in &self.live {
+                    live.view.set_hidden(Some(*tab) != visible);
+                }
+            }
+            let was_selected = self.selected() == Some(id);
             let neighbor = self.ws.neighbor(id);
             self.unload(id, cx);
-            if self.selected() == Some(id)
-                && let Some(n) = neighbor
-            {
-                self.select_tab(n, window, cx);
+            if was_selected {
+                match neighbor {
+                    Some(n) => self.select_tab(n, window, cx),
+                    None => {
+                        self.open_blank_tab(window, cx);
+                    }
+                }
+            } else {
+                self.focus_selected_page(window, cx);
             }
             self.toast("Unloaded — kept in folder", ToastStyle::Info, None, cx);
             return;
@@ -772,40 +1071,86 @@ impl Browser {
     /// agreed to close or was forced to.
     fn remove_closed_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
         let was_selected = self.selected() == Some(id);
-        self.unload(id, cx);
-        self.multi_select.retain(|t| *t != id);
-        let Some(closed) = self.ws.remove_tab(id) else { return };
+        let Some(closed) = self.take_tab(id, true, cx) else { return };
         let title: String = closed.record.display_title().chars().take(40).collect();
-        self.closed_stack.push(closed.clone());
-        if self.closed_stack.len() > 25 {
-            self.closed_stack.remove(0);
-        }
         self.toast(
             format!("Closed {title}"),
             ToastStyle::Info,
             Some(("Undo".into(), ToastAction::UndoClose(Box::new(closed)))),
             cx,
         );
-        // Always keep at least one tab in the space.
+        self.after_tabs_closed(was_selected, window, cx);
+    }
+
+    /// Unload a tab and remove it from the workspace; `reopenable` puts it
+    /// on the recently-closed stack.
+    fn take_tab(&mut self, id: TabId, reopenable: bool, cx: &mut Context<Self>) -> Option<ClosedTab> {
+        self.unload(id, cx);
+        self.multi_select.retain(|t| *t != id);
+        self.typed_https.remove(&id);
+        if reopenable {
+            self.ws.close_tab(id)
+        } else {
+            self.ws.remove_tab(id)
+        }
+    }
+
+    /// After closing tabs: keep at least one tab in the space, select a
+    /// neighbour if the selected tab went away, and give the keyboard back
+    /// to the page.
+    fn after_tabs_closed(&mut self, was_selected: bool, window: &mut Window, cx: &mut Context<Self>) {
         if self.ws.active().ordered().is_empty() {
-            self.new_tab_with_url(NEW_TAB_URL, window, cx);
+            self.open_blank_tab(window, cx);
         } else if was_selected {
-            match self.ws.selected() {
-                Some(next) => self.select_tab(next, window, cx),
-                None => {
-                    if let Some(first) = self.ws.active().visible().first().copied() {
-                        self.select_tab(first, window, cx);
-                    }
-                }
+            let next = self
+                .ws
+                .selected()
+                .or_else(|| self.ws.active().visible().first().copied());
+            if let Some(next) = next {
+                self.select_tab(next, window, cx);
             }
+        } else {
+            self.focus_selected_page(window, cx);
         }
         self.schedule_save(cx);
         cx.notify();
     }
 
+    /// Close several tabs with one toast whose Undo brings them all back.
+    pub fn close_tabs(&mut self, ids: Vec<TabId>, window: &mut Window, cx: &mut Context<Self>) {
+        let was_selected = self.selected().is_some_and(|s| ids.contains(&s));
+        let closed: Vec<ClosedTab> = ids
+            .into_iter()
+            .filter_map(|id| self.take_tab(id, true, cx))
+            .collect();
+        match closed.len() {
+            0 => return,
+            1 => {
+                let title: String = closed[0].record.display_title().chars().take(40).collect();
+                let closed = closed.into_iter().next().map(Box::new);
+                self.toast(
+                    format!("Closed {title}"),
+                    ToastStyle::Info,
+                    closed.map(|c| ("Undo".into(), ToastAction::UndoClose(c))),
+                    cx,
+                );
+            }
+            n => self.toast(
+                format!("Closed {n} tabs"),
+                ToastStyle::Info,
+                Some(("Undo".into(), ToastAction::UndoCloseMany(closed))),
+                cx,
+            ),
+        }
+        self.after_tabs_closed(was_selected, window, cx);
+    }
+
     pub fn reopen_closed_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(closed) = self.closed_stack.pop() {
-            let id = self.ws.restore_tab(closed);
+        if let Some(id) = self.ws.reopen_closed() {
+            // Its toast's Undo would only point at an open tab now.
+            self.toasts.retain(
+                |t| !matches!(&t.action, Some((_, ToastAction::UndoClose(c))) if c.record.id == id),
+            );
             self.select_tab(id, window, cx);
         }
     }
@@ -815,10 +1160,12 @@ impl Browser {
         let mut copy = TabRecord::new(record.url);
         copy.title = record.title;
         copy.favicon_url = record.favicon_url;
-        let new_id = self.ws.add_tab_after(copy, Some(id));
+        let new_id = self.ws.add_child_tab(copy, id, None);
         self.select_tab(new_id, window, cx);
     }
 
+    /// Close every loose tab of the space except `keep` (pins and folders
+    /// are saved collections and stay).
     pub fn close_other_tabs(&mut self, keep: TabId, window: &mut Window, cx: &mut Context<Self>) {
         let others: Vec<TabId> = self
             .ws
@@ -828,29 +1175,40 @@ impl Browser {
             .copied()
             .filter(|t| *t != keep)
             .collect();
-        for id in others {
-            self.close_tab(id, true, window, cx);
-        }
+        self.close_tabs(others, window, cx);
     }
 
     pub fn close_tabs_below(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
         let loose = self.ws.active().loose.clone();
         if let Some(i) = loose.iter().position(|t| *t == id) {
-            for &t in &loose[i + 1..] {
-                self.close_tab(t, true, window, cx);
-            }
+            self.close_tabs(loose[i + 1..].to_vec(), window, cx);
         }
     }
 
+    /// Tabs whose page is on screen.
+    fn visible_tabs(&self) -> [Option<TabId>; 2] {
+        [self.selected(), self.split]
+    }
+
+    /// Whether `id` is one of the two panes of the split view on screen.
+    pub fn visible_split_member(&self, id: TabId) -> bool {
+        self.split.is_some() && self.visible_tabs().contains(&Some(id))
+    }
+
     pub fn sleep_tab(&mut self, id: TabId, cx: &mut Context<Self>) {
-        if self.selected() != Some(id) {
+        if !self.visible_tabs().contains(&Some(id)) {
             self.unload(id, cx);
         }
     }
 
     pub fn sleep_background_tabs(&mut self, cx: &mut Context<Self>) {
-        let selected = self.selected();
-        let ids: Vec<TabId> = self.live.keys().copied().filter(|t| Some(*t) != selected).collect();
+        let visible = self.visible_tabs();
+        let ids: Vec<TabId> = self
+            .live
+            .keys()
+            .copied()
+            .filter(|t| !visible.contains(&Some(*t)))
+            .collect();
         let n = ids.len();
         for id in ids {
             self.unload(id, cx);
@@ -863,14 +1221,37 @@ impl Browser {
         );
     }
 
+    /// Close a tab into the archive, with an Undo that reopens it and drops
+    /// the archive entry again.
     pub fn archive_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
         if self.ws.is_pinned(id) {
             return;
         }
-        if let Some(t) = self.ws.tab(id) {
-            self.archive.add(&t.url, &t.title, t.favicon_url.clone());
-        }
-        self.close_tab(id, true, window, cx);
+        let entry = self
+            .ws
+            .tab(id)
+            .and_then(|t| self.archive.add(&t.url, &t.title, t.favicon_url.clone()));
+        let Some(entry) = entry else {
+            // Blank and internal pages have nothing worth archiving.
+            self.close_tab(id, true, window, cx);
+            return;
+        };
+        let was_selected = self.selected() == Some(id);
+        let Some(closed) = self.take_tab(id, false, cx) else { return };
+        let title: String = closed.record.display_title().chars().take(40).collect();
+        self.toast(
+            format!("Archived {title}"),
+            ToastStyle::Info,
+            Some((
+                "Undo".into(),
+                ToastAction::UndoArchive {
+                    closed: Box::new(closed),
+                    entry,
+                },
+            )),
+            cx,
+        );
+        self.after_tabs_closed(was_selected, window, cx);
     }
 
     pub fn toggle_pin(&mut self, id: TabId, cx: &mut Context<Self>) {
@@ -888,7 +1269,7 @@ impl Browser {
     }
 
     pub fn cycle_tab(&mut self, delta: isize, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.ws.cycle(delta) {
+        if let Some(id) = self.ws.cycle_from(self.active_tab(), delta) {
             self.select_tab(id, window, cx);
         }
     }
@@ -901,25 +1282,64 @@ impl Browser {
 
     // ---- Split view ------------------------------------------------------------
 
-    /// Show `tab` beside the selected tab.
+    /// Show `tab` beside the selected tab as a remembered split pair, with
+    /// the new pane active.
     pub fn open_split(&mut self, tab: TabId, window: &mut Window, cx: &mut Context<Self>) {
-        if Some(tab) == self.selected() || self.ws.space_of(tab) != Some(self.ws.active_space) {
+        let Some(left) = self.selected() else { return };
+        if tab == left || self.ws.space_of(tab) != Some(self.ws.active_space) {
             return;
         }
-        self.split = Some(tab);
-        self.realize(tab, window, cx);
-        if let Some(live) = self.live.get(&tab) {
-            live.view.set_hidden(false);
+        if self.ws.tab(tab).is_none_or(|t| Self::is_internal(&t.url)) {
+            self.toast("Only web pages can open in split view", ToastStyle::Info, None, cx);
+            return;
         }
-        cx.notify();
+        if self.ws.create_split(left, tab) {
+            self.select_tab(tab, window, cx);
+        }
     }
 
+    /// End the split view on screen; the selected tab stays.
     pub fn close_split(&mut self, cx: &mut Context<Self>) {
         if let Some(tab) = self.split.take() {
+            self.ws.remove_split(tab);
+            self.split_focused = false;
+            self.split_drag = None;
             if let Some(live) = self.live.get(&tab) {
                 live.view.set_hidden(true);
                 live.surface.update(cx, |s, _| s.blur());
             }
+            self.focus_page_later(cx);
+            self.schedule_save(cx);
+            cx.notify();
+        }
+    }
+
+    /// The left pane's share of the web area for the split on screen.
+    pub fn split_ratio(&self) -> f32 {
+        self.split_drag.unwrap_or_else(|| {
+            self.split
+                .and_then(|s| self.ws.split_of(s))
+                .map(|g| g.clamped_ratio())
+                .unwrap_or(0.5)
+        })
+    }
+
+    /// Divider being dragged: follow the pointer without saving yet.
+    pub fn drag_split_divider(&mut self, ratio: f32, cx: &mut Context<Self>) {
+        if self.split.is_some() {
+            let min = mori_core::workspace::SPLIT_MIN_RATIO;
+            self.split_drag = Some(ratio.clamp(min, 1.0 - min));
+            cx.notify();
+        }
+    }
+
+    /// Divider released (or double-clicked with `reset`): keep the ratio.
+    pub fn finish_split_divider(&mut self, reset: bool, cx: &mut Context<Self>) {
+        let ratio = if reset { Some(0.5) } else { self.split_drag.take() };
+        self.split_drag = None;
+        if let (Some(tab), Some(ratio)) = (self.split, ratio) {
+            self.ws.set_split_ratio(tab, ratio);
+            self.schedule_save(cx);
             cx.notify();
         }
     }
@@ -939,7 +1359,7 @@ impl Browser {
         match target {
             Some(id) => self.select_tab(id, window, cx),
             None => {
-                self.new_tab_with_url(NEW_TAB_URL, window, cx);
+                self.open_blank_tab(window, cx);
             }
         }
         cx.notify();
@@ -952,38 +1372,46 @@ impl Browser {
         self.begin_rename(RenameTarget::Space(id), window, cx);
     }
 
+    /// Delete a space with all its tabs; the toast's Undo brings it back
+    /// with its tabs, folders, pins and Air Traffic Control rules.
     pub fn delete_space(&mut self, space: SpaceId, window: &mut Window, cx: &mut Context<Self>) {
+        if self.ws.spaces.len() <= 1 {
+            self.toast("Can't delete the last space", ToastStyle::Warning, None, cx);
+            return;
+        }
         let ids = self.ws.space(space).map(|s| s.ordered()).unwrap_or_default();
         for id in &ids {
             self.unload(*id, cx);
         }
-        match self.ws.delete_space(space) {
-            Some(closed) => {
-                self.routes.remove_for_context(space);
-                self.toast(
-                    format!("Deleted space and {} tabs", closed.len()),
-                    ToastStyle::Info,
-                    None,
-                    cx,
-                );
-                let active = self.ws.active_space;
-                self.switch_space(active, window, cx);
-            }
-            None => self.toast("Can't delete the last space", ToastStyle::Warning, None, cx),
-        }
+        let Some(deleted) = self.ws.delete_space(space) else { return };
+        let routes = self.routes.take_for_context(space);
+        let name = deleted.space.name.clone();
+        let text = match deleted.tabs.len() {
+            0 => format!("Deleted {name}"),
+            1 => format!("Deleted {name} and 1 tab"),
+            n => format!("Deleted {name} and {n} tabs"),
+        };
+        self.toast(
+            text,
+            ToastStyle::Info,
+            Some(("Undo".into(), ToastAction::UndoDeleteSpace(Box::new((deleted, routes))))),
+            cx,
+        );
+        let active = self.ws.active_space;
+        self.switch_space(active, window, cx);
         self.schedule_save(cx);
     }
 
     /// Move a tab to another space. If it was the selected tab, a neighbour
     /// in the current space takes over (or a fresh new tab if it was alone).
     pub fn move_tab_to_space(&mut self, tab: TabId, space: SpaceId, window: &mut Window, cx: &mut Context<Self>) {
-        let was_selected = self.selected() == Some(tab);
+        let on_screen = self.visible_tabs().contains(&Some(tab));
         self.ws.move_to_space(tab, space);
-        if was_selected {
+        if on_screen {
             match self.ws.selected().or_else(|| self.ws.active().visible().first().copied()) {
                 Some(next) => self.select_tab(next, window, cx),
                 None => {
-                    self.new_tab_with_url(NEW_TAB_URL, window, cx);
+                    self.open_blank_tab(window, cx);
                 }
             }
         }
@@ -1083,7 +1511,7 @@ impl Browser {
         let prefill = match mode {
             LauncherMode::NewTab => String::new(),
             LauncherMode::Address => self
-                .selected()
+                .active_tab()
                 .and_then(|id| self.ws.tab(id))
                 .map(|t| omnibox::display_url(&t.url))
                 .unwrap_or_default(),
@@ -1118,7 +1546,8 @@ impl Browser {
                 self.launcher = None;
                 if text.trim().is_empty() {
                     if new_tab {
-                        self.new_tab_with_url(NEW_TAB_URL, window, cx);
+                        let url = self.settings.new_tab_url().to_string();
+                        self.new_tab_with_url(&url, window, cx);
                     } else {
                         self.focus_selected_page(window, cx);
                     }
@@ -1169,6 +1598,35 @@ impl Browser {
             }
         });
         cx.notify();
+    }
+
+    /// Turn AI integration on or off. Off closes the assistant panel and
+    /// drops it, which shuts down its Codex server.
+    pub fn set_ai_integration(&mut self, on: bool) {
+        self.settings.ai_integration_enabled = on;
+        if !on {
+            self.assistant_visible = false;
+            self.assistant = None;
+        }
+    }
+
+    /// Show or hide the settings page. It takes the web card's place, so the
+    /// covered pages are hidden and keyboard focus moves to the window (the
+    /// covered page can't take keys); closing gives focus back to the page.
+    pub fn set_settings_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_open = open;
+        // Pages covered by Settings stop painting.
+        self.sync_view_visibility(cx);
+        if open {
+            window.focus(&self.focus_handle, cx);
+        } else {
+            self.focus_selected_page(window, cx);
+        }
+        cx.notify();
+    }
+
+    pub fn toggle_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_settings_open(!self.settings_open, window, cx);
     }
 
     pub fn toggle_assistant(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1326,8 +1784,36 @@ impl Browser {
 
     // ---- Page commands -----------------------------------------------------------
 
+    /// Remember where a page is scrolled, to restore it when the tab's page
+    /// is loaded again (after sleep or a restart).
+    fn capture_scroll(&self, id: TabId, cx: &mut Context<Self>) {
+        let Some(live) = self.live.get(&id) else { return };
+        let weak = cx.entity().downgrade();
+        let async_cx = cx.to_async();
+        live.view.evaluate("window.scrollY", move |result| {
+            let Some(y) = result.ok().and_then(|v| v.as_f64()) else { return };
+            let _ = weak.update(&mut async_cx.clone(), |this, _| {
+                if let Some(t) = this.ws.tab_mut(id) {
+                    t.scroll_y = y.max(0.0);
+                }
+            });
+        });
+    }
+
+    /// Clear browsing history, with an Undo that brings it back.
+    pub fn clear_history(&mut self, cx: &mut Context<Self>) {
+        let cleared = std::mem::take(&mut self.history);
+        self.toast(
+            "History cleared",
+            ToastStyle::Success,
+            Some(("Undo".into(), ToastAction::UndoClearHistory(Box::new(cleared)))),
+            cx,
+        );
+        self.schedule_save(cx);
+    }
+
     pub fn copy_url(&mut self, cx: &mut Context<Self>) {
-        if let Some(t) = self.selected().and_then(|id| self.ws.tab(id))
+        if let Some(t) = self.active_tab().and_then(|id| self.ws.tab(id))
             && !Self::is_internal(&t.url)
         {
             cx.write_to_clipboard(ClipboardItem::new_string(t.url.clone()));
@@ -1336,7 +1822,7 @@ impl Browser {
     }
 
     pub fn toggle_bookmark(&mut self, cx: &mut Context<Self>) {
-        let Some(t) = self.selected().and_then(|id| self.ws.tab(id)).cloned() else {
+        let Some(t) = self.active_tab().and_then(|id| self.ws.tab(id)).cloned() else {
             return;
         };
         if Self::is_internal(&t.url) {
@@ -1353,7 +1839,7 @@ impl Browser {
     }
 
     pub fn toggle_reader(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.selected() else { return };
+        let Some(id) = self.active_tab() else { return };
         let Some(live) = self.live.get_mut(&id) else { return };
         if live.reader {
             live.reader = false;
@@ -1379,7 +1865,7 @@ impl Browser {
 
     pub fn go_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let home = self.settings.homepage_url.clone();
-        if let Some(id) = self.selected() {
+        if let Some(id) = self.active_tab() {
             self.navigate(id, &home, window, cx);
         }
     }
@@ -1415,6 +1901,7 @@ impl Browser {
             title: String::new(),
             url: url.to_string(),
             _surface_events: surface_events,
+            loading: true,
         });
         cx.notify();
     }
@@ -1433,15 +1920,31 @@ impl Browser {
     pub fn promote_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(peek) = self.peek.take() else { return };
         EngineHub::unregister(cx, peek.view.id());
-        let mut record = TabRecord::new(peek.view.url());
-        record.title = peek.title;
-        let id = self.ws.add_tab_after(record, self.selected());
+        let url = peek.view.url();
+        let mut record = TabRecord::new(url.clone());
+        record.title = peek.title.clone();
+        let id = match self.active_tab() {
+            Some(opener) => self.ws.add_child_tab(record, opener, None),
+            None => self.ws.add_new_tab(record),
+        };
         self.ws.select(id);
         self.dialogs.reassign(PageOwner::Peek, PageOwner::Tab(id));
         self.auth_prompts.reassign(PageOwner::Peek, PageOwner::Tab(id));
         self.permissions.reassign(PageOwner::Peek, PageOwner::Tab(id));
         self.cert_errors.reassign(PageOwner::Peek, PageOwner::Tab(id));
+        // adopt_view reads the page's real loading and history state: a
+        // page that finished loading while peeked reports no further loads.
         self.adopt_view(id, peek.view, window, cx);
+        if let Some(live) = self.live.get_mut(&id)
+            && !live.loading
+        {
+            live.progress = 1.0;
+        }
+        if !peek.loading {
+            let page = url.split('#').next().unwrap_or(&url).to_string();
+            self.history.record(&page, &peek.title);
+            self.apply_boost(id);
+        }
         self.select_tab(id, window, cx);
         self.sync_page_modals(cx);
     }
@@ -1465,6 +1968,7 @@ impl Browser {
             let Some(peek) = self.peek.as_mut() else { return };
             match ev {
                 ViewEvent::TitleChanged(t) => peek.title = t,
+                ViewEvent::LoadingStateChanged { loading, .. } => peek.loading = loading,
                 ViewEvent::LoadEnd { .. } => {
                     peek.view.execute_js(mori_core::scripts::CLIPBOARD_BRIDGE_SCRIPT)
                 }
@@ -1481,7 +1985,10 @@ impl Browser {
                     }
                     let mut record = TabRecord::new(url.clone());
                     record.title = url;
-                    let id = self.ws.add_tab_after(record, self.selected());
+                    let id = match self.active_tab() {
+                        Some(opener) => self.ws.add_child_tab(record, opener, None),
+                        None => self.ws.add_new_tab(record),
+                    };
                     self.adopt_view(id, view, window, cx);
                     if disposition == D::BackgroundTab {
                         if let Some(live) = self.live.get(&id) {
@@ -1519,7 +2026,7 @@ impl Browser {
     }
 
     pub fn start_zap(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.selected() else { return };
+        let Some(id) = self.active_tab() else { return };
         let Some(live) = self.live.get(&id) else { return };
         live.view.execute_js(boosts::ZAP_START_SCRIPT);
         self.zapping = Some(id);
@@ -1563,7 +2070,7 @@ impl Browser {
     }
 
     pub fn open_boost_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(t) = self.selected().and_then(|id| self.ws.tab(id)) else { return };
+        let Some(t) = self.active_tab().and_then(|id| self.ws.tab(id)) else { return };
         let Some(host) = host_of(&t.url) else {
             self.toast("Boosts work on websites", ToastStyle::Info, None, cx);
             return;
@@ -1643,6 +2150,9 @@ impl Browser {
             match ev {
                 ViewEvent::AddressChanged(url) => {
                     if let Some(t) = self.ws.tab_mut(id) {
+                        if t.url != url {
+                            t.scroll_y = 0.0;
+                        }
                         t.url = url.clone();
                         save = true;
                     }
@@ -1651,7 +2161,13 @@ impl Browser {
                         live.reader = false;
                     }
                     self.apply_site_zoom(id);
-                    self.route_tab(id, &url, window, cx);
+                    if self
+                        .typed_https
+                        .get(&id)
+                        .is_some_and(|typed| host_of(typed) != host_of(&url))
+                    {
+                        self.typed_https.remove(&id);
+                    }
                 }
                 ViewEvent::TitleChanged(title) => {
                     if let Some(t) = self.ws.tab_mut(id) {
@@ -1691,7 +2207,15 @@ impl Browser {
                         live.progress = p;
                     }
                 }
-                ViewEvent::LoadEnd { .. } => {
+                ViewEvent::LoadEnd { http_status } => {
+                    if http_status > 0 {
+                        self.typed_https.remove(&id);
+                    }
+                    if let Some(y) = self.pending_scroll.remove(&id)
+                        && let Some(live) = self.live.get(&id)
+                    {
+                        live.view.execute_js(&format!("window.scrollTo(0, {y})"));
+                    }
                     if let Some(t) = self.ws.tab_mut(id) {
                         t.last_accessed = mori_core::paths::now();
                         // In-page anchors are the same page for history.
@@ -1709,7 +2233,23 @@ impl Browser {
                     self.check_media_soon(id, cx);
                 }
                 ViewEvent::LoadError { code, text, url } => {
-                    if let Some(live) = self.live.get_mut(&id) {
+                    // A typed address Mori upgraded to https: retry over http.
+                    let fallback = self
+                        .typed_https
+                        .get(&id)
+                        .filter(|typed| host_of(typed) == host_of(&url))
+                        .and_then(|_| navigation::http_fallback(&url, code));
+                    if let Some(http) = fallback {
+                        self.typed_https.remove(&id);
+                        if let Some(t) = self.ws.tab_mut(id) {
+                            t.url = http.clone();
+                        }
+                        if let Some(live) = self.live.get_mut(&id) {
+                            live.error = None;
+                            live.view.load_url(&http);
+                        }
+                        save = true;
+                    } else if let Some(live) = self.live.get_mut(&id) {
                         live.error = Some(PageError { code, text, url });
                     }
                 }
@@ -1737,7 +2277,11 @@ impl Browser {
                     let background = disposition == D::BackgroundTab;
                     let mut record = TabRecord::new(url.clone());
                     record.title = url;
-                    let new_id = self.ws.add_tab_after(record, Some(id));
+                    let last_child = self
+                        .child_anchor
+                        .filter(|(opener, _)| *opener == id)
+                        .map(|(_, child)| child);
+                    let new_id = self.ws.add_child_tab(record, id, last_child);
                     self.adopt_view(new_id, view, window, cx);
                     if let Some(live) = self.live.get_mut(&new_id) {
                         live.opener = Some(id);
@@ -1747,6 +2291,7 @@ impl Browser {
                         if let Some(live) = self.live.get(&new_id) {
                             live.view.set_hidden(true);
                         }
+                        self.child_anchor = Some((id, new_id));
                     } else {
                         self.select_tab(new_id, window, cx);
                     }
@@ -1781,7 +2326,7 @@ impl Browser {
                     }
                 }
                 ViewEvent::ContextMenu(info) => {
-                    if let Some(origin) = self.card_origin(cx) {
+                    if let Some(origin) = self.card_origin(id, cx) {
                         let position =
                             origin + point(px(info.x as f32), px(info.y as f32));
                         self.menu = Some(OpenMenu {
@@ -1839,27 +2384,8 @@ impl Browser {
         }
     }
 
-    /// Air Traffic Control: move a tab into the space a routing rule names.
-    fn route_tab(&mut self, id: TabId, url: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(host) = host_of(url) else { return };
-        let Some(route) = self.routes.match_host(&host) else { return };
-        let target = route.context_id;
-        let Some(loc) = self.ws.location(id) else { return };
-        if loc.space == target || loc.slot.is_pinned() || self.ws.space(target).is_none() {
-            return;
-        }
-        let was_selected = self.selected() == Some(id);
-        self.ws.move_to_space(id, target);
-        let name = self.ws.space(target).map(|s| s.name.clone()).unwrap_or_default();
-        if was_selected {
-            self.select_tab(id, window, cx);
-        }
-        self.toast(format!("Routed to {name}"), ToastStyle::Info, None, cx);
-    }
-
-    /// Window-coordinate origin of the selected page, as of its last paint.
-    pub fn card_origin(&self, cx: &App) -> Option<Point<Pixels>> {
-        let id = self.selected()?;
+    /// Window-coordinate origin of a tab's page, as of its last paint.
+    pub fn card_origin(&self, id: TabId, cx: &App) -> Option<Point<Pixels>> {
         let live = self.live.get(&id)?;
         Some(live.surface.read(cx).bounds().origin)
     }
@@ -1966,7 +2492,7 @@ impl Browser {
                     window.focus(&handle, cx);
                 }
             }
-            PageOwner::Tab(id) if self.selected() == Some(id) && self.peek.is_none() => {
+            PageOwner::Tab(id) if self.active_tab() == Some(id) && self.peek.is_none() => {
                 self.focus_selected_page(window, cx);
             }
             PageOwner::Tab(_) => {}
@@ -1974,12 +2500,12 @@ impl Browser {
     }
 
     /// The page whose prompts are on top: the Peek if open, else the
-    /// selected tab.
+    /// active tab (the focused split pane or the selected tab).
     pub fn front_owner(&self) -> Option<PageOwner> {
         if self.peek.is_some() {
             Some(PageOwner::Peek)
         } else {
-            self.selected().map(PageOwner::Tab)
+            self.active_tab().map(PageOwner::Tab)
         }
     }
 
@@ -2166,47 +2692,96 @@ impl Browser {
     fn run_maintenance(&mut self, cx: &mut Context<Self>) {
         self.last_maintenance = Instant::now();
         let now = mori_core::paths::now();
-        let selected = self.selected();
-        // Archive: idle, unpinned, loose http(s) tabs, really closed.
-        if self.settings.auto_archive_hours > 0 {
-            let cutoff = now - self.settings.auto_archive_hours as f64 * 3600.0;
-            let doomed: Vec<TabId> = self
-                .ws
-                .spaces
-                .iter()
-                .flat_map(|s| s.loose.iter().copied())
-                .filter(|id| Some(*id) != selected)
-                .filter(|id| {
-                    self.ws.tab(*id).is_some_and(|t| {
-                        t.last_accessed < cutoff
-                            && (t.url.starts_with("http://") || t.url.starts_with("https://"))
-                    })
-                })
-                .collect();
-            for id in doomed {
-                if let Some(t) = self.ws.tab(id) {
-                    self.archive.add(&t.url, &t.title, t.favicon_url.clone());
-                }
-                self.unload(id, cx);
-                self.ws.remove_tab(id);
+        // Tabs on screen or playing media are in use right now.
+        let mut in_use: Vec<TabId> = self.visible_tabs().into_iter().flatten().collect();
+        in_use.extend(self.media.iter().filter(|(_, m)| m.state.playing).map(|(id, _)| *id));
+        for id in &in_use {
+            if let Some(t) = self.ws.tab_mut(*id) {
+                t.last_accessed = now;
             }
         }
-        // Sleep: idle background pages lose their renderer.
-        if self.settings.auto_sleep_minutes > 0 {
-            let cutoff = now - self.settings.auto_sleep_minutes as f64 * 60.0;
-            let idle: Vec<TabId> = self
-                .live
-                .keys()
-                .copied()
-                .filter(|id| Some(*id) != selected)
-                .filter(|id| self.ws.tab(*id).is_some_and(|t| t.last_accessed < cutoff))
-                .collect();
-            for id in idle {
-                self.unload(id, cx);
+        for id in self.visible_tabs().into_iter().flatten() {
+            self.capture_scroll(id, cx);
+        }
+        let downloading: Vec<TabId> = self
+            .downloads
+            .iter()
+            .filter(|d| d.state.is_active())
+            .filter_map(|d| d.engine_id)
+            .filter_map(|e| self.download_tabs.get(&DownloadId(e)).copied())
+            .collect();
+        let busy = |id: TabId| {
+            let owner = PageOwner::Tab(id);
+            in_use.contains(&id)
+                || downloading.contains(&id)
+                || self.dialogs.has(owner)
+                || self.auth_prompts.has(owner)
+                || self.permissions.has(owner)
+                || self.cert_errors.has(owner)
+        };
+        let activity: Vec<TabActivity> = self
+            .ws
+            .tabs
+            .iter()
+            .map(|t| TabActivity {
+                id: t.id,
+                last_accessed: t.last_accessed,
+                live: self.live.contains_key(&t.id),
+                loose: self
+                    .ws
+                    .location(t.id)
+                    .is_some_and(|l| matches!(l.slot, Slot::Loose(_))),
+                web: t.url.starts_with("http://") || t.url.starts_with("https://"),
+                busy: busy(t.id),
+            })
+            .collect();
+        let archive = maintenance::archive_candidates(&activity, now, self.settings.auto_archive_hours);
+        for id in &archive {
+            self.unless_unsaved_input(*id, cx, |this, id, cx| this.archive_idle_tab(id, cx));
+        }
+        for id in maintenance::sleep_candidates(&activity, now, self.settings.auto_sleep_minutes) {
+            if !archive.contains(&id) {
+                self.unless_unsaved_input(id, cx, |this, id, cx| {
+                    if !this.visible_tabs().contains(&Some(id)) {
+                        this.unload(id, cx);
+                    }
+                });
             }
         }
         self.schedule_save(cx);
         cx.notify();
+    }
+
+    /// Run `f` for a tab unless its page holds unsaved input. Sleeping
+    /// pages have none, so `f` runs right away for them.
+    fn unless_unsaved_input(
+        &mut self,
+        id: TabId,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Self, TabId, &mut Context<Self>) + 'static,
+    ) {
+        let Some(live) = self.live.get(&id) else {
+            f(self, id, cx);
+            return;
+        };
+        let weak = cx.entity().downgrade();
+        let async_cx = cx.to_async();
+        live.view.evaluate(maintenance::UNSAVED_INPUT_SCRIPT, move |result| {
+            if matches!(result, Ok(serde_json::Value::Bool(false))) {
+                let _ = weak.update(&mut async_cx.clone(), |this, cx| f(this, id, cx));
+            }
+        });
+    }
+
+    /// Auto-archive one idle tab: keep it in the archive and close it.
+    fn archive_idle_tab(&mut self, id: TabId, cx: &mut Context<Self>) {
+        if self.visible_tabs().contains(&Some(id)) {
+            return;
+        }
+        let Some(t) = self.ws.tab(id) else { return };
+        self.archive.add(&t.url, &t.title, t.favicon_url.clone());
+        self.take_tab(id, false, cx);
+        self.schedule_save(cx);
     }
 
     // ---- Window --------------------------------------------------------------------------
@@ -2214,8 +2789,49 @@ impl Browser {
     pub fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.settings.sidebar_visible = !self.settings.sidebar_visible;
         self.sidebar_peek = false;
+        self.sidebar_hide = None;
         self.schedule_save(cx);
         cx.notify();
+    }
+
+    /// The pointer moved to `x` in a window `width` wide (or left the window,
+    /// `None`). With the sidebar hidden, touching the window edge reveals it
+    /// as a floating card; it hides again once the pointer has stayed away
+    /// from it for a moment, unless a menu or rename opened from it is up.
+    pub fn track_sidebar_peek(&mut self, x: Option<f32>, width: f32, cx: &mut Context<Self>) {
+        if self.settings.sidebar_visible {
+            return;
+        }
+        let left = self.settings.sidebar_position == mori_core::settings::SidebarPosition::Left;
+        let from_edge = x.map(|x| if left { x } else { width - x });
+        let reach = self.settings.clamped_sidebar_width() + 8. + SIDEBAR_HIDE_MARGIN;
+        match from_edge {
+            Some(d) if d <= SIDEBAR_REVEAL_EDGE => {
+                self.sidebar_hide = None;
+                if !self.sidebar_peek {
+                    self.sidebar_peek = true;
+                    cx.notify();
+                }
+            }
+            _ if !self.sidebar_peek => {}
+            Some(d) if d <= reach => self.sidebar_hide = None,
+            _ if self.menu.is_some() || self.rename.is_some() => self.sidebar_hide = None,
+            _ => {
+                if self.sidebar_hide.is_none() {
+                    self.sidebar_hide = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(SIDEBAR_HIDE_DELAY).await;
+                        this.update(cx, |this, cx| {
+                            this.sidebar_hide = None;
+                            if this.menu.is_none() && this.rename.is_none() {
+                                this.sidebar_peek = false;
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                    }));
+                }
+            }
+        }
     }
 
     pub fn quit(&mut self, cx: &mut Context<Self>) {

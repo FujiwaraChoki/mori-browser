@@ -10,7 +10,7 @@ use gpui_kit::*;
 use mori_core::workspace::{TabId, TabRecord};
 use mori_engine::{Disposition, PopupFeatures, ViewEvent, WebView};
 
-use super::{Browser, NEW_TAB_URL};
+use super::Browser;
 use crate::{engine_hub::EngineHub, web_surface::WebSurface};
 
 /// Height of the popup's title strip.
@@ -138,7 +138,7 @@ impl Browser {
         EngineHub::unregister(cx, popup.view.id());
         let mut record = TabRecord::new(popup.view.url());
         record.title = popup.title;
-        let id = self.ws.add_tab_after(record, Some(popup.opener));
+        let id = self.ws.add_child_tab(record, popup.opener, None);
         self.adopt_view(id, popup.view, window, cx);
         if let Some(live) = self.live.get_mut(&id) {
             live.opener = Some(popup.opener);
@@ -156,24 +156,19 @@ impl Browser {
         cx: &mut Context<Self>,
     ) {
         let was_selected = self.selected() == Some(id);
-        self.unload(id, cx);
-        self.multi_select.retain(|t| *t != id);
-        if self.ws.remove_tab(id).is_none() {
+        if self.take_tab(id, false, cx).is_none() {
             return;
         }
-        if self.ws.active().ordered().is_empty() {
-            self.new_tab_with_url(NEW_TAB_URL, window, cx);
-        } else if was_selected {
-            let next = then
-                .filter(|t| self.ws.tab(*t).is_some())
-                .or_else(|| self.ws.selected())
-                .or_else(|| self.ws.active().visible().first().copied());
-            if let Some(next) = next {
-                self.select_tab(next, window, cx);
-            }
+        if was_selected
+            && !self.ws.active().ordered().is_empty()
+            && let Some(next) = then.filter(|t| self.ws.tab(*t).is_some())
+        {
+            self.select_tab(next, window, cx);
+            self.schedule_save(cx);
+            cx.notify();
+            return;
         }
-        self.schedule_save(cx);
-        cx.notify();
+        self.after_tabs_closed(was_selected, window, cx);
     }
 
     pub fn render_popup_window(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {

@@ -156,6 +156,28 @@ impl HistoryStore {
     pub fn clear(&mut self) {
         self.entries.clear();
     }
+
+    /// Undo a [`HistoryStore::clear`]: put `cleared` (the entries as they
+    /// were) back underneath anything visited since. A page visited both
+    /// before and after keeps one entry with the newer visit on top and the
+    /// visit counts added up.
+    pub fn restore(&mut self, cleared: HistoryStore) {
+        let mut merged = std::mem::take(&mut self.entries);
+        for old in cleared.entries {
+            match merged.iter_mut().find(|e| e.url == old.url) {
+                Some(newer) => {
+                    newer.visit_count = newer.visit_count.saturating_add(old.visit_count);
+                    if newer.title.is_empty() {
+                        newer.title = old.title;
+                    }
+                }
+                None => merged.push(old),
+            }
+        }
+        merged.sort_by(|a, b| b.last_visited.total_cmp(&a.last_visited));
+        merged.truncate(MAX_HISTORY_ENTRIES);
+        self.entries = merged;
+    }
 }
 
 #[cfg(test)]
@@ -221,6 +243,24 @@ mod tests {
         assert_eq!(hits[1].url, "https://crates.io/");
         assert!(h.search("", 10).is_empty());
         assert_eq!(h.search("s", 1).len(), 1);
+    }
+
+    #[test]
+    fn restore_after_clear_merges_with_new_visits() {
+        let mut h = HistoryStore::default();
+        h.record_at("https://a.com/", "A", 1.0);
+        h.record_at("https://b.com/", "B", 2.0);
+        h.record_at("https://b.com/", "B", 3.0);
+        let snapshot = h.clone();
+        h.clear();
+        h.record_at("https://c.com/", "C", 4.0);
+        h.record_at("https://b.com/", "", 5.0);
+        h.restore(snapshot);
+        let urls: Vec<&str> = h.entries.iter().map(|e| e.url.as_str()).collect();
+        assert_eq!(urls, ["https://b.com/", "https://c.com/", "https://a.com/"]);
+        assert_eq!(h.entries[0].visit_count, 3);
+        assert_eq!(h.entries[0].title, "B");
+        assert_eq!(h.entries[0].last_visited, 5.0);
     }
 
     #[test]

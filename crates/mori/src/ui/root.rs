@@ -39,8 +39,7 @@ impl Browser {
         } else if self.find_bar.is_some() {
             self.close_find(window, cx);
         } else if self.settings_open {
-            self.settings_open = false;
-            self.focus_selected_page(window, cx);
+            self.set_settings_open(false, window, cx);
         } else if self.selected_live().is_some_and(|l| l.error.is_some()) {
             if let Some(id) = self.selected()
                 && let Some(l) = self.live.get_mut(&id)
@@ -102,7 +101,7 @@ impl Browser {
             self.render_settings(window, cx).into_any_element()
         } else if let Some(live) = self.selected_live() {
             live.surface.clone().into_any_element()
-        } else if Browser::is_internal(&url) {
+        } else if Browser::shows_new_tab_page(&url) {
             self.render_new_tab_page(cx).into_any_element()
         } else {
             div().size_full().into_any_element()
@@ -113,6 +112,8 @@ impl Browser {
         let error = live.and_then(|l| l.error.clone()).filter(|_| !self.settings_open);
         let status = live.and_then(|l| l.status.clone()).filter(|_| !self.settings_open);
         let fullscreen = live.is_some_and(|l| l.fullscreen);
+        // In a split, the pane with the user's attention gets an accent ring.
+        let active_pane = self.split.is_some() && !self.split_focused && !self.settings_open;
 
         let mut card = div()
             .id("web-card")
@@ -125,6 +126,7 @@ impl Browser {
                     .border_color(t.border.opacity(0.7))
                     .shadow(t.card_shadow())
             })
+            .when(active_pane, |s| s.border_color(t.primary).shadow(active_pane_ring(t.primary)))
             .child(content);
 
         if loading {
@@ -169,7 +171,8 @@ impl Browser {
         .into_any_element()
     }
 
-    /// The second page of a split view, with its own close button.
+    /// The second page of a split view. Hovering it shows a small pill at
+    /// the top centre (clear of the page's scrollbar) to end the split.
     fn render_split_card(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let id = self.split?;
         let live = self.live.get(&id)?;
@@ -177,41 +180,130 @@ impl Browser {
         let loading = live.loading;
         let surface = live.surface.clone();
         let prompts = self.render_page_prompts(PageOwner::Tab(id), cx);
+        let error = live.error.clone();
+        let focused = self.split_focused;
         Some(
             div()
                 .id("split-card")
+                .group("split-card")
                 .relative()
-                .flex_1()
-                .min_w_0()
-                .h_full()
+                .size_full()
                 .bg(t.card)
                 .rounded(metrics::RADIUS)
                 .border_1()
-                .border_color(t.border.opacity(0.7))
-                .shadow(t.card_shadow())
+                .border_color(if focused { t.primary } else { t.border.opacity(0.7) })
+                .shadow(if focused { active_pane_ring(t.primary) } else { t.card_shadow() })
                 .child(surface)
                 .children(prompts)
                 .when(loading, |s| s.child(loading_bar(cx)))
+                .when_some(error, |s, err| s.child(self.render_split_error(id, err, cx)))
                 .child(
-                    div()
-                        .id("close-split")
+                    h_flex()
                         .absolute()
-                        .top(px(10.))
-                        .right(px(10.))
-                        .size(px(22.))
-                        .flex()
-                        .items_center()
+                        .top(px(6.))
+                        .left_0()
+                        .right_0()
                         .justify_center()
-                        .rounded_full()
-                        .bg(t.popover.opacity(0.9))
-                        .border_1()
-                        .border_color(t.border.opacity(0.6))
-                        .cursor_pointer()
-                        .child(icon("x", px(10.), t.foreground))
-                        .on_click(cx.listener(|this, _, _, cx| this.close_split(cx))),
+                        .child(
+                            h_flex()
+                                .id("close-split")
+                                .h(px(22.))
+                                .px_2()
+                                .gap_1()
+                                .rounded_full()
+                                .bg(t.popover.opacity(0.95))
+                                .border_1()
+                                .border_color(t.border.opacity(0.6))
+                                .shadow(t.popover_shadow())
+                                .text_size(metrics::TEXT_SMALL)
+                                .text_color(t.muted_foreground)
+                                .cursor_pointer()
+                                .invisible()
+                                .group_hover("split-card", |s| s.visible())
+                                .hover(|s| s.text_color(t.foreground))
+                                .child(icon("columns-2", px(11.), t.muted_foreground))
+                                .child("Close Split")
+                                .on_click(cx.listener(|this, _, _, cx| this.close_split(cx))),
+                        ),
                 )
                 .into_any_element(),
         )
+    }
+
+    /// The split pane's load error, with a Reload button for that pane.
+    fn render_split_error(
+        &self,
+        id: mori_core::workspace::TabId,
+        err: crate::browser::PageError,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let t = cx.tokens().clone();
+        v_flex()
+            .absolute()
+            .inset_0()
+            .items_center()
+            .justify_center()
+            .gap_3()
+            .bg(t.card)
+            .rounded(metrics::RADIUS)
+            .text_center()
+            .child(icon("cloud-off", px(28.), t.muted_foreground))
+            .child(div().font_weight(FontWeight::SEMIBOLD).child("This page couldn't load"))
+            .child(
+                div()
+                    .text_size(metrics::TEXT_LABEL)
+                    .text_color(t.muted_foreground)
+                    .child(format!("{} ({})", err.text, err.code)),
+            )
+            .child(text_button("split-err-reload", "Reload", true, cx).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    if let Some(l) = this.live.get_mut(&id) {
+                        l.error = None;
+                        l.view.reload(false);
+                    }
+                    cx.notify();
+                },
+            )))
+    }
+
+    /// The 8px gap between split panes, draggable to resize them.
+    fn render_split_divider(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let t = cx.tokens().clone();
+        let dragging = self.split_drag.is_some();
+        div()
+            .id("split-divider")
+            .w(metrics::CARD_INSET)
+            .h_full()
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_col_resize()
+            .group("split-divider")
+            .child(
+                div()
+                    .w(px(3.))
+                    .h(px(36.))
+                    .rounded_full()
+                    .invisible()
+                    .when(dragging, |s| s.visible())
+                    .group_hover("split-divider", |s| s.visible())
+                    .bg(t.sidebar_foreground.opacity(0.28)),
+            )
+            .on_click(cx.listener(|this, ev: &ClickEvent, _, cx| {
+                if ev.click_count() == 2 {
+                    this.finish_split_divider(true, cx);
+                }
+            }))
+            .on_drag(SplitResize, |_, _, _, cx| cx.new(|_| EmptyView))
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.finish_split_divider(false, cx)),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.finish_split_divider(false, cx)),
+            )
     }
 
     fn render_error(&self, err: crate::browser::PageError, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -384,6 +476,18 @@ impl Browser {
     }
 }
 
+/// The accent ring around the active pane of a split view (a shadow, so it
+/// doesn't change the page's size).
+fn active_pane_ring(color: Hsla) -> Vec<BoxShadow> {
+    vec![BoxShadow {
+        color: color.opacity(0.55),
+        offset: point(px(0.), px(0.)),
+        blur_radius: px(0.),
+        spread_radius: px(1.5),
+        inset: false,
+    }]
+}
+
 fn loading_bar(cx: &App) -> impl IntoElement {
     let t = cx.tokens();
     let color = t.muted_foreground;
@@ -434,7 +538,10 @@ impl Render for Browser {
             .clone()
             .filter(|_| self.assistant_visible && !fullscreen);
 
+        let ratio = self.split_ratio();
+        let divider = split_card.is_some().then(|| self.render_split_divider(cx));
         let web_column = div()
+            .id("web-column")
             .flex_1()
             .min_w_0()
             .h_full()
@@ -443,10 +550,20 @@ impl Render for Browser {
             .pl(if show_sidebar && left { px(0.) } else { inset })
             .pr(if show_sidebar && !left { px(0.) } else { inset })
             .flex()
-            .gap(metrics::CARD_INSET)
-            .child(div().flex_1().min_w_0().h_full().child(card))
-            .children(split_card)
-            .children(self.render_devtools_card(cx));
+            .map(|s| match split_card {
+                Some(split_card) => s
+                    .child(div().flex_basis(relative(ratio)).flex_grow(1.).min_w_0().h_full().child(card))
+                    .children(divider)
+                    .child(div().flex_basis(relative(1. - ratio)).flex_grow(1.).min_w_0().h_full().child(split_card)),
+                None => s.child(div().flex_1().min_w_0().h_full().child(card)),
+            })
+            .children(self.render_devtools_card(cx))
+            .on_drag_move(cx.listener(|this, ev: &DragMoveEvent<SplitResize>, _, cx| {
+                let bounds = ev.bounds;
+                let width = f32::from(bounds.size.width).max(1.);
+                let ratio = f32::from(ev.event.position.x - bounds.origin.x) / width;
+                this.drag_split_divider(ratio, cx);
+            }));
 
         let mut row = h_flex().size_full().items_stretch();
         if left {
@@ -463,23 +580,8 @@ impl Render for Browser {
                 .children(sidebar);
         }
 
-        // Hidden sidebar: hovering the window edge reveals it as a card.
-        let edge_peek = (!show_sidebar && !fullscreen).then(|| {
-            div()
-                .id("sidebar-edge")
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .w(px(12.))
-                .when(left, |s| s.left_0())
-                .when(!left, |s| s.right_0())
-                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                    if *hovered {
-                        this.sidebar_peek = true;
-                        cx.notify();
-                    }
-                }))
-        });
+        // Hidden sidebar: touching the window edge reveals it as a card
+        // (see `track_sidebar_peek`).
         let floating = (self.sidebar_peek && !show_sidebar && !fullscreen).then(|| {
             let sidebar = self.render_sidebar(true, window, cx);
             div()
@@ -495,12 +597,6 @@ impl Render for Browser {
                 .border_color(t.sidebar_border.opacity(0.7))
                 .shadow(t.overlay_shadow())
                 .occlude()
-                .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                    if !*hovered && this.menu.is_none() {
-                        this.sidebar_peek = false;
-                        cx.notify();
-                    }
-                }))
                 .child(sidebar)
         });
 
@@ -529,7 +625,7 @@ impl Render for Browser {
                 this.open_launcher(LauncherMode::Address, window, cx)
             }))
             .on_action(cx.listener(|this, _: &CloseTab, window, cx| {
-                if let Some(id) = this.selected() {
+                if let Some(id) = this.active_tab() {
                     this.close_tab(id, false, window, cx);
                 }
             }))
@@ -570,16 +666,7 @@ impl Render for Browser {
             .on_action(cx.listener(|this, _: &ZoomReset, _, cx| this.zoom(0.0, cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &ToggleAssistant, window, cx| this.toggle_assistant(window, cx)))
-            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
-                this.settings_open = !this.settings_open;
-                // Settings replace the page, which can't keep the keyboard.
-                if this.settings_open {
-                    window.focus(&this.focus_handle, cx);
-                } else {
-                    this.focus_selected_page(window, cx);
-                }
-                cx.notify();
-            }))
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| this.toggle_settings(window, cx)))
             .on_action(cx.listener(|this, _: &CopyUrl, _, cx| this.copy_url(cx)))
             .on_action(cx.listener(|this, _: &DuplicateTab, window, cx| {
                 if let Some(id) = this.selected() {
@@ -635,7 +722,7 @@ impl Render for Browser {
             .on_action(cx.listener(|this, _: &SelectSpace9, w, cx| select_space(this, 9, w, cx)))
             .children(self.render_wash(cx))
             .child(row)
-            .children(edge_peek)
+            .child(self.render_pointer_hooks(cx))
             .children(floating)
             .children(panel)
             .children(peek)
@@ -716,6 +803,9 @@ impl Browser {
 
 #[derive(Clone)]
 struct SidebarResize;
+
+#[derive(Clone)]
+struct SplitResize;
 
 struct EmptyView;
 

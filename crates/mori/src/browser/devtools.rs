@@ -133,6 +133,7 @@ impl Browser {
             div()
                 .id("devtools-card")
                 .flex_none()
+                .ml(metrics::CARD_INSET)
                 .w(relative(PANE_FRACTION))
                 .min_w(px(320.))
                 .h_full()

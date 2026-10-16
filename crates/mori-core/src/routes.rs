@@ -109,6 +109,26 @@ impl RouteStore {
         self.routes.len() != before
     }
 
+    /// Remove and return every rule targeting `context_id` (a Space being
+    /// deleted), so the deletion can be undone with [`RouteStore::restore`].
+    pub fn take_for_context(&mut self, context_id: Uuid) -> Vec<Route> {
+        let (taken, kept) = std::mem::take(&mut self.routes)
+            .into_iter()
+            .partition(|r| r.context_id == context_id);
+        self.routes = kept;
+        taken
+    }
+
+    /// Put back rules removed by [`RouteStore::take_for_context`], unless a
+    /// rule for the same pattern was added meanwhile.
+    pub fn restore(&mut self, routes: Vec<Route>) {
+        for route in routes {
+            if !self.routes.iter().any(|r| r.pattern == route.pattern) {
+                self.routes.push(route);
+            }
+        }
+    }
+
     /// The most specific (longest-pattern) enabled rule for `host`.
     pub fn match_host(&self, host: &str) -> Option<&Route> {
         let host = host.trim().to_lowercase();
@@ -187,6 +207,20 @@ mod tests {
             rs.match_host("docs.google.com").map(|r| r.context_id),
             Some(personal)
         );
+    }
+
+    #[test]
+    fn take_and_restore_for_deleted_space() {
+        let (work, home) = (Uuid::new_v4(), Uuid::new_v4());
+        let mut rs = RouteStore::default();
+        rs.add("github.com", work);
+        rs.add("news.com", home);
+        let taken = rs.take_for_context(work);
+        assert_eq!(taken.len(), 1);
+        assert!(rs.match_host("github.com").is_none());
+        rs.restore(taken);
+        assert_eq!(rs.match_host("github.com").map(|r| r.context_id), Some(work));
+        assert_eq!(rs.list().len(), 2);
     }
 
     #[test]

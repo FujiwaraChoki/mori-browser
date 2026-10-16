@@ -376,7 +376,7 @@ impl Browser {
                     ))
                     .child(text_button(("boost-visit", i), "Visit", false, cx).on_click(cx.listener(
                         move |this, _, window, cx| {
-                            this.settings_open = false;
+                            this.set_settings_open(false, window, cx);
                             this.open_url(&format!("https://{host}"), true, window, cx);
                         },
                     )))
@@ -402,11 +402,7 @@ impl Browser {
                     .border_b_1()
                     .border_color(t.border.opacity(0.6))
                     .child(icon_button("settings-back", "arrow-left", px(28.), true, cx).on_click(
-                        cx.listener(|this, _, window, cx| {
-                            this.settings_open = false;
-                            this.focus_selected_page(window, cx);
-                            cx.notify();
-                        }),
+                        cx.listener(|this, _, window, cx| this.set_settings_open(false, window, cx)),
                     ))
                     .child(
                         div()
@@ -416,11 +412,7 @@ impl Browser {
                             .child("Settings"),
                     )
                     .child(text_button("settings-done", "Done", true, cx).on_click(cx.listener(
-                        |this, _, window, cx| {
-                            this.settings_open = false;
-                            this.focus_selected_page(window, cx);
-                            cx.notify();
-                        },
+                        |this, _, window, cx| this.set_settings_open(false, window, cx),
                     ))),
             )
             .child(
@@ -472,7 +464,7 @@ impl Browser {
                         ))
                         .child(section("Assistant", cx).child(card(cx).child(field(
                             "AI integration",
-                            toggle("ai-toggle", s.ai_integration_enabled, |b, on| b.settings.ai_integration_enabled = on, cx),
+                            toggle("ai-toggle", s.ai_integration_enabled, |b, on| b.set_ai_integration(on), cx),
                             cx,
                         ))))
                         .child(section("Appearance", cx).child(
@@ -612,11 +604,6 @@ impl Browser {
                                 })
                                 .children(boosts),
                         ))
-                        .child(section("Media", cx).child(card(cx).child(field(
-                            "Picture in Picture",
-                            toggle("auto-pip", s.auto_pip, |b, on| b.settings.auto_pip = on, cx),
-                            cx,
-                        ))))
                         .child(section("About", cx).child(
                             card(cx).child(
                                 h_flex()
