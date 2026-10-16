@@ -13,3 +13,8 @@ serde_json = { workspace = true, features = ["float_roundtrip"] }
 url.workspace = true
 uuid.workspace = true
 dirs.workspace = true
+# Built-in ad and tracker blocking (Brave's engine). Without the default
+# `single-thread` feature the engine is Send + Sync for the network thread.
+adblock = { version = "0.13", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"] }
+# Registrable domains (public suffix list) for grouping cookies by site.
+addr = { version = "0.15", default-features = false, features = ["psl"] }

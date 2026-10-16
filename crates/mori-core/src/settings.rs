@@ -154,6 +154,15 @@ pub struct Settings {
     pub agent_auto_approve_safe_reads: bool,
     /// Last sidebar visibility (restored when `show_sidebar_on_launch` is off).
     pub sidebar_visible: bool,
+    /// Block ads and trackers (see `content_blocker`).
+    pub content_blocker: bool,
+    /// Send Do Not Track and Global Privacy Control signals.
+    pub do_not_track: bool,
+    /// Block cookies of other sites embedded in a page.
+    pub block_third_party_cookies: bool,
+    /// Pop a playing video out into Picture-in-Picture when its tab leaves
+    /// the screen.
+    pub auto_pip: bool,
 }
 
 impl Default for Settings {
@@ -173,6 +182,10 @@ impl Default for Settings {
             auto_archive_hours: 24,
             agent_auto_approve_safe_reads: false,
             sidebar_visible: true,
+            content_blocker: true,
+            do_not_track: false,
+            block_third_party_cookies: false,
+            auto_pip: true,
         }
     }
 }
@@ -274,6 +287,7 @@ mod tests {
         assert_eq!(s.search_engine, SearchEngine::Brave);
         assert_eq!(s.auto_sleep_minutes, 60);
         assert_eq!(s.homepage_url, "mori://newtab");
+        assert!(s.content_blocker && s.auto_pip && !s.do_not_track && !s.block_third_party_cookies);
     }
 
     #[test]
@@ -301,7 +315,7 @@ mod tests {
 
     #[test]
     fn old_settings_with_removed_keys_load() {
-        let s: Settings = serde_json::from_str(r#"{"auto_pip":true,"sidebar_width":300}"#).unwrap();
+        let s: Settings = serde_json::from_str(r#"{"pip_on_switch":true,"sidebar_width":300}"#).unwrap();
         assert_eq!(s.sidebar_width, 300.0);
     }
 
