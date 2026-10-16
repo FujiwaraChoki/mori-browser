@@ -1,10 +1,13 @@
 //! Site info: the popover behind the URL pill's leading icon, like Zen's
 //! identity panel and Arc's site controls. It shows whether the connection
-//! is secure, the permissions remembered for the site (switchable and
-//! resettable), page zoom, and shortcuts to Boost and copying the link.
+//! is secure, the content blocker for the site (with how many requests it
+//! blocked on the page), the permissions remembered for the site
+//! (switchable and resettable), page zoom, clearing the site's cookies and
+//! data, and shortcuts to Boost and copying the link.
 
 use std::rc::Rc;
 
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use mori_core::site_permissions::Decision;
 use mori_engine::PermissionKind;
@@ -16,6 +19,7 @@ use crate::{
     ui::{
         components::{h_flex, icon, icon_button, v_flex},
         menus::{Entry, EntryExt, cmd, item},
+        settings::SettingsCategory,
     },
 };
 
@@ -58,6 +62,78 @@ fn permission_label(key: &str) -> (&'static str, &'static str) {
         "local-fonts" => ("Local fonts", "type"),
         "idle-detection" => ("Idle detection", "timer"),
         _ => ("Other", "shield"),
+    }
+}
+
+/// The content blocker row: whether it blocks on this site (a switch) and
+/// how many requests it blocked on the page.
+fn blocker_row(b: &Browser, tab: mori_core::workspace::TabId, url: &str) -> Entry {
+    let on = b.blocking_active_for(url);
+    let count = b.live.get(&tab).map(|l| l.view.blocked_count()).unwrap_or(0);
+    let label: SharedString = if !b.settings.content_blocker {
+        "Content blocker is off".into()
+    } else if on {
+        "Ads & trackers".into()
+    } else {
+        "Blocking off here".into()
+    };
+    let enabled_globally = b.settings.content_blocker;
+    Entry::Custom {
+        height: 32.,
+        render: Rc::new(move |_, cx| {
+            let t = cx.tokens().clone();
+            let hover_bg = t.ghost_hover();
+            h_flex()
+                .id("site-blocker")
+                .h(px(32.))
+                .px(px(10.))
+                .gap(px(10.))
+                .rounded(px(5.))
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover_bg))
+                .child(icon(if on { "shield-check" } else { "shield-off" }, px(15.), if on { t.primary } else { t.foreground.opacity(0.6) }))
+                .child(div().flex_1().min_w_0().truncate().child(label.clone()))
+                .when(on && count > 0, |row| {
+                    row.child(
+                        div()
+                            .px(px(6.))
+                            .h(px(18.))
+                            .flex()
+                            .items_center()
+                            .rounded_full()
+                            .bg(t.primary.opacity(0.16))
+                            .text_color(t.primary)
+                            .text_size(metrics::TEXT_SMALL)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child(count.to_string()),
+                    )
+                })
+                .child(
+                    div()
+                        .w(px(28.))
+                        .h(px(16.))
+                        .flex_none()
+                        .p(px(2.))
+                        .rounded_full()
+                        .bg(if on { t.primary } else { t.foreground.opacity(0.18) })
+                        .child(div().size(px(12.)).rounded_full().bg(white()).when(on, |s| s.ml(px(12.)))),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    if enabled_globally {
+                        this.toggle_site_blocking(tab, cx);
+                    } else {
+                        this.set_content_blocker_enabled(true, cx);
+                        if let Some(url) = this.ws.tab(tab).map(|t| t.url.clone())
+                            && this.privacy.exceptions.is_exempt(&url)
+                        {
+                            this.toggle_site_blocking(tab, cx);
+                        } else if let Some(live) = this.live.get(&tab) {
+                            live.view.reload(false);
+                        }
+                    }
+                }))
+                .into_any_element()
+        }),
     }
 }
 
@@ -108,6 +184,7 @@ pub fn site_info_entries(b: &Browser) -> Vec<Entry> {
     let is_web = url.starts_with("http://") || url.starts_with("https://");
     if is_web {
         v.push(Entry::Separator);
+        v.push(blocker_row(b, tab, &url));
         v.push(Entry::Header("Permissions".into()));
         let remembered = b.site_permissions.for_site(&url);
         if remembered.is_empty() {
@@ -120,25 +197,20 @@ pub fn site_info_entries(b: &Browser) -> Vec<Entry> {
                 label: label.into(),
                 icon: glyph,
                 on: *decision == Decision::Allow,
-                handler: Rc::new(move |b, _, cx| {
-                    let next = match b.site_permissions.get(&page, &key) {
-                        Some(Decision::Allow) => Decision::Block,
-                        _ => Decision::Allow,
-                    };
-                    b.site_permissions.set(&page, &key, next);
-                    b.schedule_save(cx);
-                    cx.notify();
-                }),
+                handler: Rc::new(move |b, _, cx| b.flip_permission(&page, &key, cx)),
             });
         }
         if !remembered.is_empty() {
             let page = url.clone();
             v.push(item("Reset Permissions", "rotate-ccw", move |b, _, cx| {
-                b.site_permissions.forget_site(&page);
+                b.reset_site_permissions(&page, cx);
                 b.toast("Permissions reset for this site", ToastStyle::Info, None, cx);
-                b.schedule_save(cx);
             }));
         }
+        v.push(Entry::Separator);
+        let page = url.clone();
+        v.push(item("Clear Cookies and Site Data", "cookie", move |b, _, cx| b.clear_site_data(&page, cx)));
+        v.push(item("Privacy Settings…", "shield", |b, w, cx| b.show_settings(SettingsCategory::Privacy, w, cx)));
     }
 
     if b.active_live().is_some() {

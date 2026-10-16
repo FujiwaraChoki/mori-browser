@@ -412,10 +412,14 @@ wrap_display_handler! {
             line: ::std::os::raw::c_int,
         ) -> ::std::os::raw::c_int {
             let Some(view) = self.view.upgrade() else { return 0 };
+            let message = cef_str(message);
+            if crate::bridge::on_console_message(&view, &message) {
+                return 1;
+            }
             let level: cef::sys::cef_log_severity_t = level.into();
             view.push(ViewEvent::ConsoleMessage {
                 level: level as i32,
-                message: cef_str(message),
+                message,
                 source: cef_str(source),
                 line,
             });
@@ -522,6 +526,11 @@ wrap_load_handler! {
         ) {
             if let Some(frame) = frame {
                 crate::appearance::on_load_start(frame);
+                if frame.is_main() == 1
+                    && let Some(view) = self.view.upgrade()
+                {
+                    crate::bridge::dismiss_prompts(&view);
+                }
             }
         }
 
@@ -654,6 +663,7 @@ wrap_life_span_handler! {
             }
             crate::devtools::attach(&view);
             crate::appearance::attach(&view);
+            crate::bridge::attach(&view);
             if let Some(url) = view.pending_url.borrow_mut().take()
                 && let Some(frame) = browser.main_frame()
             {
@@ -710,7 +720,10 @@ wrap_life_span_handler! {
             0
         }
 
-        fn on_before_close(&self, _browser: Option<&mut Browser>) {
+        fn on_before_close(&self, browser: Option<&mut Browser>) {
+            if let Some(browser) = browser {
+                crate::privacy::forget_browser(browser.identifier());
+            }
             let Some(view) = self.view.upgrade() else { return };
             log::debug!("view {:?} closed", view.id);
             view.closed.set(true);
@@ -761,6 +774,21 @@ wrap_request_handler! {
                 features: PopupFeatures::default(),
             });
             1
+        }
+
+        /// Runs on Chromium's IO thread: the content blocker and Do Not Track
+        /// hooks (see `privacy`) must not touch the view.
+        fn resource_request_handler(
+            &self,
+            browser: Option<&mut Browser>,
+            _frame: Option<&mut cef::Frame>,
+            _request: Option<&mut Request>,
+            _is_navigation: ::std::os::raw::c_int,
+            _is_download: ::std::os::raw::c_int,
+            request_initiator: Option<&CefString>,
+            _disable_default_handling: Option<&mut ::std::os::raw::c_int>,
+        ) -> Option<ResourceRequestHandler> {
+            crate::privacy::resource_request_handler(browser, cef_str(request_initiator))
         }
 
         fn on_render_process_terminated(

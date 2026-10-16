@@ -24,9 +24,11 @@ impl Browser {
         let selected = self.selected();
         let pages = self.window_visible && !self.settings_open;
         let fullscreen = self.selected_live().is_some_and(|l| l.fullscreen);
+        let pip = self.pip_tab();
         for (tab, live) in &self.live {
             let shown = Some(*tab) == selected || (Some(*tab) == self.split && !fullscreen);
-            live.view.set_hidden(!(pages && shown));
+            // Picture-in-Picture shows the page's frames in its own window.
+            live.view.set_hidden(!(pages && shown) && Some(*tab) != pip);
         }
         let devtools = self.shown_devtools_tab();
         for (tab, pane) in &self.devtools {

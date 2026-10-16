@@ -93,6 +93,35 @@ impl BrowsingContext {
         }
     }
 
+    /// Every persistent context created so far this session.
+    pub fn loaded_persistent() -> Vec<BrowsingContext> {
+        PERSISTENT.with(|p| {
+            p.borrow()
+                .iter()
+                .map(|(dir, ctx)| BrowsingContext(Kind::Persistent(dir.clone(), ctx.clone())))
+                .collect()
+        })
+    }
+
+    /// Whether `self` and `other` are the same context.
+    pub fn same_as(&self, other: &BrowsingContext) -> bool {
+        match (&self.0, &other.0) {
+            (Kind::Default, Kind::Default) => true,
+            (Kind::Persistent(a, _), Kind::Persistent(b, _)) => a == b,
+            (Kind::Private(a), Kind::Private(b)) => a.is_same(Some(&mut b.clone())) == 1,
+            _ => false,
+        }
+    }
+
+    /// The CEF request context to apply settings to: CEF's global one for
+    /// the default context.
+    pub(crate) fn cef_context(&self) -> Option<RequestContext> {
+        match &self.0 {
+            Kind::Default => request_context_get_global_context(),
+            Kind::Persistent(_, ctx) | Kind::Private(ctx) => Some(ctx.clone()),
+        }
+    }
+
     pub(crate) fn request_context(&self) -> Option<RequestContext> {
         match &self.0 {
             Kind::Default => None,

@@ -245,6 +245,13 @@ impl DownloadStore {
         self.entries.retain(|e| e.state.is_active());
     }
 
+    /// Drop finished entries started since `since` (UNIX seconds), or all
+    /// with `None`. Running and paused downloads stay.
+    pub fn clear_finished_since(&mut self, since: Option<f64>) {
+        self.entries
+            .retain(|e| e.state.is_active() || since.is_some_and(|t| e.started_at < t));
+    }
+
     /// Keep at most [`MAX_ENTRIES`], dropping the oldest finished ones.
     fn trim(&mut self) {
         while self.entries.len() > MAX_ENTRIES {
@@ -317,6 +324,19 @@ mod tests {
         }
         assert_eq!(store.entries.len(), MAX_ENTRIES);
         assert!(store.find_engine(0).is_some());
+    }
+
+    #[test]
+    fn clears_finished_in_a_time_range() {
+        let mut store = DownloadStore::default();
+        store.apply(progress(1, DownloadState::Complete, 100), 10.0);
+        store.apply(progress(2, DownloadState::Complete, 100), 100.0);
+        store.apply(progress(3, DownloadState::InProgress, 5), 120.0);
+        store.clear_finished_since(Some(50.0));
+        let left: Vec<_> = store.entries.iter().filter_map(|e| e.engine_id).collect();
+        assert_eq!(left, [3, 1], "old and running entries stay");
+        store.clear_finished_since(None);
+        assert_eq!(store.entries.len(), 1);
     }
 
     #[test]

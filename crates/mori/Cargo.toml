@@ -27,6 +27,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 futures = "0.3"
 libc = "0.2"
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+# Web notifications through org.freedesktop.Notifications.
+zbus = "5"
 # Launcher search suggestions (blocking GET on a background thread).
 ureq = { version = "3", default-features = false, features = ["rustls", "gzip"] }
 

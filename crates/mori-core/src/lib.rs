@@ -8,6 +8,7 @@
 pub mod archive;
 pub mod bookmarks;
 pub mod boosts;
+pub mod content_blocker;
 pub mod downloads;
 pub mod history;
 pub mod launcher;
@@ -17,6 +18,7 @@ pub mod omnibox;
 pub mod page_actions;
 pub mod paths;
 pub mod persist;
+pub mod privacy;
 pub mod profiles;
 pub mod prompts;
 pub mod routes;

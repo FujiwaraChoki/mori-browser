@@ -32,6 +32,7 @@ use mori_core::{
     archive::ArchiveStore,
     bookmarks::BookmarkStore,
     boosts::BoostStore,
+    content_blocker::SiteExceptions,
     downloads::DownloadStore,
     history::HistoryStore,
     navigation,
@@ -93,6 +94,9 @@ pub struct Seed {
     pub private_context: Option<BrowsingContext>,
     pub ephemeral_session: bool,
     pub start: Start,
+    /// Sites the content blocker is off for (one blocker serves every
+    /// window, so every window shares them).
+    pub blocker_exceptions: SiteExceptions,
 }
 
 impl Seed {
@@ -123,6 +127,7 @@ impl Seed {
             private_context: None,
             ephemeral_session: start_url.is_some(),
             start: Start::Restore,
+            blocker_exceptions: SiteExceptions::load(&dir),
         }
     }
 }
@@ -509,6 +514,7 @@ fn seed_for(kind: WindowKind, cx: &App) -> Seed {
                 private_context: None,
                 ephemeral_session: b.ephemeral_session,
                 start: Start::Restore,
+                blocker_exceptions: b.privacy.exceptions.clone(),
             }
         }
         None => Seed::load(),
@@ -769,6 +775,7 @@ struct Shared {
     zoom: Option<ZoomStore>,
     site_permissions: Option<SitePermissionStore>,
     downloads: Option<DownloadStore>,
+    blocker_exceptions: Option<SiteExceptions>,
 }
 
 impl Shared {
@@ -783,6 +790,7 @@ impl Shared {
             && self.zoom.is_none()
             && self.site_permissions.is_none()
             && self.downloads.is_none()
+            && self.blocker_exceptions.is_none()
     }
 
     /// What `to` lacks of `from`'s state.
@@ -807,6 +815,9 @@ impl Shared {
                 out.settings = Some(settings);
             }
             copy_if_changed!(bookmarks, routes, boosts);
+            if from.privacy.exceptions != to.privacy.exceptions {
+                out.blocker_exceptions = Some(from.privacy.exceptions.clone());
+            }
         }
         if sharing.browsing_data {
             copy_if_changed!(history, archive, zoom, site_permissions, downloads);
@@ -909,6 +920,7 @@ impl Browser {
             zoom,
             site_permissions,
             downloads,
+            blocker_exceptions,
         } = shared;
         let mut retheme = false;
         if let Some(settings) = settings {
@@ -923,6 +935,9 @@ impl Browser {
             )*};
         }
         take!(bookmarks, routes, boosts, history, archive, zoom, site_permissions, downloads);
+        if let Some(exceptions) = blocker_exceptions {
+            self.privacy.exceptions = exceptions;
+        }
         if let Some(ws) = ws {
             let selected = self.selected();
             let space = self.ws.active_space;
@@ -1404,10 +1419,16 @@ pub fn context_for_space(b: &Browser, space: SpaceId) -> BrowsingContext {
         WindowKind::Little => b.private_context.clone().unwrap_or_else(BrowsingContext::shared),
         WindowKind::Normal => match with(|r| r.profiles.profile_of(space)) {
             None => BrowsingContext::shared(),
-            Some(profile) => BrowsingContext::persistent(&profiles::dir_name(profile)).unwrap_or_else(|| {
-                log::error!("couldn't open profile {profile}; using the default profile");
-                BrowsingContext::shared()
-            }),
+            Some(profile) => match BrowsingContext::persistent(&profiles::dir_name(profile)) {
+                Some(context) => {
+                    b.prepare_profile_context(&context);
+                    context
+                }
+                None => {
+                    log::error!("couldn't open profile {profile}; using the default profile");
+                    BrowsingContext::shared()
+                }
+            },
         },
     }
 }

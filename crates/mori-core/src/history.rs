@@ -153,6 +153,22 @@ impl HistoryStore {
         self.entries.len() != before
     }
 
+    /// Remove visits since `since` (UNIX seconds); returns how many went.
+    /// An entry's latest visit decides (older visits aren't kept apart).
+    pub fn remove_since(&mut self, since: f64) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|e| e.last_visited < since);
+        before - self.entries.len()
+    }
+
+    /// URLs visited since `since`, or ever with `None`.
+    pub fn urls_since(&self, since: Option<f64>) -> impl Iterator<Item = &str> {
+        self.entries
+            .iter()
+            .filter(move |e| since.is_none_or(|t| e.last_visited >= t))
+            .map(|e| e.url.as_str())
+    }
+
     pub fn clear(&mut self) {
         self.entries.clear();
     }
@@ -198,6 +214,19 @@ mod tests {
         assert_eq!(h.entries[0].last_visited, 3.0);
         assert_eq!(h.recent(1).len(), 1);
         assert_eq!(h.recent(10).len(), 2);
+    }
+
+    #[test]
+    fn removes_a_time_range() {
+        let mut h = HistoryStore::default();
+        h.record_at("https://old.test/", "", 10.0);
+        h.record_at("https://new.test/", "", 100.0);
+        h.record_at("https://newer.test/", "", 200.0);
+        assert_eq!(h.urls_since(Some(100.0)).collect::<Vec<_>>(), ["https://newer.test/", "https://new.test/"]);
+        assert_eq!(h.urls_since(None).count(), 3);
+        assert_eq!(h.remove_since(100.0), 2);
+        assert_eq!(h.entries.len(), 1);
+        assert_eq!(h.entries[0].url, "https://old.test/");
     }
 
     #[test]

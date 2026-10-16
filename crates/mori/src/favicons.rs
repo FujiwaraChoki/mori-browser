@@ -86,6 +86,12 @@ impl Favicons {
         }
     }
 
+    /// The icon file saved for `host`, if there is one.
+    pub fn path(&self, host: &str) -> Option<PathBuf> {
+        let path = self.0.borrow().dir.join(file_name(host));
+        path.exists().then_some(path)
+    }
+
     pub fn insert(&self, host: &str, frame: Frame, cx: &mut App) {
         let Frame { width, height, bgra } = frame;
         let Some(buffer) = image::RgbaImage::from_raw(width, height, bgra) else {

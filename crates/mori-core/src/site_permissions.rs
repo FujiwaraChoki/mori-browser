@@ -92,6 +92,14 @@ impl SitePermissionStore {
             .unwrap_or_default()
     }
 
+    /// Every site with remembered decisions: `(origin, decisions)`, sorted
+    /// by origin.
+    pub fn sites(&self) -> impl Iterator<Item = (&str, Vec<(String, Decision)>)> {
+        self.sites
+            .iter()
+            .map(|(origin, d)| (origin.as_str(), d.iter().map(|(k, v)| (k.clone(), *v)).collect()))
+    }
+
     /// The answer for a prompt asking for all of `permissions` at once:
     /// `Some(false)` if any is blocked, `Some(true)` if all are allowed,
     /// `None` (ask the user) otherwise or when nothing was asked.

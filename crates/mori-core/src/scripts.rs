@@ -188,12 +188,6 @@ pub enum MediaCommand {
     /// Absolute seek in seconds.
     SeekTo(f64),
     ToggleMute,
-    /// Enter Picture-in-Picture, or leave it if active.
-    TogglePip,
-    /// Enter PiP if a video is playing (auto-PiP on tab hide).
-    EnterPip,
-    /// Leave PiP (tab shown again).
-    ExitPip,
 }
 
 impl MediaCommand {
@@ -203,15 +197,12 @@ impl MediaCommand {
             MediaCommand::SeekBy(v) => ("seekBy", v),
             MediaCommand::SeekTo(v) => ("seek", v),
             MediaCommand::ToggleMute => ("mute", 0.0),
-            MediaCommand::TogglePip => ("pip", 0.0),
-            MediaCommand::EnterPip => ("pipEnter", 0.0),
-            MediaCommand::ExitPip => ("pipExit", 0.0),
         }
     }
 }
 
 /// A fixed script performing `cmd` on the primary media element. Run it with
-/// a user gesture so gated APIs (play, PiP) are allowed. Non-finite values
+/// a user gesture so gated APIs (play) are allowed. Non-finite values
 /// become 0.
 pub fn media_command_script(cmd: MediaCommand) -> String {
     let (action, value) = cmd.action_and_value();
@@ -221,21 +212,6 @@ pub fn media_command_script(cmd: MediaCommand) -> String {
   const action = "{action}";
   const value = {value:?};
 {MEDIA_PICK_JS}
-  const pipEnter = () => {{
-    try {{
-      if (document.pictureInPictureElement) return;
-      const el = pick();
-      if (el && el.tagName === 'VIDEO' && el.requestPictureInPicture) el.requestPictureInPicture().catch(() => {{}});
-    }} catch (e) {{}}
-  }};
-  const pipExit = () => {{
-    try {{
-      if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {{}});
-    }} catch (e) {{}}
-  }};
-  if (action === 'pip') {{ document.pictureInPictureElement ? pipExit() : pipEnter(); return; }}
-  if (action === 'pipEnter') {{ pipEnter(); return; }}
-  if (action === 'pipExit') {{ pipExit(); return; }}
   const el = pick();
   if (!el) return;
   switch (action) {{
@@ -267,9 +243,46 @@ pub const PAGE_TEXT_SCRIPT: &str = r#"(() => {
   return { title: document.title || '', url: location.href, text };
 })()"#;
 
+/// Evaluates to where the Picture-in-Picture video is drawn in the page's
+/// frame, in device pixels: `{x, y, width, height, playing}` (the picture
+/// itself, without the element's letterbox bars), or `null` without a
+/// video. With `scroll`, a video partly off screen is scrolled into view
+/// first.
+pub fn pip_rect_script(scroll: bool) -> String {
+    format!(
+        r#"(() => {{
+  try {{{MEDIA_PICK_JS}
+    const el = document.pictureInPictureElement || pick();
+    if (!el || el.tagName !== 'VIDEO') return null;
+    let r = el.getBoundingClientRect();
+    if ({scroll} && (r.top < 0 || r.bottom > innerHeight || r.left < 0 || r.right > innerWidth)) {{
+      el.scrollIntoView({{ block: 'center', inline: 'center' }});
+      r = el.getBoundingClientRect();
+    }}
+    let x = r.left, y = r.top, w = r.width, h = r.height;
+    const fit = getComputedStyle(el).objectFit;
+    if (el.videoWidth && el.videoHeight && w > 0 && h > 0 && fit !== 'cover' && fit !== 'fill') {{
+      const aspect = el.videoWidth / el.videoHeight;
+      if (w / h > aspect) {{ const nw = h * aspect; x += (w - nw) / 2; w = nw; }}
+      else {{ const nh = w / aspect; y += (h - nh) / 2; h = nh; }}
+    }}
+    const k = window.devicePixelRatio || 1;
+    return {{ x: x * k, y: y * k, width: w * k, height: h * k, playing: !el.paused }};
+  }} catch (e) {{ return null; }}
+}})()"#
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pip_rect() {
+        assert!(pip_rect_script(true).contains("if (true &&"));
+        assert!(pip_rect_script(false).contains("if (false &&"));
+        assert!(pip_rect_script(false).contains("const pick = () =>"));
+    }
 
     #[test]
     fn media_commands() {
@@ -278,7 +291,7 @@ mod tests {
         assert!(s.contains("const value = -10.0;"));
         let s = media_command_script(MediaCommand::SeekTo(f64::NAN));
         assert!(s.contains("const value = 0.0;"));
-        assert!(media_command_script(MediaCommand::TogglePip).contains(r#""pip""#));
+        assert!(media_command_script(MediaCommand::ToggleMute).contains(r#""mute""#));
     }
 
     #[test]

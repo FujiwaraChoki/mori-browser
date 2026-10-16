@@ -10,6 +10,7 @@ pub mod menus;
 pub mod overlays;
 pub mod panels;
 pub mod peek;
+pub mod pip;
 pub mod pointer;
 pub mod root;
 pub mod settings;
