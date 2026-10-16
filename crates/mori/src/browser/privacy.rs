@@ -55,6 +55,11 @@ pub struct PrivacyRuntime {
 
 impl Global for PrivacyRuntime {}
 
+/// The process's content blocker, once a window has started it.
+pub fn content_blocker(cx: &App) -> Option<Arc<ContentBlocker>> {
+    cx.try_global::<PrivacyRuntime>().map(|r| r.blocker.clone())
+}
+
 /// The window's privacy state.
 #[derive(Default)]
 pub struct PrivacyState {
@@ -106,7 +111,7 @@ impl Browser {
             };
             let blocker = runtime.blocker.clone();
             engine::set_request_filter(Some(Arc::new(move |r| {
-                blocker.should_block(r.url, r.page_url, r.request_type)
+                blocker.should_block(r.url, r.page_url, r.request_type, r.private)
             })));
             load_filter_lists(runtime.blocker.clone(), runtime.status.clone(), runtime.data_dir.clone(), false);
             cx.set_global(runtime);
@@ -207,7 +212,7 @@ impl Browser {
     }
 
     pub fn content_blocker(&self, cx: &App) -> Option<Arc<ContentBlocker>> {
-        cx.try_global::<PrivacyRuntime>().map(|r| r.blocker.clone())
+        content_blocker(cx)
     }
 
     pub fn lists_status(&self, cx: &App) -> ListsStatus {
@@ -261,26 +266,57 @@ impl Browser {
 
     /// Whether blocking is on for the page at `url` (switched on, and the
     /// site is no exception).
-    pub fn blocking_active_for(&self, url: &str) -> bool {
-        self.settings.content_blocker && !self.privacy.exceptions.is_exempt(url)
+    pub fn blocking_active_for(&self, url: &str, cx: &App) -> bool {
+        self.settings.content_blocker
+            && !self.privacy.exceptions.is_exempt(url)
+            && !(self.is_private() && self.private_exceptions(cx).is_exempt(url))
+    }
+
+    fn is_private(&self) -> bool {
+        self.kind == WindowKind::Private
+    }
+
+    /// The sites private windows turned blocking off for this session.
+    fn private_exceptions(&self, cx: &App) -> SiteExceptions {
+        self.content_blocker(cx).map(|b| b.private_exceptions()).unwrap_or_default()
     }
 
     /// Turn the content blocker off or back on for the site of the tab's
     /// page, then reload it so the change shows.
+    ///
+    /// A private window keeps the sites it turns off to itself: they apply
+    /// to private pages only and are forgotten with the last private
+    /// window. (Turning blocking back on for a saved exception is a plain
+    /// preference change.)
     pub fn toggle_site_blocking(&mut self, tab: TabId, cx: &mut Context<Self>) {
         let Some(url) = self.ws.tab(tab).map(|t| t.url.clone()) else { return };
-        let exempt = !self.privacy.exceptions.is_exempt(&url);
-        if !self.privacy.exceptions.set_exempt(&url, exempt) {
-            return;
-        }
-        if let Some(b) = self.content_blocker(cx) {
-            b.set_exceptions(&self.privacy.exceptions);
+        let Some(site) = content_blocker::site_key(&url) else { return };
+        let currently_exempt = self.privacy.exceptions.is_exempt(&url)
+            || (self.is_private() && self.private_exceptions(cx).is_exempt(&url));
+        let exempt = !currently_exempt;
+        if self.is_private() {
+            let mut private = self.private_exceptions(cx);
+            let changed_private = private.set_exempt(&url, exempt);
+            let changed_saved = !exempt && self.privacy.exceptions.set_exempt(&url, false);
+            if !changed_private && !changed_saved {
+                return;
+            }
+            if let Some(b) = self.content_blocker(cx) {
+                b.set_private_exceptions(&private);
+                b.set_exceptions(&self.privacy.exceptions);
+            }
+        } else {
+            if !self.privacy.exceptions.set_exempt(&url, exempt) {
+                return;
+            }
+            if let Some(b) = self.content_blocker(cx) {
+                b.set_exceptions(&self.privacy.exceptions);
+            }
         }
         if let Some(live) = self.live.get(&tab) {
             live.view.reload(false);
         }
-        let host = content_blocker::site_key(&url).unwrap_or_default();
-        let text = if exempt { format!("Blocking off for {host}") } else { format!("Blocking on for {host}") };
+        let text = if exempt { format!("Blocking off for {site}") } else { format!("Blocking on for {site}") };
         self.toast(text, ToastStyle::Info, None, cx);
         self.schedule_save(cx);
         cx.notify();
@@ -302,7 +338,7 @@ impl Browser {
     /// its document exists.
     pub(super) fn apply_site_cosmetics(&self, id: TabId, cx: &App) {
         let (Some(live), Some(tab)) = (self.live.get(&id), self.ws.tab(id)) else { return };
-        let Some(cosmetics) = self.content_blocker(cx).and_then(|b| b.cosmetics(&tab.url)) else { return };
+        let Some(cosmetics) = self.content_blocker(cx).and_then(|b| b.cosmetics(&tab.url, self.is_private())) else { return };
         if !cosmetics.css.is_empty() {
             live.view.execute_js(&content_blocker::inject_css_script("site", &cosmetics.css));
         }
@@ -326,7 +362,7 @@ impl Browser {
     fn collect_and_hide(&self, id: TabId, cx: &App) {
         let (Some(live), Some(tab)) = (self.live.get(&id), self.ws.tab(id)) else { return };
         let Some(blocker) = self.content_blocker(cx) else { return };
-        let Some(cosmetics) = blocker.cosmetics(&tab.url) else { return };
+        let Some(cosmetics) = blocker.cosmetics(&tab.url, self.is_private()) else { return };
         if cosmetics.generichide {
             return;
         }

@@ -30,6 +30,8 @@ pub struct RequestInfo<'a> {
     /// `subdocument`, `script`, `image`, `stylesheet`, `font`, `media`,
     /// `xmlhttprequest`, `ping`, `object` or `other`.
     pub request_type: &'static str,
+    /// Made by a page in a private (in-memory) context.
+    pub private: bool,
 }
 
 /// Decides, on the network thread, whether a request is cancelled.
@@ -138,8 +140,19 @@ pub(crate) fn resource_request_handler(browser: Option<&mut Browser>, initiator:
     if !hooks_active() {
         return None;
     }
+    let private = browser.as_deref().is_some_and(is_private_browser);
     let browser_id = browser.map(|b| b.identifier()).unwrap_or(-1);
-    Some(RequestHooks::new(browser_id, initiator))
+    Some(RequestHooks::new(browser_id, initiator, private))
+}
+
+/// Whether the browser's pages live in a private context: one that isn't
+/// CEF's global context and keeps nothing on disk (see
+/// [`BrowsingContext::private`]).
+///
+/// [`BrowsingContext::private`]: crate::context::BrowsingContext::private
+fn is_private_browser(browser: &Browser) -> bool {
+    let Some(ctx) = browser.host().and_then(|h| h.request_context()) else { return false };
+    ctx.is_global() == 0 && userfree(&ctx.cache_path()).is_empty()
 }
 
 fn userfree(s: &CefStringUserfree) -> String {
@@ -152,6 +165,7 @@ wrap_resource_request_handler! {
         // The origin that started the request, for requests without a
         // first party (service workers).
         initiator: String,
+        private: bool,
     }
 
     impl ResourceRequestHandler {
@@ -177,7 +191,7 @@ wrap_resource_request_handler! {
                 let url = userfree(&request.url());
                 let first_party = userfree(&request.first_party_for_cookies());
                 let page_url = if first_party.is_empty() { self.initiator.as_str() } else { first_party.as_str() };
-                if filter(&RequestInfo { url: &url, page_url, request_type: kind }) {
+                if filter(&RequestInfo { url: &url, page_url, request_type: kind, private: self.private }) {
                     if self.browser_id >= 0 {
                         update_count(self.browser_id, |c| *c = c.saturating_add(1));
                     }

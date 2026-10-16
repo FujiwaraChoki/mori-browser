@@ -67,8 +67,8 @@ fn permission_label(key: &str) -> (&'static str, &'static str) {
 
 /// The content blocker row: whether it blocks on this site (a switch) and
 /// how many requests it blocked on the page.
-fn blocker_row(b: &Browser, tab: mori_core::workspace::TabId, url: &str) -> Entry {
-    let on = b.blocking_active_for(url);
+fn blocker_row(b: &Browser, tab: mori_core::workspace::TabId, url: &str, cx: &App) -> Entry {
+    let on = b.blocking_active_for(url, cx);
     let count = b.live.get(&tab).map(|l| l.view.blocked_count()).unwrap_or(0);
     let label: SharedString = if !b.settings.content_blocker {
         "Content blocker is off".into()
@@ -124,7 +124,7 @@ fn blocker_row(b: &Browser, tab: mori_core::workspace::TabId, url: &str) -> Entr
                     } else {
                         this.set_content_blocker_enabled(true, cx);
                         if let Some(url) = this.ws.tab(tab).map(|t| t.url.clone())
-                            && this.privacy.exceptions.is_exempt(&url)
+                            && !this.blocking_active_for(&url, cx)
                         {
                             this.toggle_site_blocking(tab, cx);
                         } else if let Some(live) = this.live.get(&tab) {
@@ -138,7 +138,7 @@ fn blocker_row(b: &Browser, tab: mori_core::workspace::TabId, url: &str) -> Entr
 }
 
 /// Entries of the site-info popover for the active page.
-pub fn site_info_entries(b: &Browser) -> Vec<Entry> {
+pub fn site_info_entries(b: &Browser, cx: &App) -> Vec<Entry> {
     let Some((tab, url)) = b.active_tab().and_then(|id| b.ws.tab(id)).map(|t| (t.id, t.url.clone())) else {
         return Vec::new();
     };
@@ -184,7 +184,7 @@ pub fn site_info_entries(b: &Browser) -> Vec<Entry> {
     let is_web = url.starts_with("http://") || url.starts_with("https://");
     if is_web {
         v.push(Entry::Separator);
-        v.push(blocker_row(b, tab, &url));
+        v.push(blocker_row(b, tab, &url, cx));
         v.push(Entry::Header("Permissions".into()));
         let remembered = b.site_permissions.for_site(&url);
         if remembered.is_empty() {

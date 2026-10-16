@@ -704,6 +704,13 @@ fn on_window_closed(cx: &mut App, id: WindowId) {
         }
     }
     drop(removed);
+    // Sites the private windows turned blocking off for go with the last
+    // of them.
+    if with(|r| !r.entries.iter().any(|e| e.kind == WindowKind::Private))
+        && let Some(blocker) = crate::browser::privacy::content_blocker(cx)
+    {
+        blocker.set_private_exceptions(&Default::default());
+    }
     elect_writer(cx);
     save_session();
     if cx.windows().is_empty() {

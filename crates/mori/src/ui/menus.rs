@@ -164,7 +164,7 @@ fn bookmark(b: &mut Browser, url: &str, title: &str, cx: &mut Context<Browser>) 
     b.schedule_save(cx);
 }
 
-fn entries(b: &Browser, kind: &MenuKind) -> Vec<Entry> {
+fn entries(b: &Browser, kind: &MenuKind, cx: &App) -> Vec<Entry> {
     match kind {
         MenuKind::Web { tab, info } => web_entries(b, *tab, info),
         MenuKind::Tab(id) => tab_entries(b, *id),
@@ -238,7 +238,7 @@ fn entries(b: &Browser, kind: &MenuKind) -> Vec<Entry> {
             Entry::Separator,
             cmd("Settings", "settings", Command::Settings).shortcut("secondary-,"),
         ],
-        MenuKind::SiteInfo => crate::ui::site_info::site_info_entries(b),
+        MenuKind::SiteInfo => crate::ui::site_info::site_info_entries(b, cx),
         MenuKind::NewMenu => vec![
             cmd("Create Space", "layers", Command::NewSpace),
             item("Create Folder", "folder-plus", |b, w, cx| b.new_folder(Vec::new(), w, cx)),
@@ -888,7 +888,7 @@ impl Browser {
     pub fn render_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let menu = self.menu.clone()?;
         let t = cx.tokens().clone();
-        let list = entries(self, &menu.kind);
+        let list = entries(self, &menu.kind, cx);
         if list.is_empty() {
             self.menu = None;
             return None;

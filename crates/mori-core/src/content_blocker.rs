@@ -168,6 +168,9 @@ pub struct ContentBlocker {
     enabled: AtomicBool,
     blocker: RwLock<Option<Arc<Blocker>>>,
     exceptions: RwLock<BTreeSet<String>>,
+    /// Sites turned off in private windows: they apply to private pages
+    /// only and are never saved.
+    private_exceptions: RwLock<BTreeSet<String>>,
 }
 
 impl Default for ContentBlocker {
@@ -176,6 +179,7 @@ impl Default for ContentBlocker {
             enabled: AtomicBool::new(true),
             blocker: RwLock::new(None),
             exceptions: RwLock::new(BTreeSet::new()),
+            private_exceptions: RwLock::new(BTreeSet::new()),
         }
     }
 }
@@ -206,28 +210,43 @@ impl ContentBlocker {
         }
     }
 
+    /// The sites private windows turned blocking off for, this session.
+    pub fn private_exceptions(&self) -> SiteExceptions {
+        SiteExceptions { sites: self.private_exceptions.read().map(|e| e.clone()).unwrap_or_default() }
+    }
+
+    /// Replace the private windows' exceptions (empty once the last
+    /// private window closes).
+    pub fn set_private_exceptions(&self, exceptions: &SiteExceptions) {
+        if let Ok(mut slot) = self.private_exceptions.write() {
+            *slot = exceptions.sites.clone();
+        }
+    }
+
     /// Whether blocking applies to pages at `page_url` at all: it is on, and
-    /// the site is not an exception.
-    pub fn active_for(&self, page_url: &str) -> bool {
+    /// the site is not an exception. `private` pages also follow the
+    /// private windows' exceptions.
+    pub fn active_for(&self, page_url: &str, private: bool) -> bool {
         if !self.is_enabled() {
             return false;
         }
         let Some(site) = site_key(page_url) else { return true };
-        !self.exceptions.read().is_ok_and(|e| e.contains(&site))
+        let exempt = |set: &RwLock<BTreeSet<String>>| set.read().is_ok_and(|e| e.contains(&site));
+        !(exempt(&self.exceptions) || (private && exempt(&self.private_exceptions)))
     }
 
     /// Whether to cancel a request for `url` made by the page at
     /// `page_url` (the top-level page). Pages themselves are never blocked.
-    pub fn should_block(&self, url: &str, page_url: &str, request_type: &str) -> bool {
-        if request_type == "document" || !is_web_url(url) || !self.active_for(page_url) {
+    pub fn should_block(&self, url: &str, page_url: &str, request_type: &str, private: bool) -> bool {
+        if request_type == "document" || !is_web_url(url) || !self.active_for(page_url, private) {
             return false;
         }
         self.blocker().is_some_and(|b| b.blocks(url, page_url, request_type))
     }
 
     /// Cosmetic filters for the page at `url`, when blocking applies to it.
-    pub fn cosmetics(&self, url: &str) -> Option<Cosmetics> {
-        if !is_web_url(url) || !self.active_for(url) {
+    pub fn cosmetics(&self, url: &str, private: bool) -> Option<Cosmetics> {
+        if !is_web_url(url) || !self.active_for(url, private) {
             return None;
         }
         self.blocker().map(|b| b.cosmetics(url))
@@ -488,21 +507,39 @@ mod tests {
     fn switchboard_respects_switch_and_exceptions() {
         let cb = ContentBlocker::default();
         let page = "https://www.news.test/story";
-        assert!(!cb.should_block("https://ads.example.net/ad.js", page, "script"), "no engine yet");
+        assert!(!cb.should_block("https://ads.example.net/ad.js", page, "script", false), "no engine yet");
         cb.set_blocker(Arc::new(blocker()));
-        assert!(cb.should_block("https://ads.example.net/ad.js", page, "script"));
-        assert!(!cb.should_block("https://ads.example.net/", page, "document"), "pages are never blocked");
-        assert!(!cb.should_block("data:text/plain,x", page, "image"));
+        assert!(cb.should_block("https://ads.example.net/ad.js", page, "script", false));
+        assert!(!cb.should_block("https://ads.example.net/", page, "document", false), "pages are never blocked");
+        assert!(!cb.should_block("data:text/plain,x", page, "image", false));
         let mut ex = SiteExceptions::default();
         assert!(ex.set_exempt("https://news.test/other", true));
         assert!(!ex.set_exempt(page, true), "www is the same site");
         cb.set_exceptions(&ex);
-        assert!(!cb.should_block("https://ads.example.net/ad.js", page, "script"));
-        assert!(cb.cosmetics(page).is_none());
-        assert!(cb.should_block("https://ads.example.net/ad.js", "https://elsewhere.test/", "script"));
+        assert!(!cb.should_block("https://ads.example.net/ad.js", page, "script", false));
+        assert!(!cb.should_block("https://ads.example.net/ad.js", page, "script", true), "saved exceptions apply in private too");
+        assert!(cb.cosmetics(page, false).is_none());
+        assert!(cb.should_block("https://ads.example.net/ad.js", "https://elsewhere.test/", "script", false));
         cb.set_enabled(false);
-        assert!(!cb.should_block("https://ads.example.net/ad.js", "https://elsewhere.test/", "script"));
-        assert!(!cb.active_for("https://elsewhere.test/"));
+        assert!(!cb.should_block("https://ads.example.net/ad.js", "https://elsewhere.test/", "script", false));
+        assert!(!cb.active_for("https://elsewhere.test/", false));
+    }
+
+    #[test]
+    fn private_exceptions_stay_with_private_pages() {
+        let cb = ContentBlocker::default();
+        cb.set_blocker(Arc::new(blocker()));
+        let page = "https://news.test/story";
+        let mut private = SiteExceptions::default();
+        private.set_exempt(page, true);
+        cb.set_private_exceptions(&private);
+        assert!(!cb.should_block("https://ads.example.net/ad.js", page, "script", true));
+        assert!(cb.cosmetics(page, true).is_none());
+        assert!(cb.should_block("https://ads.example.net/ad.js", page, "script", false), "normal windows keep blocking");
+        assert!(cb.cosmetics(page, false).is_some());
+        assert_eq!(cb.private_exceptions(), private);
+        cb.set_private_exceptions(&SiteExceptions::default());
+        assert!(cb.should_block("https://ads.example.net/ad.js", page, "script", true));
     }
 
     #[test]
