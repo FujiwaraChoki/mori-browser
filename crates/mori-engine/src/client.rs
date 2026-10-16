@@ -486,6 +486,17 @@ wrap_load_handler! {
             });
         }
 
+        fn on_load_start(
+            &self,
+            _browser: Option<&mut Browser>,
+            frame: Option<&mut cef::Frame>,
+            _transition_type: TransitionType,
+        ) {
+            if let Some(frame) = frame {
+                crate::appearance::on_load_start(frame);
+            }
+        }
+
         fn on_load_end(
             &self,
             _browser: Option<&mut Browser>,
@@ -583,6 +594,7 @@ wrap_life_span_handler! {
             let (Some(view), Some(browser)) = (self.view.upgrade(), browser) else { return };
             *view.browser.borrow_mut() = Some(browser.clone());
             crate::devtools::attach(&view);
+            crate::appearance::attach(&view);
             if let Some(url) = view.pending_url.borrow_mut().take()
                 && let Some(frame) = browser.main_frame()
             {

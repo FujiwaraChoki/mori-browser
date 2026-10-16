@@ -348,6 +348,11 @@ pub fn take_dirty_views() -> Vec<ViewId> {
     DIRTY.with(|d| d.borrow_mut().drain().collect())
 }
 
+/// Every view that is still alive.
+pub(crate) fn all_views() -> Vec<Rc<ViewInner>> {
+    VIEWS.with(|v| v.borrow().values().filter_map(Weak::upgrade).collect())
+}
+
 pub(crate) fn close_all_views() {
     let views: Vec<Rc<ViewInner>> =
         VIEWS.with(|v| v.borrow().values().filter_map(Weak::upgrade).collect());

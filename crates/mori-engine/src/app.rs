@@ -40,12 +40,11 @@ wrap_app! {
                 Some(&CefString::from("ozone-platform")),
                 Some(&CefString::from(platform.as_str())),
             );
-            // Smooth scrolling and overlay scrollbars match Mori's chrome.
+            // Smooth scrolling matches Mori's chrome. (Overlay scrollbars
+            // follow GTK on Linux, which headless ozone never asks, so the
+            // `OverlayScrollbar` feature does nothing here; pages get a thin
+            // scrollbar style instead, see `appearance`.)
             switch("enable-smooth-scrolling");
-            command_line.append_switch_with_value(
-                Some(&CefString::from("enable-features")),
-                Some(&CefString::from("OverlayScrollbar")),
-            );
         }
 
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {
