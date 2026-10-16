@@ -23,6 +23,35 @@ pub fn host_matches(host: &str, domain: &str) -> bool {
                 && host.as_bytes()[host.len() - domain.len() - 1] == b'.'))
 }
 
+/// The site of `host` for "same site" checks: its last two labels, or three
+/// under a short second-level suffix like `co.uk` or `com.au`. An
+/// approximation of the public-suffix rules that is good enough to tell
+/// `mail.google.com` and `docs.google.com` apart from `example.com`.
+/// IP addresses are their own site.
+pub fn site_of(host: &str) -> &str {
+    let host = host.trim_end_matches('.');
+    if host.parse::<std::net::IpAddr>().is_ok() || host.starts_with('[') {
+        return host;
+    }
+    let labels: Vec<&str> = host.split('.').collect();
+    let n = labels.len();
+    if n <= 2 {
+        return host;
+    }
+    let short_suffix = labels[n - 1].len() == 2 && labels[n - 2].len() <= 3;
+    let keep = if short_suffix { 3 } else { 2 };
+    let start: usize = labels[..n - keep].iter().map(|l| l.len() + 1).sum();
+    &host[start..]
+}
+
+/// Whether two URLs belong to the same site (see [`site_of`]).
+pub fn same_site(a: &str, b: &str) -> bool {
+    match (host_of(a), host_of(b)) {
+        (Some(a), Some(b)) => site_of(&a) == site_of(&b),
+        _ => false,
+    }
+}
+
 /// Truncate to at most `max` characters (not bytes).
 pub fn truncate_chars(s: &str, max: usize) -> &str {
     match s.char_indices().nth(max) {
@@ -48,5 +77,18 @@ mod tests {
         assert!(host_matches("example.com", "example.com"));
         assert!(!host_matches("badexample.com", "example.com"));
         assert_eq!(truncate_chars("héllo", 2), "hé");
+    }
+
+    #[test]
+    fn sites() {
+        assert_eq!(site_of("mail.google.com"), "google.com");
+        assert_eq!(site_of("google.com"), "google.com");
+        assert_eq!(site_of("a.b.example.co.uk"), "example.co.uk");
+        assert_eq!(site_of("www.abc.net.au"), "abc.net.au");
+        assert_eq!(site_of("localhost"), "localhost");
+        assert_eq!(site_of("192.168.1.10"), "192.168.1.10");
+        assert!(same_site("https://mail.google.com/x", "https://accounts.google.com/y"));
+        assert!(!same_site("https://x.com/home", "https://github.com/"));
+        assert!(!same_site("about:blank", "about:blank"));
     }
 }

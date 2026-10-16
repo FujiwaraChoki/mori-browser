@@ -13,3 +13,5 @@ serde_json = { workspace = true, features = ["float_roundtrip"] }
 url.workspace = true
 uuid.workspace = true
 dirs.workspace = true
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+lz4_flex = { version = "0.14.0", default-features = false, features = ["std", "safe-decode", "safe-encode", "checked-decode"] }
