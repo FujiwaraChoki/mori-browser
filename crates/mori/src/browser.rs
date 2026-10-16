@@ -1741,6 +1741,11 @@ impl Browser {
     /// covered pages are hidden and keyboard focus moves to the window (the
     /// covered page can't take keys); closing gives focus back to the page.
     pub fn set_settings_open(&mut self, open: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if open && !self.settings_open {
+            // The cookie list read on an earlier visit is out of date.
+            self.privacy.cookie_sites = None;
+            self.privacy.confirm_remove_cookies = false;
+        }
         self.settings_open = open;
         // Pages covered by Settings stop painting.
         self.sync_view_visibility(cx);

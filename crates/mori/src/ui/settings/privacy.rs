@@ -321,25 +321,45 @@ impl Browser {
             Some(list) if list.is_empty() => hint("No site keeps cookies right now.", cx).into_any_element(),
             Some(list) => {
                 let total: usize = list.iter().map(|(_, n)| n).sum();
+                // Removing every cookie signs the user out everywhere: ask
+                // once more.
+                let header = if self.privacy.confirm_remove_cookies {
+                    h_flex()
+                        .gap_2()
+                        .child(div().flex_1().child(hint("Remove all cookies and site data? You'll be signed out of most sites.", cx)))
+                        .child(text_button("cookies-remove-cancel", "Cancel", false, cx).on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.privacy.confirm_remove_cookies = false;
+                                cx.notify();
+                            },
+                        )))
+                        .child(text_button("cookies-remove-confirm", "Remove All", true, cx).on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.privacy.confirm_remove_cookies = false;
+                                let opts = ClearOptions {
+                                    history: false,
+                                    cookies: true,
+                                    cache: false,
+                                    downloads: false,
+                                    range: TimeRange::AllTime,
+                                };
+                                this.clear_browsing_data(opts, cx);
+                            },
+                        )))
+                } else {
+                    h_flex()
+                        .gap_3()
+                        .child(div().flex_1().child(hint(format!("{} · {}", count_label(list.len(), "site", "sites"), count_label(total, "cookie", "cookies")), cx)))
+                        .child(text_button("cookies-remove-all", "Remove All", false, cx).on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.privacy.confirm_remove_cookies = true;
+                                cx.notify();
+                            },
+                        )))
+                };
                 v_flex()
                     .gap_1()
-                    .child(
-                        h_flex()
-                            .gap_3()
-                            .child(div().flex_1().child(hint(format!("{} sites · {total} cookies", list.len()), cx)))
-                            .child(text_button("cookies-remove-all", "Remove All", false, cx).on_click(cx.listener(
-                                |this, _, _, cx| {
-                                    let opts = ClearOptions {
-                                        history: false,
-                                        cookies: true,
-                                        cache: false,
-                                        downloads: false,
-                                        range: TimeRange::AllTime,
-                                    };
-                                    this.clear_browsing_data(opts, cx);
-                                },
-                            ))),
-                    )
+                    .child(header)
                     .child(
                         div().id("cookie-sites").max_h(px(320.)).overflow_y_scroll().children(list.iter().enumerate().map(
                             |(i, (site, count))| {
@@ -353,7 +373,7 @@ impl Browser {
                                         div()
                                             .text_size(metrics::TEXT_LABEL)
                                             .text_color(t.muted_foreground)
-                                            .child(if *count == 1 { "1 cookie".to_string() } else { format!("{count} cookies") }),
+                                            .child(count_label(*count, "cookie", "cookies")),
                                     )
                                     .child(icon_button(("cookie-del", i), "trash", px(24.), true, cx).on_click(cx.listener(
                                         move |this, _, _, cx| this.remove_cookie_site(&site_owned, cx),
@@ -376,6 +396,11 @@ impl Browser {
     }
 }
 
+/// `1 cookie`, `3 cookies`.
+fn count_label(n: usize, one: &str, many: &str) -> String {
+    if n == 1 { format!("1 {one}") } else { format!("{n} {many}") }
+}
+
 /// `112948` → `112,948`.
 fn group_digits(n: usize) -> String {
     let digits = n.to_string();
@@ -391,7 +416,14 @@ fn group_digits(n: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::group_digits;
+    use super::{count_label, group_digits};
+
+    #[test]
+    fn counts() {
+        assert_eq!(count_label(1, "site", "sites"), "1 site");
+        assert_eq!(count_label(0, "site", "sites"), "0 sites");
+        assert_eq!(count_label(12, "cookie", "cookies"), "12 cookies");
+    }
 
     #[test]
     fn groups_digits() {

@@ -318,10 +318,12 @@ const PAGE_BRIDGE_SCRIPT: &str = r#"(() => {
   const NativeNotification = window.Notification;
   if (NativeNotification && secure) {
     const nativePermission = Object.getOwnPropertyDescriptor(NativeNotification, 'permission');
+    // Chromium's content setting (which Mori writes before answering) is
+    // the truth, so a change in Mori's site settings shows at once; the
+    // last answer only stands in if it can't be read.
     let decided = null;
     const permission = () => {
-      if (decided) return decided;
-      try { return nativePermission.get.call(NativeNotification); } catch (e) { return 'default'; }
+      try { return nativePermission.get.call(NativeNotification); } catch (e) { return decided || 'default'; }
     };
     const live = new Map();
     const fire = (n, type) => {

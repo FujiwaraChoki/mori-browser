@@ -61,6 +61,8 @@ pub struct PrivacyState {
     /// Sites with cookies and how many, once loaded for the settings page.
     pub cookie_sites: Option<Vec<(String, usize)>>,
     pub loading_cookies: bool,
+    /// "Remove All" cookies was clicked once and waits for confirmation.
+    pub confirm_remove_cookies: bool,
 }
 
 impl PrivacyState {
