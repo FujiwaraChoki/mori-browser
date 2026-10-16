@@ -18,6 +18,8 @@ actions!(
         ReopenClosedTab,
         NextTab,
         PrevTab,
+        SwitchRecentTab,
+        SwitchRecentTabBack,
         Reload,
         HardReload,
         Stop,
@@ -45,6 +47,9 @@ actions!(
         SleepBackgroundTabs,
         ToggleReader,
         CaptureVisibleTab,
+        Capture,
+        ShowShortcuts,
+        ToggleCompactMode,
         ToggleFullscreen,
         ShowLibrary,
         ShowDownloads,
@@ -133,10 +138,10 @@ fn browser_bindings() -> Vec<(&'static str, KeyBinding)> {
         "alt-d" => OpenLocation,
         "secondary-w" => CloseTab,
         "secondary-shift-t" => ReopenClosedTab,
-        "ctrl-tab" => NextTab,
+        "ctrl-tab" => SwitchRecentTab,
         "ctrl-pagedown" => NextTab,
         "secondary-alt-down" => NextTab,
-        "ctrl-shift-tab" => PrevTab,
+        "ctrl-shift-tab" => SwitchRecentTabBack,
         "ctrl-pageup" => PrevTab,
         "secondary-alt-up" => PrevTab,
         "secondary-r" => Reload,
@@ -172,6 +177,9 @@ fn browser_bindings() -> Vec<(&'static str, KeyBinding)> {
         "secondary-shift-b" => BoostSite,
         "secondary-alt-s" => SleepBackgroundTabs,
         "secondary-alt-r" => ToggleReader,
+        "secondary-shift-x" => Capture,
+        "secondary-/" => ShowShortcuts,
+        "secondary-alt-c" => ToggleCompactMode,
         "f11" => ToggleFullscreen,
         "secondary-y" => ShowLibrary,
         "secondary-h" => ShowLibrary,
@@ -224,6 +232,99 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys(bindings);
 }
 
+/// What a bound action does and its cheatsheet section, by action name.
+/// Every action with a default binding has an entry (see the tests), so the
+/// cheatsheet always shows the real bindings.
+fn describe(action: &str) -> Option<(&'static str, &'static str)> {
+    let name = action.strip_prefix("mori::")?;
+    Some(match name {
+        "NewTab" => ("New tab", "Tabs"),
+        "CloseTab" => ("Close tab", "Tabs"),
+        "ReopenClosedTab" => ("Reopen closed tab", "Tabs"),
+        "SwitchRecentTab" => ("Switch to recent tab (hold Ctrl)", "Tabs"),
+        "SwitchRecentTabBack" => ("Switch to recent tab, backwards", "Tabs"),
+        "NextTab" => ("Next tab", "Tabs"),
+        "PrevTab" => ("Previous tab", "Tabs"),
+        "DuplicateTab" => ("Duplicate tab", "Tabs"),
+        "TogglePin" => ("Pin or unpin tab", "Tabs"),
+        "SleepBackgroundTabs" => ("Sleep background tabs", "Tabs"),
+        "SelectTab1" => ("Go to tab 1–8", "Tabs"),
+        "SelectTab2" => ("Go to tab 1–8", "Tabs"),
+        "SelectTab3" => ("Go to tab 1–8", "Tabs"),
+        "SelectTab4" => ("Go to tab 1–8", "Tabs"),
+        "SelectTab5" => ("Go to tab 1–8", "Tabs"),
+        "SelectTab6" => ("Go to tab 1–8", "Tabs"),
+        "SelectTab7" => ("Go to tab 1–8", "Tabs"),
+        "SelectTab8" => ("Go to tab 1–8", "Tabs"),
+        "SelectLastTab" => ("Go to last tab", "Tabs"),
+        "CloseSplit" => ("Close split view", "Tabs"),
+        "OpenLocation" => ("Edit address", "Navigation"),
+        "Back" => ("Back", "Navigation"),
+        "Forward" => ("Forward", "Navigation"),
+        "Reload" => ("Reload", "Navigation"),
+        "HardReload" => ("Reload, ignoring cache", "Navigation"),
+        "Stop" => ("Stop loading", "Navigation"),
+        "GoHome" => ("Home page", "Navigation"),
+        "PeekClipboard" => ("Peek link on clipboard", "Navigation"),
+        "Find" => ("Find in page", "Page"),
+        "FindNext" => ("Find next", "Page"),
+        "FindPrev" => ("Find previous", "Page"),
+        "ZoomIn" => ("Zoom in", "Page"),
+        "ZoomOut" => ("Zoom out", "Page"),
+        "ZoomReset" => ("Actual size", "Page"),
+        "CopyUrl" => ("Copy URL", "Page"),
+        "ToggleBookmark" => ("Bookmark page", "Page"),
+        "ToggleReader" => ("Reader view", "Page"),
+        "Print" => ("Print", "Page"),
+        "Capture" => ("Capture", "Page"),
+        "BoostSite" => ("Boost this site", "Page"),
+        "ToggleDevTools" => ("Developer tools", "Page"),
+        "SelectSpace1" => ("Go to space 1–9", "Spaces"),
+        "SelectSpace2" => ("Go to space 1–9", "Spaces"),
+        "SelectSpace3" => ("Go to space 1–9", "Spaces"),
+        "SelectSpace4" => ("Go to space 1–9", "Spaces"),
+        "SelectSpace5" => ("Go to space 1–9", "Spaces"),
+        "SelectSpace6" => ("Go to space 1–9", "Spaces"),
+        "SelectSpace7" => ("Go to space 1–9", "Spaces"),
+        "SelectSpace8" => ("Go to space 1–9", "Spaces"),
+        "SelectSpace9" => ("Go to space 1–9", "Spaces"),
+        "ToggleSidebar" => ("Show or hide sidebar", "Window"),
+        "ToggleCompactMode" => ("Compact mode", "Window"),
+        "ToggleFullscreen" => ("Full screen", "Window"),
+        "ShowLibrary" => ("History & bookmarks", "Window"),
+        "ShowDownloads" => ("Downloads", "Window"),
+        "ToggleAssistant" => ("Assistant", "Window"),
+        "OpenSettings" => ("Settings", "Window"),
+        "ShowShortcuts" => ("Keyboard shortcuts", "Window"),
+        "Dismiss" => ("Close overlay", "Window"),
+        "Quit" => ("Quit Mori", "Window"),
+        _ => return None,
+    })
+}
+
+/// The cheatsheet's rows, built from the default key bindings: one row per
+/// description with all its keys, in binding order (Ctrl+1…8 share a row).
+pub fn cheatsheet_entries() -> Vec<mori_core::cheatsheet::Entry> {
+    let mut out: Vec<mori_core::cheatsheet::Entry> = Vec::new();
+    for (keys, binding) in browser_bindings() {
+        let Some((title, group)) = describe(binding.action().name()) else { continue };
+        let label = shortcut_label(keys);
+        match out.iter_mut().find(|e| e.title == title) {
+            Some(e) => {
+                if !e.keys.contains(&label) {
+                    e.keys.push(label);
+                }
+            }
+            None => out.push(mori_core::cheatsheet::Entry {
+                title: title.to_string(),
+                group,
+                keys: vec![label],
+            }),
+        }
+    }
+    out
+}
+
 /// Human-readable shortcut for menus and the launcher, e.g. "Ctrl+Shift+T".
 pub fn shortcut_label(keys: &str) -> String {
     let secondary = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" };
@@ -260,7 +361,7 @@ pub fn shortcut_label(keys: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{RESERVED, browser_bindings, shortcut_label};
+    use super::{RESERVED, browser_bindings, cheatsheet_entries, describe, shortcut_label};
 
     #[test]
     fn reserved_shortcuts_are_bound_and_page_shortcuts_are_not_reserved() {
@@ -278,11 +379,27 @@ mod tests {
     }
 
     #[test]
+    fn every_binding_is_on_the_cheatsheet() {
+        for (keys, binding) in browser_bindings() {
+            let name = binding.action().name();
+            assert!(describe(name).is_some(), "{name} ({keys}) has no cheatsheet entry");
+        }
+        let entries = cheatsheet_entries();
+        let reload = entries.iter().find(|e| e.title == "Reload").unwrap();
+        // Both of its bindings, on one row.
+        assert_eq!(reload.keys.len(), 2);
+        assert!(entries.iter().any(|e| e.title == "Keyboard shortcuts"));
+        let ordinals = entries.iter().find(|e| e.title == "Go to tab 1–8").unwrap();
+        assert_eq!(ordinals.keys.len(), 8);
+    }
+
+    #[test]
     #[cfg(not(target_os = "macos"))]
     fn labels() {
         assert_eq!(shortcut_label("secondary-shift-t"), "Ctrl+Shift+T");
         assert_eq!(shortcut_label("secondary--"), "Ctrl+-");
         assert_eq!(shortcut_label("f12"), "F12");
         assert_eq!(shortcut_label("alt-left"), "Alt+Left");
+        assert_eq!(shortcut_label("secondary-/"), "Ctrl+/");
     }
 }

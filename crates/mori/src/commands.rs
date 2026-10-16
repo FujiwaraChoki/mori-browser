@@ -15,6 +15,11 @@ pub enum Command {
     NewFolderWithSelected,
     ReaderView,
     CaptureVisibleTab,
+    Capture,
+    CaptureFullPage,
+    KeyboardShortcuts,
+    ToggleCompactMode,
+    ImportBrowserData,
     BoostSite,
     ZapElement,
     PeekClipboard,
@@ -63,6 +68,8 @@ pub fn available(browser: &Browser) -> Vec<CommandInfo> {
     add(NewTab, "New Tab", "open blank", "plus", Some("secondary-t"));
     add(ReaderView, "Reader View", "read article distraction", "book-open-text", Some("secondary-alt-r"));
     add(CaptureVisibleTab, "Capture Visible Tab", "screenshot image", "camera", None);
+    add(Capture, "Capture…", "screenshot region area image crop", "scan", Some("secondary-shift-x"));
+    add(CaptureFullPage, "Capture Full Page", "screenshot whole long image", "scan-line", None);
     add(BoostSite, "Boost This Site…", "css js customize", "zap", Some("secondary-shift-b"));
     add(ZapElement, "Zap an Element", "hide remove element boost", "eraser", None);
     add(PeekClipboard, "Peek a Link", "preview clipboard", "eye", Some("secondary-shift-o"));
@@ -70,6 +77,15 @@ pub fn available(browser: &Browser) -> Vec<CommandInfo> {
     add(ReopenClosedTab, "Reopen Closed Tab", "undo restore", "rotate-ccw", Some("secondary-shift-t"));
     add(FindInPage, "Find in Page", "search text", "search", Some("secondary-f"));
     add(ToggleSidebar, "Toggle Sidebar", "hide show", "panel-left", Some("secondary-s"));
+    add(
+        ToggleCompactMode,
+        if browser.settings.compact_mode { "Exit Compact Mode" } else { "Compact Mode" },
+        "hide sidebar focus zen fullscreen",
+        "panel-left-close",
+        Some("secondary-alt-c"),
+    );
+    add(KeyboardShortcuts, "Keyboard Shortcuts", "keys cheatsheet hotkeys help", "keyboard", Some("secondary-/"));
+    add(ImportBrowserData, "Import from Another Browser…", "chrome firefox zen arc bookmarks history migrate", "import", None);
     add(Settings, "Settings", "preferences options", "settings", Some("secondary-,"));
     add(Library, "History & Bookmarks", "library archive", "library", Some("secondary-y"));
     add(Downloads, "Downloads", "files", "download", Some("secondary-shift-j"));
@@ -123,6 +139,17 @@ pub fn run(b: &mut Browser, command: Command, window: &mut Window, cx: &mut Cont
         }
         ReaderView => b.toggle_reader(cx),
         CaptureVisibleTab => crate::screenshot::capture_visible_tab(b, cx),
+        Capture => b.start_capture(window, cx),
+        CaptureFullPage => match b.active_tab() {
+            Some(tab) => {
+                let destination = b.capture_destination;
+                b.capture_full_page(tab, destination, cx);
+            }
+            None => b.toast("Open a web page to capture it", ToastStyle::Info, None, cx),
+        },
+        KeyboardShortcuts => b.toggle_cheatsheet(window, cx),
+        ToggleCompactMode => b.toggle_compact_mode(cx),
+        ImportBrowserData => b.show_settings(crate::ui::settings::SettingsCategory::Import, window, cx),
         BoostSite => b.open_boost_editor(window, cx),
         ZapElement => b.start_zap(cx),
         PeekClipboard => peek_clipboard(b, window, cx),

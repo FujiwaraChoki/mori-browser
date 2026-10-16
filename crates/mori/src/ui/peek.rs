@@ -1,11 +1,14 @@
 //! Peek: a link previewed in a large card over the page, like Zen's Glance
 //! and Arc's Peek. The page behind dims, the sidebar stays as it is, and a
 //! column of round buttons beside the card closes the preview, opens it as a
-//! tab, or opens it in a split.
+//! tab, or opens it in a split. Links from pinned tabs to other sites open
+//! here too (Arc), so a pinned tab stays on its own site.
 
 use std::time::Duration;
 
 use gpui_kit::*;
+
+use mori_core::workspace::TabId;
 
 use crate::{
     browser::{Browser, PageOwner},
@@ -35,7 +38,7 @@ impl Browser {
             // Nothing painted yet (settings, new-tab page): the card column.
             let viewport = window.viewport_size();
             let inset = metrics::CARD_INSET;
-            let sidebar = if self.settings.sidebar_visible {
+            let sidebar = if self.settings.docks_sidebar() {
                 px(self.settings.clamped_sidebar_width()) + inset
             } else {
                 px(0.)
@@ -47,6 +50,44 @@ impl Browser {
                 size(viewport.width - left - right, viewport.height - inset * 2.),
             )
         })
+    }
+
+    /// Install or turn off the pinned-tab link hook in `tab`'s page, for its
+    /// current pin state and the setting.
+    pub fn sync_pinned_peek(&self, tab: TabId) {
+        let Some(live) = self.live.get(&tab) else { return };
+        if self.settings.peek_links_from_pinned && self.ws.is_pinned(tab) {
+            live.view.execute_js(mori_core::page_actions::PINNED_PEEK_SCRIPT);
+        } else {
+            live.view.execute_js(mori_core::page_actions::PINNED_PEEK_OFF_SCRIPT);
+        }
+    }
+
+    /// Install or turn off the hook in every loaded page (the setting
+    /// changed).
+    pub fn sync_all_pinned_peek(&self) {
+        for tab in self.live.keys() {
+            self.sync_pinned_peek(*tab);
+        }
+    }
+
+    /// A pinned tab's page asked to peek a link the user clicked. Only
+    /// honoured right after a real click in a page on screen (any page can
+    /// log the marker); if the tab is no longer pinned or the setting is
+    /// off, the link opens in the tab as it would have.
+    pub fn on_pinned_peek_request(&mut self, tab: TabId, url: String, window: &mut Window, cx: &mut Context<Self>) {
+        let clicked = self.click_at.take().is_some_and(|t| t.elapsed() < Duration::from_secs(2));
+        let on_screen = self.selected() == Some(tab) || self.split == Some(tab);
+        if !clicked || !on_screen {
+            return;
+        }
+        let page = self.ws.tab(tab).map(|t| t.url.clone()).unwrap_or_default();
+        let wanted = self.settings.peek_links_from_pinned && self.ws.is_pinned(tab);
+        if wanted && !mori_core::util::same_site(&page, &url) {
+            self.peek_url(&url, window, cx);
+        } else {
+            self.navigate(tab, &url, window, cx);
+        }
     }
 
     /// Card bounds for a peek shown over `area`.

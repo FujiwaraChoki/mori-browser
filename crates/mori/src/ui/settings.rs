@@ -36,16 +36,18 @@ pub enum SettingsCategory {
     Tabs,
     Sites,
     Assistant,
+    Import,
     About,
 }
 
 impl SettingsCategory {
-    pub const ALL: [SettingsCategory; 6] = [
+    pub const ALL: [SettingsCategory; 7] = [
         SettingsCategory::General,
         SettingsCategory::Appearance,
         SettingsCategory::Tabs,
         SettingsCategory::Sites,
         SettingsCategory::Assistant,
+        SettingsCategory::Import,
         SettingsCategory::About,
     ];
 
@@ -56,6 +58,7 @@ impl SettingsCategory {
             SettingsCategory::Tabs => "Tabs",
             SettingsCategory::Sites => "Sites",
             SettingsCategory::Assistant => "Assistant",
+            SettingsCategory::Import => "Import",
             SettingsCategory::About => "About Mori",
         }
     }
@@ -67,6 +70,7 @@ impl SettingsCategory {
             SettingsCategory::Tabs => "app-window",
             SettingsCategory::Sites => "globe",
             SettingsCategory::Assistant => "sparkles",
+            SettingsCategory::Import => "import",
             SettingsCategory::About => "info",
         }
     }
@@ -185,6 +189,16 @@ fn toggle(
     on_change: impl Fn(&mut Browser, bool) + 'static,
     cx: &mut Context<Browser>,
 ) -> Stateful<Div> {
+    toggle_with(id, on, move |b, v, _| on_change(b, v), cx)
+}
+
+/// [`toggle`] for changes that need the context (animations, timers).
+fn toggle_with(
+    id: impl Into<ElementId>,
+    on: bool,
+    on_change: impl Fn(&mut Browser, bool, &mut Context<Browser>) + 'static,
+    cx: &mut Context<Browser>,
+) -> Stateful<Div> {
     let t = cx.tokens().clone();
     div()
         .id(id)
@@ -204,7 +218,7 @@ fn toggle(
                 .when(on, |s| s.ml(px(16.))),
         )
         .on_click(cx.listener(move |this, _, _, cx| {
-            on_change(this, !on);
+            on_change(this, !on, cx);
             this.schedule_save(cx);
             cx.notify();
         }))
@@ -328,6 +342,7 @@ impl Browser {
             SettingsCategory::Tabs => self.render_tab_settings(cx).into_any_element(),
             SettingsCategory::Sites => self.render_site_settings(window, cx).into_any_element(),
             SettingsCategory::Assistant => self.render_assistant_settings(cx).into_any_element(),
+            SettingsCategory::Import => self.render_import_settings(cx).into_any_element(),
             SettingsCategory::About => self.render_about_settings(cx).into_any_element(),
         };
 
@@ -585,7 +600,13 @@ impl Browser {
                                 cx,
                             ),
                             cx,
-                        )),
+                        ))
+                        .child(field(
+                            "Compact mode",
+                            toggle_with("compact-mode", s.compact_mode, |b, _, cx| b.toggle_compact_mode(cx), cx),
+                            cx,
+                        ))
+                        .child(hint("The page fills the window; touch the window edge for the sidebar (Ctrl+Alt+C).", cx)),
                 ),
             )
             .child(
@@ -662,6 +683,51 @@ impl Browser {
                         .child(hint("Unpinned tabs move to the archive in History & Bookmarks.", cx)),
                 ),
             )
+            .child(
+                section("Switching & links", cx).child(
+                    card(cx)
+                        .child(field(
+                            "Recent-first Ctrl+Tab",
+                            toggle(
+                                "ctrl-tab-recent",
+                                s.ctrl_tab_recent_order,
+                                |b, on| b.settings.ctrl_tab_recent_order = on,
+                                cx,
+                            ),
+                            cx,
+                        ))
+                        .child(hint("Hold Ctrl and press Tab to pick from recently used tabs; off, Ctrl+Tab goes down the sidebar.", cx))
+                        .child(field(
+                            "Peek links from pinned",
+                            toggle(
+                                "pinned-peek",
+                                s.peek_links_from_pinned,
+                                |b, on| {
+                                    b.settings.peek_links_from_pinned = on;
+                                    b.sync_all_pinned_peek();
+                                },
+                                cx,
+                            ),
+                            cx,
+                        ))
+                        .child(hint("Links from pinned tabs to other sites open in Peek, so the pinned tab stays put.", cx)),
+                ),
+            )
+    }
+
+    fn render_import_settings(&mut self, cx: &mut Context<Self>) -> Div {
+        v_flex().gap(px(22.)).child(
+            section("Import from another browser", cx).child(
+                card(cx)
+                    .child(self.render_import_panel(cx))
+                    .child(hint(
+                        "Bookmarks go to History & Bookmarks. Open tabs, Zen workspaces and Arc spaces become new \
+                         spaces with their pinned tabs and folders; Zen essentials and Arc favorites are pinned. \
+                         Nothing is imported twice, and the other browser's files are only read.",
+                        cx,
+                    )),
+            ),
+        )
     }
 
     fn render_site_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Div {

@@ -1,9 +1,13 @@
 //! Window layout: the unified chrome surface, sidebar, web card, assistant
-//! panel, and every overlay, plus action routing.
+//! panel, and every overlay, plus action routing. Also compact mode (Zen):
+//! the sidebar leaves the layout, the page fills the window, and touching
+//! the window edge slides the sidebar in over the page.
+
+use std::time::Duration;
 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use mori_core::settings::SidebarPosition;
+use mori_core::settings::{Settings, SidebarPosition};
 
 use crate::{
     actions::*,
@@ -16,11 +20,125 @@ use crate::{
     },
 };
 
+/// How long the docked sidebar takes to slide in or out.
+const SIDEBAR_MOTION: Duration = Duration::from_millis(200);
+/// The floating sidebar's slide in / out.
+const SIDEBAR_PEEK_IN: Duration = Duration::from_millis(180);
+const SIDEBAR_PEEK_OUT: Duration = Duration::from_millis(140);
+/// The page's margin to the window edges in compact mode.
+const COMPACT_INSET: Pixels = px(4.);
+
+/// The page's margin to the window edges and the sidebar.
+pub fn card_inset(settings: &Settings) -> Pixels {
+    if settings.compact_mode { COMPACT_INSET } else { metrics::CARD_INSET }
+}
+
+/// Sidebar slide animations.
+#[derive(Default)]
+pub struct SidebarFx {
+    /// The docked sidebar sliding in (`true`) or out, with its animation id.
+    motion: Option<(bool, usize)>,
+    /// The floating sidebar playing its slide-out.
+    peek_leaving: bool,
+    /// Bumped per animation so each starts from its beginning.
+    serial: usize,
+    _motion_done: Option<Task<()>>,
+    _peek_done: Option<Task<()>>,
+}
+
+impl SidebarFx {
+    pub fn peek_leaving(&self) -> bool {
+        self.peek_leaving
+    }
+}
+
 impl Browser {
+    /// Show or hide the docked sidebar and turn compact mode on or off,
+    /// sliding the sidebar in or out.
+    pub fn set_sidebar_layout(&mut self, visible: bool, compact: bool, cx: &mut Context<Self>) {
+        let was_docked = self.settings.docks_sidebar();
+        self.settings.sidebar_visible = visible;
+        self.settings.compact_mode = compact;
+        let docked = self.settings.docks_sidebar();
+        self.sidebar_peek = false;
+        self.sidebar_fx.peek_leaving = false;
+        self.sidebar_hide = None;
+        if was_docked != docked {
+            self.sidebar_fx.serial += 1;
+            self.sidebar_fx.motion = Some((docked, self.sidebar_fx.serial));
+            self.sidebar_fx._motion_done = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(SIDEBAR_MOTION).await;
+                this.update(cx, |this, cx| {
+                    this.sidebar_fx.motion = None;
+                    cx.notify();
+                })
+                .ok();
+            }));
+        }
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    /// Ctrl+Alt+C: compact mode on or off.
+    pub fn toggle_compact_mode(&mut self, cx: &mut Context<Self>) {
+        let compact = !self.settings.compact_mode;
+        // Leaving compact mode brings the sidebar back.
+        let visible = self.settings.sidebar_visible || !compact;
+        self.set_sidebar_layout(visible, compact, cx);
+        if compact {
+            let side = match self.settings.sidebar_position {
+                SidebarPosition::Left => "left",
+                SidebarPosition::Right => "right",
+            };
+            self.toast(
+                format!("Compact mode: touch the {side} edge for the sidebar"),
+                crate::browser::ToastStyle::Info,
+                None,
+                cx,
+            );
+        }
+    }
+
+    /// Slide the floating sidebar in (the pointer touched the window edge).
+    pub fn show_sidebar_peek(&mut self, cx: &mut Context<Self>) {
+        self.sidebar_peek = true;
+        self.sidebar_fx.peek_leaving = false;
+        self.sidebar_fx._peek_done = None;
+        self.sidebar_fx.serial += 1;
+        cx.notify();
+    }
+
+    /// Slide the floating sidebar out, then drop it.
+    pub fn hide_sidebar_peek(&mut self, cx: &mut Context<Self>) {
+        if !self.sidebar_peek || self.sidebar_fx.peek_leaving {
+            return;
+        }
+        self.sidebar_fx.peek_leaving = true;
+        self.sidebar_fx.serial += 1;
+        self.sidebar_fx._peek_done = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SIDEBAR_PEEK_OUT).await;
+            this.update(cx, |this, cx| {
+                if this.sidebar_fx.peek_leaving {
+                    this.sidebar_fx.peek_leaving = false;
+                    this.sidebar_peek = false;
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
+        cx.notify();
+    }
+
     fn dismiss(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // Esc priority chain from the original app; if nothing handles it,
         // the key goes on to the page.
-        if self.zapping.is_some() {
+        if self.tab_switcher.is_some() {
+            self.cancel_tab_switcher(window, cx);
+        } else if self.capture.is_some() {
+            self.cancel_capture(window, cx);
+        } else if self.cheatsheet.is_some() {
+            self.close_cheatsheet(window, cx);
+        } else if self.zapping.is_some() {
             self.finish_zap(cx);
         } else if self.cancel_front_modal(window, cx) {
             // A page's dialog or sign-in prompt took the key.
@@ -63,7 +181,7 @@ impl Browser {
     /// The space's gradient wash (and grain), filling its parent. `radius`
     /// rounds the wash to match a rounded parent; GPUI's clipping is
     /// rectangular, so `overflow_hidden` alone leaves square corners.
-    fn render_wash(&self, radius: Pixels, cx: &App) -> Option<AnyElement> {
+    pub(crate) fn render_wash(&self, radius: Pixels, cx: &App) -> Option<AnyElement> {
         let t = cx.tokens();
         let wash = t.wash.clone()?;
         let grain = t.grain.clone();
@@ -461,16 +579,55 @@ impl Render for Browser {
         self.sync_view_visibility(cx);
         let t = cx.tokens().clone();
         let fullscreen = self.selected_live().is_some_and(|l| l.fullscreen);
-        let show_sidebar = self.settings.sidebar_visible && !fullscreen;
+        let docked = self.settings.docks_sidebar() && !fullscreen;
+        let motion = self.sidebar_fx.motion.filter(|_| !fullscreen);
+        // The layout takes its final shape at once (the page is resized
+        // once, not on every frame of the slide); the sidebar slides over it.
+        let show_sidebar = docked;
         let left = self.settings.sidebar_position == SidebarPosition::Left;
-        let inset = if fullscreen { px(0.) } else { metrics::CARD_INSET };
+        let inset = if fullscreen { px(0.) } else { card_inset(&self.settings) };
         let loading = !self.settings_open
             && !fullscreen
             && (self.selected_live().is_some_and(|l| l.loading)
                 || self.split.and_then(|id| self.live.get(&id)).is_some_and(|l| l.loading));
 
-        let sidebar = show_sidebar.then(|| self.render_sidebar(false, window, cx));
-        let resize_handle = show_sidebar.then(|| self.render_resize_handle(left, cx));
+        let sidebar_width = px(self.sidebar_drag.unwrap_or(self.settings.clamped_sidebar_width()));
+        let sidebar_column = show_sidebar.then(|| {
+            if motion.is_some() {
+                // Sliding in: the room is made, the sidebar arrives on top.
+                return div().w(sidebar_width + px(8.)).h_full().flex_none().into_any_element();
+            }
+            let sidebar = self.render_sidebar(false, window, cx).into_any_element();
+            let handle = self.render_resize_handle(left, cx).into_any_element();
+            let column = h_flex().h_full().flex_none().items_stretch();
+            if left { column.child(sidebar).child(handle) } else { column.child(handle).child(sidebar) }.into_any_element()
+        });
+        // The docked sidebar sliding in or out, opaque over the page.
+        let sliding = motion.map(|(showing, serial)| {
+            let sidebar = self.render_sidebar(false, window, cx);
+            let travel = sidebar_width + px(8.);
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .w(sidebar_width)
+                .when(left, |s| s.left_0())
+                .when(!left, |s| s.right_0())
+                .bg(t.sidebar)
+                .overflow_hidden()
+                .occlude()
+                .children(self.render_wash(px(0.), cx))
+                .child(sidebar)
+                .with_animation(
+                    ("sidebar-motion", serial),
+                    Animation::new(SIDEBAR_MOTION).with_easing(ease_in_out),
+                    move |el, delta| {
+                        let shown = if showing { delta } else { 1. - delta };
+                        let offset = -(travel * (1. - shown));
+                        if left { el.left(offset) } else { el.right(offset) }
+                    },
+                )
+        });
         let card = self.render_card(window, cx);
         let split_card = (!self.settings_open && !fullscreen)
             .then(|| self.render_split_card(cx))
@@ -512,22 +669,23 @@ impl Render for Browser {
         let mut row = h_flex().size_full().items_stretch();
         if left {
             row = row
-                .children(sidebar)
-                .children(resize_handle)
+                .children(sidebar_column)
                 .child(web_column)
                 .children(assistant.map(|a| a.into_any_element()));
         } else {
             row = row
                 .children(assistant.map(|a| a.into_any_element()))
                 .child(web_column)
-                .children(resize_handle)
-                .children(sidebar);
+                .children(sidebar_column);
         }
 
-        // Hidden sidebar: touching the window edge reveals it as a card
-        // (see `track_sidebar_peek`).
-        let floating = (self.sidebar_peek && !show_sidebar && !fullscreen).then(|| {
+        // Hidden sidebar (and compact mode): touching the window edge slides
+        // it in as a card over the page (see `track_sidebar_peek`).
+        let floating = (self.sidebar_peek && !show_sidebar && motion.is_none() && !fullscreen).then(|| {
             let sidebar = self.render_sidebar(true, window, cx);
+            let leaving = self.sidebar_fx.peek_leaving;
+            let serial = self.sidebar_fx.serial;
+            let travel = px(self.settings.clamped_sidebar_width()) + px(16.);
             // Opaque, with the space's wash painted inside it, so the page
             // never reads through the tab list.
             div()
@@ -552,6 +710,17 @@ impl Render for Browser {
                 .occlude()
                 .children(self.render_wash(metrics::RADIUS, cx))
                 .child(sidebar)
+                .with_animation(
+                    (if leaving { "sidebar-peek-out" } else { "sidebar-peek-in" }, serial),
+                    Animation::new(if leaving { SIDEBAR_PEEK_OUT } else { SIDEBAR_PEEK_IN })
+                        .with_easing(ease_out_quint()),
+                    move |el, delta| {
+                        let shown = if leaving { 1. - delta } else { delta };
+                        let offset = px(4.) - travel * (1. - shown);
+                        let el = el.opacity(0.4 + 0.6 * shown);
+                        if left { el.left(offset) } else { el.right(offset) }
+                    },
+                )
         });
 
         let launcher = self.launcher.clone();
@@ -577,15 +746,27 @@ impl Render for Browser {
             None
         };
         let boost = self.boost_editor.clone();
+        let capture = self.render_capture(cx);
+        let tab_hover = self.render_tab_hover(window, cx);
+        let cheatsheet = self.render_cheatsheet();
+        let tab_switcher = self.render_tab_switcher(window, cx);
+        let onboarding = self.render_onboarding(window, cx);
 
         div()
             .id("mori-root")
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
             .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _, _| {
-                if ev.button == MouseButton::Left && ev.modifiers.alt {
-                    this.alt_click_at = Some(std::time::Instant::now());
+                if ev.button == MouseButton::Left {
+                    this.click_at = Some(std::time::Instant::now());
+                    if ev.modifiers.alt {
+                        this.alt_click_at = this.click_at;
+                    }
                 }
+            }))
+            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_switcher_key(ev, window, cx)))
+            .on_modifiers_changed(cx.listener(|this, ev: &ModifiersChangedEvent, window, cx| {
+                this.on_switcher_modifiers(ev, window, cx)
             }))
             .relative()
             .size_full()
@@ -607,6 +788,13 @@ impl Render for Browser {
             .on_action(cx.listener(|this, _: &ReopenClosedTab, window, cx| this.reopen_closed_tab(window, cx)))
             .on_action(cx.listener(|this, _: &NextTab, window, cx| this.cycle_tab(1, window, cx)))
             .on_action(cx.listener(|this, _: &PrevTab, window, cx| this.cycle_tab(-1, window, cx)))
+            .on_action(cx.listener(|this, _: &SwitchRecentTab, window, cx| this.switch_recent_tab(1, window, cx)))
+            .on_action(cx.listener(|this, _: &SwitchRecentTabBack, window, cx| {
+                this.switch_recent_tab(-1, window, cx)
+            }))
+            .on_action(cx.listener(|this, _: &Capture, window, cx| this.start_capture(window, cx)))
+            .on_action(cx.listener(|this, _: &ShowShortcuts, window, cx| this.toggle_cheatsheet(window, cx)))
+            .on_action(cx.listener(|this, _: &ToggleCompactMode, _, cx| this.toggle_compact_mode(cx)))
             .on_action(cx.listener(|this, _: &Reload, _, _| {
                 if let Some(v) = this.selected_view() {
                     v.reload(false);
@@ -698,14 +886,20 @@ impl Render for Browser {
             .children(self.render_wash(px(0.), cx))
             .child(row)
             .child(self.render_pointer_hooks(cx))
+            .children(sliding)
             .children(floating)
+            .children(capture)
             .children(panel)
             .children(peek)
             .children(popup)
             .children(overlay_toasts)
             .children(boost.map(|b| b.into_any_element()))
+            .children(tab_hover)
             .children(launcher.map(|l| l.into_any_element()))
             .children(menu)
+            .children(cheatsheet)
+            .children(tab_switcher)
+            .children(onboarding)
     }
 }
 
