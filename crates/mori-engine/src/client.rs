@@ -695,8 +695,17 @@ wrap_life_span_handler! {
             if let Some(view) = self.view.upgrade()
                 && !view.closing.get()
             {
-                // The page called window.close(); let the chrome decide.
+                // The page called window.close() or agreed to the user's
+                // close; let the chrome decide.
                 view.push(ViewEvent::CloseRequested);
+                // Returning 0 destroys a windowless browser right away, and
+                // with it its downloads. Keep it: the chrome's close()
+                // parks the view until they finish, and closes it for real
+                // then (`closing` is set, so this returns 0).
+                if !view.active_downloads.borrow().is_empty() {
+                    log::debug!("view {:?} has running downloads; deferring its close", view.id);
+                    return 1;
+                }
             }
             0
         }
