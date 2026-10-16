@@ -184,7 +184,6 @@ impl Browser {
         Some(
             v_flex()
                 .id("media-strip")
-                .mx(px(8.))
                 .mb_1()
                 .p(px(8.))
                 .gap(px(6.))

@@ -25,8 +25,9 @@ const SIDEBAR_MOTION: Duration = Duration::from_millis(200);
 /// The floating sidebar's slide in / out.
 const SIDEBAR_PEEK_IN: Duration = Duration::from_millis(180);
 const SIDEBAR_PEEK_OUT: Duration = Duration::from_millis(140);
-/// The page's margin to the window edges in compact mode.
-const COMPACT_INSET: Pixels = px(4.);
+/// The page's margin to the window edges in compact mode: the usual
+/// gutter, as Zen keeps it (with the card's rounded corners).
+const COMPACT_INSET: Pixels = metrics::CARD_INSET;
 
 /// The page's margin to the window edges and the sidebar.
 pub fn card_inset(settings: &Settings) -> Pixels {

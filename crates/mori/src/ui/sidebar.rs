@@ -334,6 +334,9 @@ impl Browser {
             (metrics::SIDEBAR_INSET, px(0.))
         };
         let (pl, pr) = if left { (outer, inner) } else { (inner, outer) };
+        // Floating, the sidebar takes the docked one's footprint, gutter
+        // included, so its rows come out as wide as when docked.
+        let outer_width = if floating { width + metrics::CARD_INSET } else { width };
 
         let mut contents = v_flex()
             .id("sidebar-scroll")
@@ -367,7 +370,7 @@ impl Browser {
         v_flex()
             .id("sidebar")
             .group("sidebar")
-            .w(width)
+            .w(outer_width)
             .h_full()
             .flex_none()
             .text_color(t.sidebar_foreground)
@@ -386,9 +389,12 @@ impl Browser {
             .child(self.render_header(left, window, cx).pl(pl).pr(pr))
             .child(div().flex_none().pl(pl).pr(pr).child(self.render_favorites(cx)))
             .child(animated)
-            .children(self.render_media_strip(cx))
+            // Lined up with the tab rows above it.
+            .children(self.render_media_strip(cx).map(|strip| {
+                div().pl(pl + metrics::ROW_INSET).pr(pr + metrics::ROW_INSET).child(strip)
+            }))
             // The bar's own -4/-3px margins give back 7px of the padding.
-            .child(self.render_bottom_bar(f32::from(width - pl - pr) + 7., cx).pl(pl).pr(pr))
+            .child(self.render_bottom_bar(f32::from(outer_width - pl - pr) + 7., cx).pl(pl).pr(pr))
     }
 
     fn render_header(&mut self, left: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
@@ -705,19 +711,41 @@ impl Browser {
                             ),
                     );
             }
-            // Under a gradient wash the pill has no single colour to cover
-            // the host with, so the actions keep their space.
+            // Under a gradient wash the pill has no single colour. Actions
+            // that show state keep their place; the rest come in on hover
+            // over the host's end on the pill colour laid over the plain
+            // sidebar colour (close to what the wash shows there), so a
+            // short host isn't cut off to make room for hidden buttons.
             None => {
+                let backing = t.sidebar;
                 pill = pill
+                    .when(reader, |s| s.child(action("reader", "book-open-text", reader_color, true, cx)))
+                    .when(bookmarked, |s| s.child(action("bookmark", "star", star_color, false, cx)))
+                    .when_some(zoom_label.clone(), |s, label| s.child(zoom_chip("zoom-chip", label, cx)))
                     .child(
-                        action("reader", "book-open-text", reader_color, true, cx)
-                            .when(!reader, |s| s.invisible().group_hover("omnibox", |s| s.visible())),
-                    )
-                    .child(
-                        action("bookmark", "star", star_color, false, cx)
-                            .when(!bookmarked, |s| s.invisible().group_hover("omnibox", |s| s.visible())),
-                    )
-                    .when_some(zoom_label, |s, label| s.child(zoom_chip("zoom-chip", label, cx)));
+                        h_flex()
+                            .absolute()
+                            .top(px(4.))
+                            .bottom(px(4.))
+                            .right(px(4.))
+                            .invisible()
+                            .group_hover("omnibox", |s| s.visible())
+                            .child(div().w(px(16.)).h_full().bg(fade_to(backing)))
+                            .child(
+                                h_flex().h_full().bg(backing).child(
+                                    h_flex()
+                                        .h_full()
+                                        .items_center()
+                                        .gap(px(7.))
+                                        .bg(t.tile_rest())
+                                        .child(action("reader-hover", "book-open-text", reader_color, true, cx))
+                                        .child(action("bookmark-hover", "star", star_color, false, cx))
+                                        .when_some(zoom_label, |s, label| {
+                                            s.child(zoom_chip("zoom-chip-hover", label, cx))
+                                        }),
+                                ),
+                            ),
+                    );
             }
         }
         pill
@@ -1027,13 +1055,13 @@ impl Browser {
                     let partner = self.ws.split_of(id).and_then(|g| g.partner(id));
                     match items.get(i + 1) {
                         Some(Item::Tab(next)) if partner == Some(*next) => {
-                            let first = self.render_tab_row(id, slot(i), space, window, cx);
-                            let second = self.render_tab_row(*next, slot(i + 1), space, window, cx);
+                            let first = self.render_tab_row(id, slot(i), space, true, window, cx);
+                            let second = self.render_tab_row(*next, slot(i + 1), space, true, window, cx);
                             rows.push(self.render_split_pair(id, first, second, cx));
                             i += 2;
                         }
                         _ => {
-                            rows.push(self.render_tab_row(id, slot(i), space, window, cx));
+                            rows.push(self.render_tab_row(id, slot(i), space, false, window, cx));
                             i += 1;
                         }
                     }
@@ -1245,22 +1273,25 @@ impl Browser {
             .child(div().invisible().group_hover("sidebar", |s| s.visible()).child("Clear"))
             .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Archive all unpinned tabs").build(window, cx))
             .on_click(cx.listener(|this, _, window, cx| this.clear_today(window, cx)));
+        // Pinned rows and nothing below them: no line (as in Zen), just a
+        // thin drop zone that opens up while something is dragged over it.
+        let bare = has_pinned && !clearable;
         h_flex()
             .id("pinned-divider")
             .flex_none()
             // As in Zen: 37px from the label's cap-top to the divider, or
             // 13px under the last pinned row.
-            .mt(px(if has_pinned { 3. } else { 9. }))
-            .mb(px(3.))
-            .h(px(20.))
+            .mt(px(if bare { 0. } else if has_pinned { 3. } else { 9. }))
+            .mb(px(if bare { 0. } else { 3. }))
+            .h(px(if bare { 6. } else { 20. }))
             .rounded(metrics::ROW_RADIUS)
-            .child(div().flex_1().h(px(1.)).ml(px(4.)).bg(line))
+            .when(!bare, |s| s.child(div().flex_1().h(px(1.)).ml(px(4.)).bg(line)))
             .when(clearable, |s| s.child(clear))
             .drag_over::<DraggedTab>(move |s, _, _, _| {
-                s.bg(t.primary.opacity(0.14)).border_1().border_dashed().border_color(t.primary.opacity(0.7))
+                s.h(px(20.)).bg(t.primary.opacity(0.14)).border_1().border_dashed().border_color(t.primary.opacity(0.7))
             })
             .drag_over::<DraggedFolder>(move |s, _, _, _| {
-                s.bg(t.primary.opacity(0.14)).border_1().border_dashed().border_color(t.primary.opacity(0.7))
+                s.h(px(20.)).bg(t.primary.opacity(0.14)).border_1().border_dashed().border_color(t.primary.opacity(0.7))
             })
             .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
                 this.drop_tab(d, DropTarget::PinnedEnd(space), window, cx)
@@ -1308,12 +1339,12 @@ impl Browser {
             let id = space.loose[i];
             let partner = self.ws.split_of(id).and_then(|g| g.partner(id));
             if partner.is_some() && space.loose.get(i + 1).copied() == partner {
-                let first = self.render_tab_row(id, Slot::Loose(i), space_id, window, cx);
-                let second = self.render_tab_row(space.loose[i + 1], Slot::Loose(i + 1), space_id, window, cx);
+                let first = self.render_tab_row(id, Slot::Loose(i), space_id, true, window, cx);
+                let second = self.render_tab_row(space.loose[i + 1], Slot::Loose(i + 1), space_id, true, window, cx);
                 rows.push(self.render_split_pair(id, first, second, cx));
                 i += 2;
             } else {
-                rows.push(self.render_tab_row(id, Slot::Loose(i), space_id, window, cx));
+                rows.push(self.render_tab_row(id, Slot::Loose(i), space_id, false, window, cx));
                 i += 1;
             }
         }
@@ -1339,11 +1370,14 @@ impl Browser {
             )
     }
 
+    /// `in_pair`: the row is one half of a split pair's row, where room is
+    /// short.
     fn render_tab_row(
         &mut self,
         id: TabId,
         slot: Slot,
         space: SpaceId,
+        in_pair: bool,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -1439,12 +1473,16 @@ impl Browser {
                             }),
                     )
                     .into_any_element(),
-                None => div()
+                // The slash and the title side by side, the title cut off
+                // with an ellipsis.
+                None => h_flex()
                     .flex_1()
                     .min_w_0()
-                    .truncate()
-                    .when(away, |s| s.child(div().flex_none().text_color(fg.opacity(0.45)).child("/ ")))
-                    .child(title.clone())
+                    .overflow_hidden()
+                    .when(away, |s| {
+                        s.child(div().flex_none().mr(px(5.)).text_color(fg.opacity(0.45)).child("/"))
+                    })
+                    .child(div().min_w_0().truncate().child(title.clone()))
                     .into_any_element(),
             },
         };
@@ -1543,9 +1581,9 @@ impl Browser {
             .group(group.clone())
             .relative()
             .h(metrics::ROW_HEIGHT)
-            .pl(px(7.))
-            .pr(px(6.))
-            .gap(px(10.))
+            .pl(px(if in_pair { 5. } else { 7. }))
+            .pr(px(if in_pair { 4. } else { 6. }))
+            .gap(px(if in_pair { 5. } else { 10. }))
             .rounded(metrics::ROW_RADIUS)
             .text_color(fg)
             .when_some(row_bg, |s, bg| s.bg(bg))
@@ -1584,6 +1622,9 @@ impl Browser {
                 ),
                 // Under a gradient wash (or while renaming) there is no single
                 // colour to cover the title with, so the button keeps its slot.
+                // A split pair's half-width cell can't spare that slot: its
+                // title needs it (close with a middle click or the menu).
+                None if in_pair => row,
                 None => row.child(close_button(cx).invisible().group_hover(group.clone(), |s| s.visible())),
             })
             .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| this.click_tab(id, ev, window, cx)))

@@ -80,7 +80,10 @@ impl Browser {
                 .when(open, |s| s.bg(t.ghost_hover()))
                 .child(anchor_probe(KEY_ANCHOR))
                 .child(icon("key-round", px(14.), color))
-                .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Passwords").build(window, cx))
+                // (Not over its own open popover.)
+                .when(!open, |s| {
+                    s.tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Passwords").build(window, cx))
+                })
                 .on_click(cx.listener(|this, _, _, cx| {
                     cx.stop_propagation();
                     this.passwords_toggle_popover(cx);
