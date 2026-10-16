@@ -19,6 +19,8 @@ use crate::{
 };
 
 const CARD_WIDTH: Pixels = px(580.);
+/// The tallest step's card (Appearance); shorter ones keep this height.
+const CARD_MIN_HEIGHT: Pixels = px(444.);
 
 /// The window's key context while the welcome is up, in place of the
 /// browser's: none of the browser shortcuts apply behind it.
@@ -66,9 +68,17 @@ impl Browser {
         {
             return;
         }
-        // Runs after the links from the command line were opened.
-        cx.defer_in(window, |this, window, cx| {
-            let opened_links = this.ws.tabs.iter().any(|t| !Browser::is_internal(&t.url));
+        // Runs after the links from the command line were opened. Only tabs
+        // added since count: web pages restored from an earlier session
+        // (say, a link handed over from Little Mori) are no links of this
+        // launch.
+        let restored: std::collections::HashSet<_> = self.ws.tabs.iter().map(|t| t.id).collect();
+        cx.defer_in(window, move |this, window, cx| {
+            let opened_links = this
+                .ws
+                .tabs
+                .iter()
+                .any(|t| !restored.contains(&t.id) && !Browser::is_internal(&t.url));
             if opened_links || this.onboarding.is_some() {
                 return;
             }
@@ -194,7 +204,9 @@ impl Browser {
                 )))
             })
             .child(
-                text_button("onboarding-next", primary_label, true, cx)
+                // "Skip" sits beside the import panel's own Import button: one
+                // primary action at a time.
+                text_button("onboarding-next", primary_label, primary_label != "Skip", cx)
                     .when(importing, |b| b.opacity(0.5).cursor_default())
                     .on_click(cx.listener(|this, _, window, cx| this.advance_onboarding(window, cx))),
             );
@@ -216,6 +228,9 @@ impl Browser {
                         .id(("onboarding-card", step.index()))
                         .relative()
                         .w(width)
+                        // As tall as the tallest step, so Continue changes
+                        // the step in place rather than moving the card.
+                        .min_h(CARD_MIN_HEIGHT.min(viewport.height - px(32.)))
                         .max_h(viewport.height - px(32.))
                         .p(px(28.))
                         .gap(px(22.))
