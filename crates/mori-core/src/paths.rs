@@ -86,7 +86,11 @@ pub fn write_bytes_atomic(path: &Path, json: &[u8]) -> anyhow::Result<()> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "data.json".into());
-    let tmp = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+    // Unique per write: several savers (one per window) may write the same
+    // file at once, and a shared temp file would interleave their bytes.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = path.with_file_name(format!(".{file_name}.{}.{seq}.tmp", std::process::id()));
     {
         let mut file =
             fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
@@ -194,6 +198,35 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with("thing.backup-"))
             .collect();
         assert_eq!(backups.len(), 1);
+    }
+
+    #[test]
+    fn concurrent_writers_never_leave_a_torn_file() {
+        // Each window has its own saver thread; two may write one file at once.
+        let tmp = TempDir::new();
+        let path = tmp.path().join("shared.json");
+        let writers: Vec<_> = (0..6u32)
+            .map(|w| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    for i in 0..40u32 {
+                        let value: Vec<u32> = vec![w; 2000 + (i as usize % 7) * 100];
+                        write_json_atomic(&path, &value).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for w in writers {
+            w.join().unwrap();
+        }
+        let value: Vec<u32> = read_json(&path).expect("a whole file");
+        assert!(value.windows(2).all(|p| p[0] == p[1]));
+        let leftovers = fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp"))
+            .count();
+        assert_eq!(leftovers, 0);
     }
 
     #[test]

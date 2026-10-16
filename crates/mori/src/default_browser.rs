@@ -73,10 +73,12 @@ fn refresh(cx: &mut App) {
 /// Make Mori the default browser, then report how it went in a toast.
 pub fn make_default(cx: &mut Context<Browser>) {
     let exe = std::env::current_exe().ok();
-    let work = cx.background_executor().spawn(async move { register(exe.as_deref()) });
+    // Both run shell scripts (`xdg-settings`, `xdg-mime`): off the UI thread.
+    let work = cx
+        .background_executor()
+        .spawn(async move { (register(exe.as_deref()), is_default()) });
     cx.spawn(async move |this, cx| {
-        let result = work.await;
-        let status = is_default();
+        let (result, status) = work.await;
         STATUS.with(|s| s.set(status));
         this.update(cx, |b, cx| {
             match result {

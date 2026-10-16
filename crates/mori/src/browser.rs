@@ -234,7 +234,8 @@ pub struct Browser {
 
     /// A normal browser window, a private one, or a Little Mori window.
     pub kind: WindowKind,
-    /// The in-memory browsing context every page of a private window uses.
+    /// The browsing context every page of this window uses: the in-memory
+    /// one of a private window, or the profile a Little Mori page opened in.
     pub private_context: Option<mori_engine::BrowsingContext>,
     /// This window writes the shared stores to disk (one window does; see
     /// `windows`).

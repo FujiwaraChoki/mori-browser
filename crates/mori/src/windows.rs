@@ -175,6 +175,13 @@ struct Registry {
     /// The window each running download reports to.
     downloads: HashMap<DownloadId, WindowId>,
     quitting: bool,
+    /// The saved normal windows were brought back (or there were none to
+    /// bring back). Until then a run that started with Little Mori or a
+    /// private window must not overwrite `windows.json` with one window.
+    restored: bool,
+    /// A window is being created and isn't registered yet: pages it took
+    /// from other windows don't show up in the registry until then.
+    opening: bool,
 }
 
 thread_local! {
@@ -302,8 +309,11 @@ pub fn start(urls: Vec<String>, private: bool, cx: &mut App) {
 
 /// Bring back the normal windows of the last session.
 fn restore(cx: &mut App) {
-    let first = Seed::load();
-    let saved = if first.ephemeral_session {
+    with(|r| r.restored = true);
+    // From disk, or the stores of an open Little Mori window (with the
+    // saved workspace).
+    let first = seed_for(WindowKind::Normal, cx);
+    let saved = if first.ephemeral_session || std::env::var_os("MORI_START_URL").is_some() {
         Vec::new()
     } else {
         WindowSession::load(&mori_core::paths::data_dir()).windows
@@ -363,6 +373,13 @@ fn focus_normal_window(cx: &mut App) -> Option<(AnyWindowHandle, Entity<Browser>
         handle.update(cx, |_, window, _| window.activate_window()).ok();
         return Some((handle, browser));
     }
+    // The run started with Little Mori or a private window: Mori proper
+    // comes back with all its windows.
+    if !with(|r| r.restored) {
+        restore(cx);
+        let (handle, browser, _) = browsers(Some(WindowKind::Normal)).into_iter().next()?;
+        return Some((handle, browser));
+    }
     let mut seed = seed_for(WindowKind::Normal, cx);
     let (selection, size) = returning_window(&seed.ws);
     selection.apply(&mut seed.ws);
@@ -384,6 +401,10 @@ fn returning_window(ws: &Workspace) -> (WindowSelection, Option<(f32, f32)>) {
 /// Ctrl+N: a new normal window on the current space, starting on its
 /// new-tab page.
 pub fn open_new_window(cx: &mut App) -> Option<(AnyWindowHandle, Entity<Browser>)> {
+    // The saved windows first, so the new one doesn't replace them.
+    if !with(|r| r.restored) {
+        restore(cx);
+    }
     let current = active_normal_space(cx);
     let mut seed = seed_for(WindowKind::Normal, cx);
     match current {
@@ -443,6 +464,11 @@ pub fn open_little(input: &str, cx: &mut App) {
     record.title = omnibox::placeholder_title(&url);
     let tab = seed.ws.add_new_tab(record);
     seed.ws.select(tab);
+    // The page opens in the profile of the space "Open in …" takes it to,
+    // so it is signed in as there and moves over without reloading.
+    seed.private_context = little_target_space(cx)
+        .and_then(|space| with(|r| r.profiles.profile_of(space)))
+        .and_then(|profile| BrowsingContext::persistent(&profiles::dir_name(profile)));
     let Some(browser) = open(seed, None, cx) else { return };
     let id = browser.read(cx).window_handle.window_id();
     with(|r| {
@@ -547,15 +573,18 @@ fn open(seed: Seed, size: Option<(f32, f32)>, cx: &mut App) -> Option<Entity<Bro
         },
         ..Default::default()
     };
+    let was_opening = with(|r| std::mem::replace(&mut r.opening, true));
     let opened = gpui_kit::open_window(options, cx, |window, cx| cx.new(|cx| Browser::new(window, cx, seed)));
     let (handle, browser) = match opened {
         Ok(opened) => opened,
         Err(e) => {
+            with(|r| r.opening = was_opening);
             log::error!("opening a window: {e:#}");
             return None;
         }
     };
     register(handle, &browser, kind, cx);
+    with(|r| r.opening = was_opening);
     Some(browser)
 }
 
@@ -668,7 +697,11 @@ fn on_window_closed(cx: &mut App, id: WindowId) {
     save_session();
     if cx.windows().is_empty() {
         cx.quit();
+        return;
     }
+    // The closed window's pages are gone; a window that pointed at one of
+    // them ("Open in another window") shows it again.
+    cx.defer(reclaim_pages);
 }
 
 /// Note every normal window's size, for `windows.json`.
@@ -811,6 +844,37 @@ fn on_browser_changed(source: Entity<Browser>, cx: &mut App) {
         }
         update_in(handle, &target, cx, |b, window, cx| b.take_shared(shared, window, cx));
     }
+    reclaim_pages(cx);
+}
+
+/// Normal windows showing a tab whose page another window let go of (it
+/// closed, or slept or reloaded the page) load it again, rather than
+/// showing an empty card.
+fn reclaim_pages(cx: &mut App) {
+    if with(|r| r.quitting || r.opening) {
+        return;
+    }
+    for (handle, browser, _) in browsers(Some(WindowKind::Normal)) {
+        let orphans: Vec<TabId> = {
+            let b = browser.read(cx);
+            [b.selected(), b.split]
+                .into_iter()
+                .flatten()
+                .filter(|t| !b.live.contains_key(t))
+                .filter(|t| b.ws.tab(*t).is_some_and(|r| !Browser::is_internal(&r.url)))
+                .filter(|t| window_showing(b, *t, cx).is_none())
+                .collect()
+        };
+        if orphans.is_empty() {
+            continue;
+        }
+        update_in(handle, &browser, cx, |b, window, cx| {
+            for tab in orphans {
+                b.realize(tab, window, cx);
+            }
+            cx.notify();
+        });
+    }
 }
 
 /// "Work — GitHub" for a window showing GitHub in the Work space.
@@ -894,6 +958,8 @@ impl Browser {
             // Another window shows it: no stealing, this one shows where it is.
             Some(tab) if shown_in_other_window(self, tab, cx) => {
                 self.ws.select(tab);
+                // The page that had the keys is gone from this window.
+                self.focus_selected_page(window, cx);
                 cx.notify();
             }
             Some(tab) => self.select_tab(tab, window, cx),
@@ -988,7 +1054,22 @@ pub fn take_page_from_other_window(b: &Browser, tab: TabId, cx: &mut App) -> Pag
         if handle.window_id() == me || !other.read(cx).live.contains_key(&tab) {
             continue;
         }
-        return match other.update(cx, |o, cx| o.detach_page(tab, cx)) {
+        let detached = update_in(handle, &other, cx, |o, window, cx| {
+            let had_focus = o
+                .live
+                .get(&tab)
+                .is_some_and(|l| l.surface.read(cx).focus_handle().is_focused(window));
+            let view = o.detach_page(tab, cx);
+            // Keys pressed there next would go to a page that isn't there.
+            if view.is_some() && had_focus {
+                o.focus_selected_page(window, cx);
+            }
+            view
+        });
+        // (Without its window, e.g. while it is being updated, the page
+        // still moves.)
+        let detached = detached.unwrap_or_else(|| other.update(cx, |o, cx| o.detach_page(tab, cx)));
+        return match detached {
             Some(view) => PageElsewhere::Moved(view),
             None => PageElsewhere::Busy,
         };
@@ -1135,6 +1216,17 @@ fn tidy_little_window(source: &Entity<Browser>, cx: &mut App) {
             hand_to_normal_window(record, view, cx);
         }
     });
+}
+
+/// The space a Little Mori page would go to now: the current space of the
+/// last used normal window, else that of the window that comes back.
+fn little_target_space(cx: &App) -> Option<SpaceId> {
+    if let Some((_, b, _)) = browsers(Some(WindowKind::Normal)).first() {
+        return Some(b.read(cx).ws.active_space);
+    }
+    with(|r| r.last_closed.clone())
+        .or_else(|| WindowSession::load(&mori_core::paths::data_dir()).windows.into_iter().next())
+        .and_then(|w| w.selection.active_space)
 }
 
 /// Where "Open in …" takes a Little Mori page: the current space of the
@@ -1304,7 +1396,8 @@ pub fn context_for_space(b: &Browser, space: SpaceId) -> BrowsingContext {
             log::error!("private window without a private context");
             BrowsingContext::private().unwrap_or_else(BrowsingContext::shared)
         }),
-        WindowKind::Little => BrowsingContext::shared(),
+        // The profile of the space it was opened for (see `open_little`).
+        WindowKind::Little => b.private_context.clone().unwrap_or_else(BrowsingContext::shared),
         WindowKind::Normal => match with(|r| r.profiles.profile_of(space)) {
             None => BrowsingContext::shared(),
             Some(profile) => BrowsingContext::persistent(&profiles::dir_name(profile)).unwrap_or_else(|| {

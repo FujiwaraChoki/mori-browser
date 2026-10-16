@@ -106,9 +106,12 @@ pub(crate) fn profile_entries(b: &Browser, space: SpaceId) -> Vec<Entry> {
     entries.push(item("New Profile…", "user-plus", move |b, window, cx| {
         let id = windows::create_profile("");
         set_space_profile(b, space, Some(id), cx);
-        b.switch_space(space, window, cx);
+        if b.ws.active_space != space {
+            b.switch_space(space, window, cx);
+        }
         b.show_settings(SettingsCategory::Profiles, window, cx);
-        b.begin_profile_rename(id, window, cx);
+        // After the menu has closed and handed focus back to the page.
+        cx.defer_in(window, move |b, window, cx| b.begin_profile_rename(id, window, cx));
     }));
     entries
 }
@@ -129,6 +132,37 @@ fn profile_name(profile: Option<ProfileId>) -> String {
         .and_then(|id| windows::profiles().into_iter().find(|p| p.id == id))
         .map(|p| format!("“{}”", p.name))
         .unwrap_or_else(|| "default".into())
+}
+
+/// The profiles a space can use, as wrapping pills: profile names are the
+/// user's and any number of them must fit a narrow window.
+fn profile_picker(
+    space: SpaceId,
+    options: Vec<(String, Option<ProfileId>)>,
+    current: Option<ProfileId>,
+    cx: &mut Context<Browser>,
+) -> Div {
+    let t = cx.tokens().clone();
+    let selected_bg = if t.dark { white().opacity(0.16) } else { white() };
+    h_flex().flex_wrap().gap(px(6.)).children(options.into_iter().enumerate().map(|(i, (label, value))| {
+        let active = value == current;
+        div()
+            .id(("space-profile", i))
+            .px_3()
+            .h(px(26.))
+            .max_w(px(220.))
+            .flex()
+            .items_center()
+            .rounded(metrics::RADIUS_LG)
+            .text_size(metrics::TEXT_LABEL)
+            .cursor_pointer()
+            .border_1()
+            .border_color(t.border.opacity(if active { 0.0 } else { 0.7 }))
+            .when(active, |s| s.bg(selected_bg).text_color(t.foreground).font_weight(FontWeight::MEDIUM))
+            .when(!active, |s| s.text_color(t.foreground.opacity(0.75)).hover(|s| s.bg(t.ghost_hover())))
+            .child(div().min_w_0().truncate().child(label))
+            .on_click(cx.listener(move |b, _, _, cx| set_space_profile(b, space, value, cx)))
+    }))
 }
 
 /// Empty header space that moves the window; a double click maximizes.
@@ -255,7 +289,17 @@ impl Browser {
                         .child(text_button("elsewhere-here", "Show Here", true, cx).on_click(cx.listener(
                             move |this, _, window, cx| {
                                 this.realize(tab, window, cx);
-                                this.focus_selected_page(window, cx);
+                                if this.live.contains_key(&tab) {
+                                    this.focus_selected_page(window, cx);
+                                } else {
+                                    // A dialog or prompt keeps it in the other window.
+                                    this.toast(
+                                        "The page is waiting for an answer in the other window",
+                                        ToastStyle::Info,
+                                        None,
+                                        cx,
+                                    );
+                                }
                                 cx.notify();
                             },
                         )))
@@ -411,17 +455,7 @@ impl Browser {
                 page.child(
                     section(&format!("Profile for “{space_name}”"), cx).child(
                         card(cx)
-                            .child(field(
-                                "Profile",
-                                choice(
-                                    "space-profile",
-                                    options,
-                                    current,
-                                    move |b, v, _, cx| set_space_profile(b, space, v, cx),
-                                    cx,
-                                ),
-                                cx,
-                            ))
+                            .child(field("Profile", profile_picker(space, options, current, cx), cx))
                             .child(hint(
                                 "Each profile keeps its own cookies, logins and site data, so you can be signed in \
                                  to different accounts in different spaces. Pages reload when the profile changes.",
@@ -493,7 +527,7 @@ impl Browser {
             s.focus(window, cx);
             s.select_all(window, cx);
         });
-        let sub = cx.subscribe_in(&input, window, move |this, input, ev: &InputEvent, _, cx| {
+        let sub = cx.subscribe_in(&input, window, move |this, input, ev: &InputEvent, window, cx| {
             if matches!(ev, InputEvent::PressEnter { .. } | InputEvent::Blur)
                 && this.window_ui.rename.as_ref().is_some_and(|(rid, _)| *rid == id)
             {
@@ -501,6 +535,10 @@ impl Browser {
                 windows::rename_profile(id, &value);
                 this.window_ui.rename = None;
                 this.window_ui._rename_events = None;
+                // The field that had the keys goes away with the edit.
+                if matches!(ev, InputEvent::PressEnter { .. }) {
+                    this.focus_selected_page(window, cx);
+                }
                 cx.notify();
             }
         });
