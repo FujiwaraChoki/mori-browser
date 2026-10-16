@@ -139,11 +139,21 @@ pub const FORM_AGENT_SCRIPT: &str = concat!(
     "(() => {\n  if (window.top !== window || window.__moriPasswordAgent) return;\n  window.__moriPasswordAgent = true;",
     form_helpers_js!(),
     r#"
+  // The binding arrives once the document has loaded; until then reports
+  // wait here, and the chrome flushes them.
+  const queue = [];
   const send = (msg) => {
     try {
       msg.origin = location.origin;
-      globalThis.__moriPasswords(JSON.stringify(msg));
+      const text = JSON.stringify(msg);
+      if (typeof globalThis.__moriPasswords === 'function') globalThis.__moriPasswords(text);
+      else if (queue.length < 32) queue.push(text);
     } catch (e) {}
+  };
+  window.__moriPasswordFlush = () => {
+    while (queue.length && typeof globalThis.__moriPasswords === 'function') {
+      try { globalThis.__moriPasswords(queue.shift()); } catch (e) { return; }
+    }
   };
 
   let reported = null;

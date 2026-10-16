@@ -229,61 +229,110 @@ fn tab_view(b: &Browser, tab: TabId) -> Option<WebView> {
     b.live.get(&tab).map(|l| l.view.clone())
 }
 
-/// Install the form agent in `view`: the binding it reports through
-/// (only in Mori's isolated world) and the script itself, for the current
-/// document and every later one. `Runtime.enable` is needed for binding
-/// calls to be reported.
+/// Install the form agent in `view`: the script, in Mori's isolated world,
+/// for the current document and every later one. The binding it reports
+/// through is added to each document's world by [`bind_agent`].
+///
+/// The Runtime domain is deliberately left disabled: an enabled Runtime
+/// would stream every console call and exception of the page through the
+/// browser for the life of the tab (making console-heavy pages many times
+/// slower; see also `mori_engine::bridge`). Without it V8 doesn't put a
+/// binding into new execution contexts by itself, hence [`bind_agent`].
 fn install_agent(view: &WebView) {
-    let log_error = |what: &'static str| {
-        move |r: Result<serde_json::Value, String>| {
-            if let Err(e) = r {
-                log::warn!("passwords: {what} failed: {e}");
-            }
-        }
-    };
-    view.devtools_call("Runtime.enable", serde_json::json!({}), log_error("Runtime.enable"));
-    view.devtools_call("Page.enable", serde_json::json!({}), log_error("Page.enable"));
-    view.devtools_call(
-        "Runtime.addBinding",
-        serde_json::json!({ "name": AGENT_BINDING, "executionContextName": AGENT_WORLD }),
-        log_error("Runtime.addBinding"),
-    );
+    view.devtools_call("Page.enable", serde_json::json!({}), log_failure("Page.enable"));
     view.devtools_call(
         "Page.addScriptToEvaluateOnNewDocument",
         serde_json::json!({ "source": FORM_AGENT_SCRIPT, "worldName": AGENT_WORLD, "runImmediately": true }),
-        log_error("installing the form agent"),
+        log_failure("installing the form agent"),
     );
 }
 
-/// Evaluate `script` in Mori's isolated world of `view`'s main frame;
-/// `done` gets the script's value.
-fn evaluate_in_agent_world(view: &WebView, script: Secret, done: impl FnOnce(Result<serde_json::Value, String>) + 'static) {
+fn log_failure(what: &'static str) -> impl FnOnce(Result<serde_json::Value, String>) + 'static {
+    move |r: Result<serde_json::Value, String>| {
+        if let Err(e) = r {
+            log::warn!("passwords: {what} failed: {e}");
+        }
+    }
+}
+
+/// Give the current document's agent its reporting binding (added to that
+/// one execution context, which works with the Runtime domain disabled),
+/// then let it send what it queued until now (the forms it found while
+/// the page loaded).
+fn bind_agent(view: &WebView) {
+    let v = view.clone();
+    with_agent_context(view, move |context| {
+        let context = match context {
+            Ok(c) => c,
+            Err(e) => {
+                log::debug!("passwords: no agent world to bind: {e}");
+                return;
+            }
+        };
+        let v2 = v.clone();
+        v.devtools_call(
+            "Runtime.addBinding",
+            serde_json::json!({ "name": AGENT_BINDING, "executionContextId": context }),
+            move |r| {
+                if let Err(e) = r {
+                    log::warn!("passwords: Runtime.addBinding failed: {e}");
+                    return;
+                }
+                v2.devtools_call(
+                    "Runtime.evaluate",
+                    serde_json::json!({ "expression": AGENT_FLUSH, "contextId": context }),
+                    log_failure("flushing the form agent"),
+                );
+            },
+        );
+    });
+}
+
+/// Run in the agent world once the binding is there: send what the agent
+/// queued meanwhile.
+const AGENT_FLUSH: &str = "globalThis.__moriPasswordFlush && globalThis.__moriPasswordFlush()";
+
+/// The execution context id of Mori's isolated world in `view`'s main
+/// frame (the agent's: Chromium keeps one world per name and frame).
+fn with_agent_context(view: &WebView, done: impl FnOnce(Result<i64, String>) + 'static) {
     let v = view.clone();
     view.devtools_call("Page.getFrameTree", serde_json::json!({}), move |tree| {
         let Some(frame) = tree.ok().and_then(|t| t.pointer("/frameTree/frame/id").and_then(|id| id.as_str()).map(str::to_string)) else {
             done(Err("the page has no main frame".into()));
             return;
         };
-        let v2 = v.clone();
         v.devtools_call(
             "Page.createIsolatedWorld",
             serde_json::json!({ "frameId": frame, "worldName": AGENT_WORLD }),
-            move |world| {
-                let Some(context) = world.ok().and_then(|w| w.get("executionContextId").and_then(|c| c.as_i64())) else {
-                    done(Err("no isolated world".into()));
-                    return;
-                };
-                let params = serde_json::json!({
-                    "expression": script.expose(),
-                    "contextId": context,
-                    "returnByValue": true,
-                });
-                drop(script);
-                v2.devtools_call("Runtime.evaluate", params, move |result| {
-                    done(result.map(|r| r.pointer("/result/value").cloned().unwrap_or_default()))
-                });
+            move |world| match world.ok().and_then(|w| w.get("executionContextId").and_then(|c| c.as_i64())) {
+                Some(context) => done(Ok(context)),
+                None => done(Err("no isolated world".into())),
             },
         );
+    });
+}
+
+/// Evaluate `script` in Mori's isolated world of `view`'s main frame;
+/// `done` gets the script's value.
+fn evaluate_in_agent_world(view: &WebView, script: Secret, done: impl FnOnce(Result<serde_json::Value, String>) + 'static) {
+    let v = view.clone();
+    with_agent_context(view, move |context| {
+        let context = match context {
+            Ok(c) => c,
+            Err(e) => {
+                done(Err(e));
+                return;
+            }
+        };
+        let params = serde_json::json!({
+            "expression": script.expose(),
+            "contextId": context,
+            "returnByValue": true,
+        });
+        drop(script);
+        v.devtools_call("Runtime.evaluate", params, move |result| {
+            done(result.map(|r| r.pointer("/result/value").cloned().unwrap_or_default()))
+        });
     });
 }
 
@@ -359,6 +408,8 @@ impl Browser {
                 if p.agents.insert(id) {
                     install_agent(&view);
                 }
+                // Each document's world needs the binding anew.
+                bind_agent(&view);
                 if p.status == VaultStatus::Unknown && !p.probing {
                     p.probing = true;
                     Passwords::probe(cx);
