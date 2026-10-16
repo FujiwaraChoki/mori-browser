@@ -48,6 +48,17 @@ impl TimeRange {
         }
     }
 
+    /// The label in a compact control: "24 hours".
+    pub fn short_label(self) -> &'static str {
+        match self {
+            TimeRange::LastHour => "1 hour",
+            TimeRange::LastDay => "24 hours",
+            TimeRange::LastWeek => "7 days",
+            TimeRange::LastFourWeeks => "4 weeks",
+            TimeRange::AllTime => "All time",
+        }
+    }
+
     /// The earliest time (UNIX seconds) data is cleared from, or `None` for
     /// everything.
     pub fn since(self, now: f64) -> Option<f64> {

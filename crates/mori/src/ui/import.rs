@@ -195,7 +195,7 @@ impl Browser {
                     .gap(px(10.))
                     .rounded(metrics::RADIUS_LG)
                     .border_1()
-                    .border_color(if active { t.primary.opacity(0.8) } else { t.border.opacity(0.5) })
+                    .border_color(if active { t.primary.opacity(0.8) } else { t.border })
                     .when(active, |r| r.bg(t.primary.opacity(0.08)))
                     .when(!active && !running, |r| r.hover(|r| r.bg(t.ghost_hover())))
                     .when(!running, |r| r.cursor_pointer())
@@ -238,7 +238,7 @@ impl Browser {
                         .justify_center()
                         .rounded(px(4.))
                         .border_1()
-                        .border_color(if checked { t.primary } else { t.border })
+                        .border_color(if checked { t.primary } else { crate::ui::components::control_stroke(&t) })
                         .when(checked, |b| b.bg(t.primary))
                         .when(checked, |b| b.child(icon("check", px(12.), t.primary_foreground))),
                 )
@@ -336,7 +336,7 @@ fn radio(on: bool, cx: &App) -> Div {
         .justify_center()
         .rounded_full()
         .border_1()
-        .border_color(if on { t.primary } else { t.border })
+        .border_color(if on { t.primary } else { crate::ui::components::control_stroke(t) })
         .when(on, |r| r.child(div().size(px(8.)).rounded_full().bg(t.primary)))
 }
 

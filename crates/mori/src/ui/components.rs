@@ -204,3 +204,9 @@ pub fn relative_time(then: f64, now: f64) -> String {
         d => format!("{}d ago", (d / 86_400.0) as u64),
     }
 }
+
+/// The outline of an unchecked checkbox or radio: the hairline border is
+/// too faint on a light background (WCAG asks 3:1 for control edges).
+pub fn control_stroke(t: &crate::theme::Tokens) -> Hsla {
+    if t.dark { t.border } else { t.muted_foreground.opacity(0.7) }
+}

@@ -18,6 +18,9 @@ const TOAST_ENTER: Duration = Duration::from_millis(200);
 const TOAST_INSET: Pixels = px(8.);
 /// Extra top offset while the find bar occupies the corner.
 const FIND_BAR_CLEARANCE: Pixels = px(52.);
+/// Extra top offset while the settings page shows: its header (and Done
+/// button) is 56px tall.
+const SETTINGS_HEADER_CLEARANCE: Pixels = px(56.);
 
 impl Browser {
     /// The toast stack, positioned for the web card it is placed in.
@@ -27,7 +30,14 @@ impl Browser {
         }
         let t = cx.tokens().clone();
         let find_bar_shown = self.find_bar.is_some() && !self.settings_open;
-        let top = TOAST_INSET + if find_bar_shown { FIND_BAR_CLEARANCE } else { px(0.) };
+        let top = TOAST_INSET
+            + if self.settings_open {
+                SETTINGS_HEADER_CLEARANCE
+            } else if find_bar_shown {
+                FIND_BAR_CLEARANCE
+            } else {
+                px(0.)
+            };
         let toasts: Vec<AnyElement> = self
             .toasts
             .iter()

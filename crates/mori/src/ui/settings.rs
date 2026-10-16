@@ -21,6 +21,13 @@ use crate::{
 
 /// Width of the category rail.
 const RAIL_WIDTH: Pixels = px(200.);
+/// The rail with icons only, in narrow windows.
+const RAIL_WIDTH_COMPACT: Pixels = px(56.);
+/// Windows narrower than this (two tiled side by side) get the compact rail.
+const NARROW_WINDOW: Pixels = px(1000.);
+/// Narrowest a field's control gets beside its label; with less room the
+/// control goes below the label.
+const CONTROL_MIN_WIDTH: Pixels = px(220.);
 /// Widest the category content grows.
 const CONTENT_MAX_WIDTH: Pixels = px(620.);
 /// Width of a field's label column.
@@ -28,6 +35,14 @@ const LABEL_WIDTH: Pixels = px(150.);
 /// Choices with more options than this render as wrapping pills instead of
 /// a single segmented control, so they never overflow the card.
 const MAX_SEGMENTS: usize = 4;
+/// What [`choice_with`] draws.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ChoiceStyle {
+    /// A segmented control for a few options, wrapping pills for more.
+    Auto,
+    /// A segmented control whatever the count (for short labels).
+    Segmented,
+}
 
 /// A page of the settings.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -124,8 +139,11 @@ pub(crate) fn card(cx: &App) -> Div {
 
 pub(crate) fn field(label: &str, control: impl IntoElement, cx: &App) -> Div {
     let t = cx.tokens();
+    // Without room for both, the control wraps below its label.
     h_flex()
-        .gap_3()
+        .flex_wrap()
+        .gap_x_3()
+        .gap_y_1()
         .min_h(px(30.))
         .child(
             div()
@@ -134,7 +152,7 @@ pub(crate) fn field(label: &str, control: impl IntoElement, cx: &App) -> Div {
                 .text_color(t.foreground.opacity(0.85))
                 .child(label.to_string()),
         )
-        .child(h_flex().flex_1().min_w_0().child(control))
+        .child(h_flex().flex_1().min_w(CONTROL_MIN_WIDTH).child(control))
 }
 
 pub(crate) fn hint(text: impl Into<SharedString>, cx: &App) -> Div {
@@ -154,8 +172,20 @@ pub(crate) fn choice<T: Copy + PartialEq + 'static>(
     on_pick: impl Fn(&mut Browser, T, &mut Window, &mut Context<Browser>) + Clone + 'static,
     cx: &mut Context<Browser>,
 ) -> Div {
+    choice_with(id, options, current, ChoiceStyle::Auto, on_pick, cx)
+}
+
+/// [`choice`] drawn as `style` says.
+pub(crate) fn choice_with<T: Copy + PartialEq + 'static>(
+    id: &'static str,
+    options: Vec<(String, T)>,
+    current: T,
+    style: ChoiceStyle,
+    on_pick: impl Fn(&mut Browser, T, &mut Window, &mut Context<Browser>) + Clone + 'static,
+    cx: &mut Context<Browser>,
+) -> Div {
     let t = cx.tokens().clone();
-    let segmented = options.len() <= MAX_SEGMENTS;
+    let segmented = style == ChoiceStyle::Segmented || options.len() <= MAX_SEGMENTS;
     let selected_bg = if t.dark { white().opacity(0.16) } else { white() };
     let items = options.into_iter().enumerate().map(|(i, (label, value))| {
         let active = value == current;
@@ -186,7 +216,9 @@ pub(crate) fn choice<T: Copy + PartialEq + 'static>(
             }))
     });
     if segmented {
+        // (Wraps rather than run past the card in a narrow window.)
         h_flex()
+            .flex_wrap()
             .gap_0p5()
             .p_0p5()
             .rounded(px(8.))
@@ -222,7 +254,7 @@ fn toggle_with(
         .p(px(2.))
         .rounded_full()
         .cursor_pointer()
-        .bg(if on { t.primary } else { t.foreground.opacity(0.15) })
+        .bg(if on { t.primary } else { t.foreground.opacity(if t.dark { 0.15 } else { 0.25 }) })
         .child(
             div()
                 .size(px(16.))
@@ -321,8 +353,9 @@ impl Browser {
     pub fn render_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.tokens().clone();
         let category = self.settings_inputs(window, cx).category;
+        let narrow = window.viewport_size().width < NARROW_WINDOW;
         let rail = v_flex()
-            .w(RAIL_WIDTH)
+            .w(if narrow { RAIL_WIDTH_COMPACT } else { RAIL_WIDTH })
             .flex_none()
             .h_full()
             .p_3()
@@ -343,7 +376,12 @@ impl Browser {
                     .when(active, |s| s.bg(t.foreground.opacity(if t.dark { 0.10 } else { 0.07 })).font_weight(FontWeight::MEDIUM))
                     .when(!active, |s| s.hover(|s| s.bg(t.ghost_hover())))
                     .child(icon(c.icon(), px(15.), if active { t.foreground } else { t.muted_foreground }))
-                    .child(c.label())
+                    .when(!narrow, |s| s.child(c.label()))
+                    .when(narrow, |s| {
+                        let label = c.label();
+                        s.justify_center()
+                            .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(label).build(window, cx))
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.settings_inputs(window, cx).category = c;
                         cx.notify();
@@ -401,7 +439,7 @@ impl Browser {
                                 .w_full()
                                 .max_w(CONTENT_MAX_WIDTH)
                                 .mx_auto()
-                                .px(px(28.))
+                                .px(if narrow { px(18.) } else { px(28.) })
                                 .py(px(24.))
                                 .gap(px(22.))
                                 .child(div().text_size(px(20.)).font_weight(FontWeight::SEMIBOLD).child(category.label()))

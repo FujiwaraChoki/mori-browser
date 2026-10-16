@@ -509,38 +509,48 @@ impl Browser {
 
     fn render_new_tab_page(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.tokens().clone();
+        // Behind the command bar the page stays empty (as Zen's does): a
+        // second search box peeking out from under it would look like two.
+        let launcher_open = self.launcher.is_some();
         v_flex()
             .id("new-tab-page")
             .size_full()
+            .px_6()
+            .overflow_hidden()
             .items_center()
             .justify_center()
             .gap_4()
-            .child(
-                svg()
-                    .path("mori/logo.svg")
-                    .size(px(56.))
-                    .text_color(t.foreground.opacity(0.18)),
-            )
-            .child(
-                h_flex()
-                    .id("ntp-search")
-                    .w(px(420.))
-                    .h(px(44.))
-                    .px_4()
-                    .gap_3()
-                    .rounded(metrics::RADIUS_POPOVER)
-                    .bg(t.foreground.opacity(0.05))
-                    .border_1()
-                    .border_color(t.border.opacity(0.6))
-                    .text_color(t.muted_foreground)
-                    .cursor_text()
-                    .child(icon("search", px(16.), t.muted_foreground))
-                    .child(div().flex_1().child("Search or enter address"))
-                    .child(crate::ui::components::shortcut_caps("secondary-l", cx))
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.open_launcher(LauncherMode::Address, window, cx)
-                    })),
-            )
+            .when(!launcher_open, |page| {
+                page.child(
+                    svg()
+                        .path("mori/logo.svg")
+                        .size(px(56.))
+                        .text_color(t.foreground.opacity(0.18)),
+                )
+                .child(
+                    h_flex()
+                        .id("ntp-search")
+                        // Shrinks with narrow (tiled) windows.
+                        .w_full()
+                        .max_w(px(420.))
+                        .h(px(44.))
+                        .px_4()
+                        .gap_3()
+                        .overflow_hidden()
+                        .rounded(metrics::RADIUS_POPOVER)
+                        .bg(t.foreground.opacity(0.05))
+                        .border_1()
+                        .border_color(t.border.opacity(0.6))
+                        .text_color(t.muted_foreground)
+                        .cursor_text()
+                        .child(icon("search", px(16.), t.muted_foreground))
+                        .child(div().flex_1().min_w_0().truncate().child("Search or enter address"))
+                        .child(crate::ui::components::shortcut_caps("secondary-l", cx))
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_launcher(LauncherMode::Address, window, cx)
+                        })),
+                )
+            })
     }
 }
 

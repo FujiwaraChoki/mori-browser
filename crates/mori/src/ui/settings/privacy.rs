@@ -9,7 +9,7 @@ use mori_core::{
     site_permissions::Decision,
 };
 
-use super::{card, choice, field, hint, section, toggle};
+use super::{ChoiceStyle, card, choice, choice_with, field, hint, section, toggle};
 use crate::{
     browser::Browser,
     theme::{ActiveTokens, metrics},
@@ -59,7 +59,7 @@ fn check_row(
                 .justify_center()
                 .rounded(px(4.))
                 .border_1()
-                .border_color(if on { t.primary } else { t.border })
+                .border_color(if on { t.primary } else { crate::ui::components::control_stroke(&t) })
                 .when(on, |s| s.bg(t.primary).child(icon("check", px(12.), t.primary_foreground))),
         )
         .child(
@@ -194,10 +194,11 @@ impl Browser {
             card(cx)
                 .child(field(
                     "Time range",
-                    choice(
+                    choice_with(
                         "clear-range",
-                        TimeRange::ALL.iter().map(|r| (r.label().to_string(), *r)).collect(),
+                        TimeRange::ALL.iter().map(|r| (r.short_label().to_string(), *r)).collect(),
                         clear.range,
+                        ChoiceStyle::Segmented,
                         |b, v, _, _| b.privacy.clear.range = v,
                         cx,
                     ),
