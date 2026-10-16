@@ -11,6 +11,7 @@
 
 mod app;
 mod appearance;
+mod bridge;
 mod client;
 mod devtools;
 mod downloads;
@@ -18,6 +19,7 @@ mod drag;
 mod file_dialog;
 pub mod keys;
 mod print;
+pub mod privacy;
 mod view;
 
 use std::{
@@ -28,6 +30,7 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use cef::{args::Args, *};
 
+pub use bridge::{PageBridge, set_page_bridge};
 pub use devtools::Sink as DevToolsSink;
 pub use appearance::{reapply_color_scheme, set_color_scheme};
 pub use downloads::{

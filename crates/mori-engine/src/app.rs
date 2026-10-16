@@ -49,6 +49,11 @@ wrap_app! {
             // `OverlayScrollbar` feature does nothing here; pages get a thin
             // scrollbar style instead, see `appearance`.)
             switch("enable-smooth-scrolling");
+            // Hardware video decoding hands frames over as native pixmaps,
+            // which headless ozone cannot allocate: the GPU process dies on
+            // the first video frame and videos stay black. Decode in
+            // software instead (compositing stays on the GPU).
+            switch("disable-accelerated-video-decode");
         }
 
         fn browser_process_handler(&self) -> Option<BrowserProcessHandler> {

@@ -313,6 +313,14 @@ pub enum ViewEvent {
         source: String,
         line: i32,
     },
+    /// A message from the chrome's page script (see
+    /// [`crate::set_page_bridge`]), its secret already checked.
+    PageMessage(serde_json::Value),
+    /// The number of requests the content blocker cancelled on the current
+    /// page changed.
+    ContentBlocked {
+        count: u32,
+    },
 }
 
 pub(crate) struct ViewInner {
@@ -354,12 +362,22 @@ pub(crate) struct ViewInner {
     /// Screen origin of the view (logical px), reported to Chromium so popups
     /// and `screenX` land in the right place.
     pub screen_origin: Cell<(i32, i32)>,
+    /// Secret the page bridge script proves its messages with.
+    pub bridge_token: RefCell<String>,
+    /// DevTools id of the installed bridge script, to replace it.
+    pub bridge_script_id: RefCell<Option<String>>,
 }
 
 pub(crate) enum PendingPermission {
     /// Chromium's prompt id, so a withdrawn prompt can be matched.
     Prompt(PermissionPromptCallback, u64),
     Media(MediaAccessCallback, u32),
+    /// Asked through the page bridge: answered by reply `rid`.
+    Bridge {
+        rid: u64,
+        kind: PermissionKind,
+        origin: String,
+    },
 }
 
 thread_local! {
@@ -417,6 +435,8 @@ impl ViewInner {
             closing: Cell::new(false),
             closed: Cell::new(false),
             screen_origin: Cell::new((0, 0)),
+            bridge_token: RefCell::new(String::new()),
+            bridge_script_id: RefCell::new(None),
         });
         VIEWS.with(|v| v.borrow_mut().insert(id, Rc::downgrade(&inner)));
         inner
@@ -1184,7 +1204,31 @@ impl WebView {
             PendingPermission::Media(cb, requested) => {
                 cb.cont(if allow { requested } else { 0 })
             }
+            PendingPermission::Bridge { rid, kind, origin } => {
+                crate::bridge::resolve_permission(&self.0, rid, kind, &origin, allow)
+            }
         }
+    }
+
+    /// Answer request `rid` of the page bridge script with `value`.
+    pub fn bridge_reply(&self, rid: u64, value: &serde_json::Value) {
+        crate::bridge::reply(&self.0, rid, value);
+    }
+
+    /// Send an event object to the page bridge script. `user_gesture` lets
+    /// the page's handler act as if the user clicked (focus, open).
+    pub fn bridge_event(&self, value: &serde_json::Value, user_gesture: bool) {
+        crate::bridge::event(&self.0, value, user_gesture);
+    }
+
+    /// Requests the content blocker cancelled on the current page.
+    pub fn blocked_count(&self) -> u32 {
+        self.0
+            .browser
+            .borrow()
+            .as_ref()
+            .map(|b| crate::privacy::blocked_count(b.identifier()))
+            .unwrap_or(0)
     }
 
     /// Answer a [`ViewEvent::FileDialog`]; `None` (or no paths) cancels.
