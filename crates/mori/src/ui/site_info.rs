@@ -61,20 +61,19 @@ fn permission_label(key: &str) -> (&'static str, &'static str) {
     }
 }
 
-/// Entries of the site-info popover for the selected page.
+/// Entries of the site-info popover for the active page.
 pub fn site_info_entries(b: &Browser) -> Vec<Entry> {
-    let Some(url) = b.selected().and_then(|id| b.ws.tab(id)).map(|t| t.url.clone()) else {
+    let Some((tab, url)) = b.active_tab().and_then(|id| b.ws.tab(id)).map(|t| (t.id, t.url.clone())) else {
         return Vec::new();
     };
     let host = mori_core::omnibox::display_host(&url);
-    let (glyph, status, secure) = if url.starts_with("https://") {
-        ("lock", "Connection is secure", Some(true))
-    } else if url.starts_with("http://") {
-        ("triangle-alert", "Connection is not secure", Some(false))
-    } else if url.starts_with("file://") {
-        ("file", "Local file", None)
-    } else {
-        ("info", "Browser page", None)
+    use mori_core::security::Security;
+    let (glyph, status, secure) = match b.page_security(crate::browser::PageOwner::Tab(tab), &url) {
+        Security::Secure => ("lock", "Connection is secure", Some(true)),
+        Security::CertificateError => ("triangle-alert", "Certificate is not valid", Some(false)),
+        Security::NotSecure => ("triangle-alert", "Connection is not secure", Some(false)),
+        Security::Neutral if url.starts_with("file://") => ("file", "Local file", None),
+        Security::Neutral => ("info", "Browser page", None),
     };
     let header = {
         let host = host.clone();

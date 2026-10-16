@@ -728,6 +728,28 @@ impl WebView {
         self.0.browser.borrow().as_ref().map(|b| b.is_loading() == 1)
     }
 
+    /// Chromium's certificate status bits (`net::CertStatus`) for the page
+    /// on screen, when it came over TLS with a certificate. Bit 0x4, for
+    /// example, is an untrusted issuer; see
+    /// `mori_core::security::cert_status_is_error` for reading them.
+    pub fn cert_status(&self) -> Option<u32> {
+        let host = self.0.host()?;
+        let entry = host.visible_navigation_entry()?;
+        let status = entry.sslstatus()?;
+        if status.is_secure_connection() == 0 {
+            return None;
+        }
+        // The binding returns the status as a Rust enum, but the value is a
+        // bit set (several flags at once is common), which no enum variant
+        // matches. Read it through the C function as a plain integer.
+        unsafe {
+            let raw = status.get_raw();
+            let get = (*raw).get_cert_status?;
+            let get: unsafe extern "C" fn(*mut cef_dll_sys::_cef_sslstatus_t) -> u32 = std::mem::transmute(get);
+            Some(get(raw))
+        }
+    }
+
     pub fn can_go_back(&self) -> bool {
         self.0
             .browser

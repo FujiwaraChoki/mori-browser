@@ -10,7 +10,7 @@ use gpui_kit::*;
 use mori_core::workspace::{TabId, TabRecord};
 use mori_engine::{Disposition, PopupFeatures, ViewEvent, WebView};
 
-use super::Browser;
+use super::{Browser, PageOwner};
 use crate::{engine_hub::EngineHub, web_surface::WebSurface};
 
 /// Height of the popup's title strip.
@@ -81,7 +81,22 @@ impl Browser {
     }
 
     fn on_popup_events(&mut self, events: Vec<ViewEvent>, window: &mut Window, cx: &mut Context<Self>) {
-        for event in events {
+        let Some(popup_view) = self.popup.as_ref().map(|p| p.view.clone()) else { return };
+        let mut events = events.into_iter();
+        while let Some(event) = events.next() {
+            if self.popup.as_ref().is_none_or(|p| p.view != popup_view) {
+                // "Open as Tab" partway through the batch: the rest belongs
+                // to that tab now. A closed popup's events are moot.
+                let tab = self.live.iter().find(|(_, l)| l.view == popup_view).map(|(t, _)| *t);
+                if let Some(tab) = tab {
+                    let rest: Vec<ViewEvent> = std::iter::once(event).chain(events).collect();
+                    self.on_view_events(tab, rest, window, cx);
+                }
+                return;
+            }
+            // Dialogs, sign-in, certificate and permission prompts, page-first
+            // shortcuts and tooltips, drawn over the popup card.
+            let Some(event) = self.on_page_event(PageOwner::Popup, event, window, cx) else { continue };
             let Some(popup) = self.popup.as_mut() else { return };
             match event {
                 ViewEvent::TitleChanged(title) => popup.title = title,
@@ -98,10 +113,6 @@ impl Browser {
                     let view = popup.view.clone();
                     self.open_file_dialog(view, request, window, cx);
                 }
-                // The popup has no tab to anchor a prompt to; answer like a
-                // dismissed dialog so the page does not hang.
-                ViewEvent::JsDialog(dialog) => popup.view.resolve_dialog(dialog.id, false, None),
-                ViewEvent::PermissionPrompt(request) => popup.view.resolve_permission(request.id, false),
                 _ => {}
             }
         }
@@ -112,6 +123,8 @@ impl Browser {
         let Some(popup) = self.popup.take() else { return };
         EngineHub::unregister(cx, popup.view.id());
         popup.view.close();
+        self.forget_prompts(PageOwner::Popup);
+        self.sync_page_modals(cx);
         if self.selected() != Some(popup.opener) && self.ws.tab(popup.opener).is_some() {
             self.select_tab(popup.opener, window, cx);
         } else {
@@ -128,6 +141,7 @@ impl Browser {
         {
             EngineHub::unregister(cx, popup.view.id());
             popup.view.close();
+            self.forget_prompts(PageOwner::Popup);
             cx.notify();
         }
     }
@@ -136,14 +150,19 @@ impl Browser {
     pub fn popup_to_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(popup) = self.popup.take() else { return };
         EngineHub::unregister(cx, popup.view.id());
-        let mut record = TabRecord::new(popup.view.url());
-        record.title = popup.title;
+        // A page held up by a sign-in or certificate prompt has committed
+        // nothing yet; keep the address it was opened with.
+        let url = Some(popup.view.url()).filter(|u| !u.is_empty()).unwrap_or(popup.url);
+        let mut record = TabRecord::new(url.clone());
+        record.title = if popup.title.is_empty() { url } else { popup.title };
         let id = self.ws.add_child_tab(record, popup.opener, None);
+        self.reassign_prompts(PageOwner::Popup, PageOwner::Tab(id));
         self.adopt_view(id, popup.view, window, cx);
         if let Some(live) = self.live.get_mut(&id) {
             live.opener = Some(popup.opener);
         }
         self.select_tab(id, window, cx);
+        self.sync_page_modals(cx);
     }
 
     /// Close a tab without the "Closed … Undo" toast or a closed-tab entry
@@ -181,10 +200,11 @@ impl Browser {
         let host = mori_core::util::host_of(&popup.url);
         let fav = host.as_deref().and_then(|h| self.favicons.get(h));
         let title = if popup.title.is_empty() { popup.url.clone() } else { popup.title.clone() };
-        let secure = popup.url.starts_with("https://");
+        let secure = self.page_security(PageOwner::Popup, &popup.url) == mori_core::security::Security::Secure;
         let host_label = host.unwrap_or_else(|| popup.url.clone());
         let (w, h) = popup.size;
         let surface = popup.surface.clone();
+        let prompts = self.render_page_prompts(PageOwner::Popup, cx);
         Some(
             div()
                 .absolute()
@@ -236,7 +256,7 @@ impl Browser {
                                     cx.listener(|this, _, window, cx| this.close_popup_window(window, cx)),
                                 )),
                         )
-                        .child(div().flex_1().min_h_0().child(surface)),
+                        .child(div().flex_1().min_h_0().relative().child(surface).children(prompts)),
                 )
                 .into_any_element(),
         )

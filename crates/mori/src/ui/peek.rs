@@ -23,7 +23,7 @@ const CONTROL_SIZE: Pixels = px(32.);
 impl Browser {
     /// The area pages are shown in (both halves of a split), in window
     /// coordinates, as of the last paint.
-    fn peek_area(&self, window: &Window, cx: &App) -> Bounds<Pixels> {
+    pub(crate) fn peek_area(&self, window: &Window, cx: &App) -> Bounds<Pixels> {
         let painted = [self.selected(), self.split]
             .into_iter()
             .flatten()

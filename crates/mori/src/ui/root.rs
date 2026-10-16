@@ -115,10 +115,15 @@ impl Browser {
 
         let live = self.selected_live();
         let error = live.and_then(|l| l.error.clone()).filter(|_| !self.settings_open);
-        // Link targets hide while a menu or the launcher covers the page.
-        let status = live
-            .and_then(|l| l.status.clone())
-            .filter(|_| !self.settings_open && self.menu.is_none() && self.launcher.is_none());
+        // Link targets hide while a menu, the launcher, a Peek or a popup
+        // covers the page (the pointer left it without a mouse-leave).
+        let status = live.and_then(|l| l.status.clone()).filter(|_| {
+            !self.settings_open
+                && self.menu.is_none()
+                && self.launcher.is_none()
+                && self.peek.is_none()
+                && self.popup.is_none()
+        });
         let fullscreen = live.is_some_and(|l| l.fullscreen);
         // In a split, the pane with the user's attention gets an accent ring.
         let active_pane = self.split.is_some() && !self.split_focused && !self.settings_open;
@@ -161,7 +166,10 @@ impl Browser {
         if let Some(err) = error {
             card = card.child(self.render_error(err, cx));
         }
-        if let Some(toasts) = self.render_toasts(cx) {
+        // Over a Peek or popup the toasts move above them (see render).
+        if !self.page_overlay_open()
+            && let Some(toasts) = self.render_toasts(cx)
+        {
             card = card.child(toasts);
         }
         if let Some(id) = selected.filter(|_| !self.settings_open) {
@@ -551,6 +559,23 @@ impl Render for Browser {
         let panel = self.render_panel(window, cx);
         let peek = self.render_peek(window, cx);
         let popup = self.render_popup_window(cx);
+        // Toasts raised while a Peek or popup is open stay visible and
+        // clickable above it, over the same page area.
+        let overlay_toasts = if self.page_overlay_open() {
+            let area = self.peek_area(window, cx);
+            self.render_toasts(cx).map(|toasts| {
+                div()
+                    .absolute()
+                    .left(area.left())
+                    .top(area.top())
+                    .w(area.size.width)
+                    .h(area.size.height)
+                    .child(toasts)
+                    .into_any_element()
+            })
+        } else {
+            None
+        };
         let boost = self.boost_editor.clone();
 
         div()
@@ -677,6 +702,7 @@ impl Render for Browser {
             .children(panel)
             .children(peek)
             .children(popup)
+            .children(overlay_toasts)
             .children(boost.map(|b| b.into_any_element()))
             .children(launcher.map(|l| l.into_any_element()))
             .children(menu)

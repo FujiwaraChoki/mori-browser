@@ -1,7 +1,8 @@
 //! Chromium DevTools docked beside the page it inspects.
 //!
 //! DevTools is not a tab: it belongs to the inspected tab, shows only while
-//! that tab is selected, and is never saved to the session. F12 / ⌘⌥I
+//! that tab is on screen (one pane at a time, the active split pane's
+//! first), and is never saved to the session. F12 / ⌘⌥I
 //! toggles it; Inspect opens it (or reuses it) on the clicked element. The
 //! frontend runs in its own offscreen view, connected to the page through
 //! [`DevToolsBridge`].
@@ -24,9 +25,15 @@ pub struct DevToolsPane {
 }
 
 impl Browser {
-    /// Open DevTools for the selected page, or close it if it is open.
+    /// Open DevTools for the active page, or close it if it is open. With
+    /// the keyboard in a DevTools pane, close that pane.
     pub fn toggle_devtools(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.selected() else { return };
+        let focused = self
+            .devtools
+            .iter()
+            .find(|(_, p)| p.surface.read(cx).focus_handle().is_focused(window))
+            .map(|(t, _)| *t);
+        let Some(id) = focused.or_else(|| self.active_tab()) else { return };
         if self.devtools.contains_key(&id) {
             self.drop_devtools(id, cx);
             self.focus_selected_page(window, cx);
@@ -47,6 +54,12 @@ impl Browser {
             .filter(|f| *f > 0.0)
             .unwrap_or(1.0);
         let (x, y) = ((x as f64 / factor).round() as i32, (y as f64 / factor).round() as i32);
+        // Inspecting the right split pane makes it the active one, so its
+        // DevTools is the pane shown.
+        if self.split == Some(tab) && !self.split_focused {
+            self.split_focused = true;
+            cx.notify();
+        }
         match self.devtools.get(&tab) {
             Some(pane) => {
                 let token = pane.token.clone();
@@ -106,6 +119,13 @@ impl Browser {
                         self.open_file_dialog(view, request, window, cx);
                     }
                 }
+                // Browser shortcuts DevTools did not use (F12, Ctrl+Shift+I,
+                // Ctrl+R…) run as from any page.
+                ViewEvent::UnhandledKey(key) => {
+                    if let Some(surface) = self.devtools.get(&tab).map(|p| p.surface.clone()) {
+                        surface.update(cx, |s, cx| s.run_unhandled_shortcut(key, window, cx));
+                    }
+                }
                 _ => {}
             }
         }
@@ -121,13 +141,24 @@ impl Browser {
         }
     }
 
-    /// DevTools of the selected tab, docked to the right of the page.
-    pub fn render_devtools_card(&self, cx: &App) -> Option<AnyElement> {
-        use crate::theme::{ActiveTokens, metrics};
+    /// The tab whose DevTools pane is on screen: the active pane's if it
+    /// has one, else the other visible pane's.
+    pub(super) fn shown_devtools_tab(&self) -> Option<TabId> {
         if self.settings_open || self.selected_live().is_some_and(|l| l.fullscreen) {
             return None;
         }
-        let pane = self.devtools.get(&self.selected()?)?;
+        let split = self.split.filter(|s| self.live.contains_key(s));
+        self.active_tab()
+            .into_iter()
+            .chain(self.selected())
+            .chain(split)
+            .find(|t| self.devtools.contains_key(t))
+    }
+
+    /// The on-screen tab's DevTools, docked to the right of the pages.
+    pub fn render_devtools_card(&self, cx: &App) -> Option<AnyElement> {
+        use crate::theme::{ActiveTokens, metrics};
+        let pane = self.devtools.get(&self.shown_devtools_tab()?)?;
         let t = cx.tokens();
         Some(
             div()

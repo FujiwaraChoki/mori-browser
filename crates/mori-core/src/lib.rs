@@ -20,6 +20,7 @@ pub mod persist;
 pub mod prompts;
 pub mod routes;
 pub mod scripts;
+pub mod security;
 pub mod settings;
 pub mod site_permissions;
 pub mod theme;

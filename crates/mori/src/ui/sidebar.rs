@@ -291,15 +291,20 @@ impl Browser {
         let zoom = self.selected_zoom_level();
         let zoom_label = (is_web && !mori_core::zoom::is_default(zoom))
             .then(|| format!("{}%", mori_core::zoom::percent_for_level(zoom)));
-        let has_zoom_chip = zoom_label.is_some();
 
         // Zen shows the bare host; only insecure pages and the empty state
-        // get a leading glyph.
-        let lead = if url.starts_with("http://") {
+        // get a leading glyph. The lock needs a valid certificate, not just
+        // the scheme.
+        use mori_core::security::Security;
+        let security = match self.active_tab() {
+            Some(id) => self.page_security(crate::browser::PageOwner::Tab(id), &url),
+            None => Security::Neutral,
+        };
+        let lead = if matches!(security, Security::NotSecure | Security::CertificateError) {
             Some(icon("triangle-alert", px(14.), t.status_warning))
         } else if host.is_empty() {
             Some(icon("search", px(14.), muted))
-        } else if is_web {
+        } else if security == Security::Secure {
             // Secure page: a quiet lock that opens site info.
             Some(icon("lock", px(13.), muted))
         } else {
@@ -325,6 +330,27 @@ impl Browser {
                     } else {
                         this.toggle_bookmark(cx);
                     }
+                }))
+        };
+        // The site's zoom when it is not 100%; click to reset.
+        let zoom_chip = |id: &'static str, label: String, cx: &mut Context<Self>| {
+            div()
+                .id(id)
+                .flex_none()
+                .h(px(18.))
+                .px(px(5.))
+                .flex()
+                .items_center()
+                .rounded(metrics::RADIUS_MD)
+                .bg(t.foreground.opacity(0.08))
+                .hover(|s| s.bg(t.foreground.opacity(0.14)))
+                .cursor_pointer()
+                .text_size(metrics::TEXT_SMALL)
+                .text_color(t.sidebar_foreground.opacity(0.75))
+                .child(label)
+                .on_click(cx.listener(|this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.zoom(0.0, cx);
                 }))
         };
         let reader_color = if reader { t.primary } else { muted };
@@ -384,30 +410,7 @@ impl Browser {
                         s.text_color(t.sidebar_foreground.opacity(if t.dark { 0.75 } else { 0.68 }))
                             .child(host)
                     }),
-            )
-            // The site's zoom when it is not 100%; click to reset.
-            .when_some(zoom_label, |s, label| {
-                s.child(
-                    div()
-                        .id("zoom-chip")
-                        .flex_none()
-                        .h(px(18.))
-                        .px(px(5.))
-                        .flex()
-                        .items_center()
-                        .rounded(metrics::RADIUS_MD)
-                        .bg(t.foreground.opacity(0.08))
-                        .hover(|s| s.bg(t.foreground.opacity(0.14)))
-                        .cursor_pointer()
-                        .text_size(metrics::TEXT_SMALL)
-                        .text_color(t.sidebar_foreground.opacity(0.75))
-                        .child(label)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.zoom(0.0, cx);
-                        })),
-                )
-            });
+            );
         if !is_web {
             return pill;
         }
@@ -415,15 +418,17 @@ impl Browser {
         // panics when an element's display differs between prepaint and
         // paint, which happens whenever the layout shifts under a resting
         // pointer (a menu closing, a row disappearing).
-        // The hover overlay would cover the zoom chip, so while the chip shows
-        // the actions keep their own slots instead.
-        match t.opaque_on_sidebar(t.tile_rest()).filter(|_| !has_zoom_chip) {
+        // The hover overlay covers the zoom chip, so it carries its own copy
+        // of the chip at its end: the chip stays put and clickable, and the
+        // host keeps the rest of the pill at rest.
+        match t.opaque_on_sidebar(t.tile_rest()) {
             // The host keeps the whole pill until hover; the actions then
             // slide in over its end on the pill's own colour.
             Some(backing) => {
                 pill = pill
                     .when(reader, |s| s.child(action("reader", "book-open-text", reader_color, true, cx)))
                     .when(bookmarked, |s| s.child(action("bookmark", "star", star_color, false, cx)))
+                    .when_some(zoom_label.clone(), |s, label| s.child(zoom_chip("zoom-chip", label, cx)))
                     .child(
                         h_flex()
                             .absolute()
@@ -440,7 +445,10 @@ impl Browser {
                                     .gap(px(7.))
                                     .bg(backing)
                                     .child(action("reader-hover", "book-open-text", reader_color, true, cx))
-                                    .child(action("bookmark-hover", "star", star_color, false, cx)),
+                                    .child(action("bookmark-hover", "star", star_color, false, cx))
+                                    .when_some(zoom_label, |s, label| {
+                                        s.child(zoom_chip("zoom-chip-hover", label, cx))
+                                    }),
                             ),
                     );
             }
@@ -455,7 +463,8 @@ impl Browser {
                     .child(
                         action("bookmark", "star", star_color, false, cx)
                             .when(!bookmarked, |s| s.invisible().group_hover("omnibox", |s| s.visible())),
-                    );
+                    )
+                    .when_some(zoom_label, |s, label| s.child(zoom_chip("zoom-chip", label, cx)));
             }
         }
         pill

@@ -28,8 +28,9 @@ impl Browser {
             let shown = Some(*tab) == selected || (Some(*tab) == self.split && !fullscreen);
             live.view.set_hidden(!(pages && shown));
         }
+        let devtools = self.shown_devtools_tab();
         for (tab, pane) in &self.devtools {
-            pane.view.set_hidden(!(pages && !fullscreen && Some(*tab) == selected));
+            pane.view.set_hidden(!(pages && Some(*tab) == devtools));
         }
         if let Some(peek) = &self.peek {
             peek.view.set_hidden(!self.window_visible);

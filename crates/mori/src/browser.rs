@@ -99,6 +99,8 @@ pub struct LiveTab {
 pub enum PageOwner {
     Tab(TabId),
     Peek,
+    /// The floating `window.open` popup.
+    Popup,
 }
 
 /// A JavaScript dialog waiting for the user.
@@ -256,6 +258,8 @@ pub struct Browser {
     pub auth_prompts: PromptQueue<PageOwner, PendingAuth>,
     pub permissions: PromptQueue<PageOwner, PermissionRequest>,
     pub cert_errors: PromptQueue<PageOwner, CertificateError>,
+    /// Hosts the user let through despite a bad certificate, this session.
+    pub cert_exceptions: mori_core::security::CertificateExceptions,
     /// When the user last Alt+clicked in the window; a page's Peek request
     /// (PEEK_LINK_SCRIPT) is only honoured right after one.
     pub alt_click_at: Option<Instant>,
@@ -358,6 +362,7 @@ impl Browser {
             auth_prompts: PromptQueue::default(),
             permissions: PromptQueue::default(),
             cert_errors: PromptQueue::default(),
+            cert_exceptions: Default::default(),
             alt_click_at: None,
             rename: None,
             rename_events: None,
@@ -742,12 +747,16 @@ impl Browser {
     /// click into it) becomes the active one.
     fn sync_split_focus(&mut self, window: &Window, cx: &mut Context<Self>) {
         let Some(split) = self.split else { return };
-        let has_focus = |live: Option<&LiveTab>| {
-            live.is_some_and(|l| l.surface.read(cx).focus_handle().is_focused(window))
+        // A pane's DevTools counts as that pane.
+        let has_focus = |tab: Option<TabId>| {
+            tab.is_some_and(|t| {
+                self.live.get(&t).is_some_and(|l| l.surface.read(cx).focus_handle().is_focused(window))
+                    || self.devtools.get(&t).is_some_and(|p| p.surface.read(cx).focus_handle().is_focused(window))
+            })
         };
-        let focused = if has_focus(self.live.get(&split)) {
+        let focused = if has_focus(Some(split)) {
             true
-        } else if has_focus(self.selected_live()) {
+        } else if has_focus(self.selected()) {
             false
         } else {
             return;
@@ -1998,10 +2007,7 @@ impl Browser {
             Some(opener) => self.ws.add_child_tab(record, opener, None),
             None => self.ws.add_new_tab(record),
         };
-        self.dialogs.reassign(PageOwner::Peek, PageOwner::Tab(id));
-        self.auth_prompts.reassign(PageOwner::Peek, PageOwner::Tab(id));
-        self.permissions.reassign(PageOwner::Peek, PageOwner::Tab(id));
-        self.cert_errors.reassign(PageOwner::Peek, PageOwner::Tab(id));
+        self.reassign_prompts(PageOwner::Peek, PageOwner::Tab(id));
         // adopt_view reads the page's real loading and history state: a
         // page that finished loading while peeked reports no further loads.
         self.adopt_view(id, peek.view, window, cx);
@@ -2059,23 +2065,40 @@ impl Browser {
                     peek.view.execute_js(mori_core::scripts::CLIPBOARD_BRIDGE_SCRIPT)
                 }
                 ViewEvent::AddressChanged(u) => peek.url = u,
-                ViewEvent::NewView { view, url, disposition, .. } => {
+                ViewEvent::NewView { view, url, disposition, features, .. } => {
                     use mori_engine::Disposition as D;
                     // Keep the new page alive as a tab so window.opener keeps
                     // working. A popup (sign-in flows) needs its opener too,
                     // so the peeked page becomes a tab first.
+                    let popup = matches!(disposition, D::Popup | D::Window);
                     match disposition {
                         D::Popup | D::Window => self.promote_peek(window, cx),
                         D::BackgroundTab => {}
                         _ => self.close_peek(window, cx),
                     }
+                    let opener = self.active_tab();
+                    if popup
+                        && let Some(opener) = opener
+                        && popups::wants_window(disposition, features)
+                    {
+                        self.open_popup_window(opener, view, url, features, window, cx);
+                        self.schedule_save(cx);
+                        continue;
+                    }
                     let mut record = TabRecord::new(url.clone());
                     record.title = url;
-                    let id = match self.active_tab() {
+                    let id = match opener {
                         Some(opener) => self.ws.add_child_tab(record, opener, None),
                         None => self.ws.add_new_tab(record),
                     };
                     self.adopt_view(id, view, window, cx);
+                    if popup
+                        && let Some(live) = self.live.get_mut(&id)
+                    {
+                        // window.close() from it returns quietly to the opener.
+                        live.opener = opener;
+                        live.blank_popup = true;
+                    }
                     if disposition == D::BackgroundTab {
                         if let Some(live) = self.live.get(&id) {
                             live.view.set_hidden(true);
@@ -2501,6 +2524,7 @@ impl Browser {
         match owner {
             PageOwner::Tab(id) => self.live.get(&id).map(|l| l.view.clone()),
             PageOwner::Peek => self.peek.as_ref().map(|p| p.view.clone()),
+            PageOwner::Popup => self.popup.as_ref().map(|p| p.view.clone()),
         }
     }
 
@@ -2508,12 +2532,13 @@ impl Browser {
         match owner {
             PageOwner::Tab(id) => self.live.get(&id).map(|l| l.surface.clone()),
             PageOwner::Peek => self.peek.as_ref().map(|p| p.surface.clone()),
+            PageOwner::Popup => self.popup.as_ref().map(|p| p.surface.clone()),
         }
     }
 
     /// Events every page handles the same way, tab or Peek. Returns the
     /// event when it is not one of them.
-    fn on_page_event(
+    pub(super) fn on_page_event(
         &mut self,
         owner: PageOwner,
         ev: ViewEvent,
@@ -2563,6 +2588,7 @@ impl Browser {
             .keys()
             .map(|t| PageOwner::Tab(*t))
             .chain(self.peek.as_ref().map(|_| PageOwner::Peek))
+            .chain(self.popup.as_ref().map(|_| PageOwner::Popup))
             .collect();
         for owner in owners {
             let modal = self.dialogs.has(owner) || self.auth_prompts.has(owner);
@@ -2589,32 +2615,73 @@ impl Browser {
     /// is what the user is looking at.
     fn refocus_owner(&mut self, owner: PageOwner, window: &mut Window, cx: &mut Context<Self>) {
         match owner {
-            PageOwner::Peek => {
+            PageOwner::Peek | PageOwner::Popup => {
+                // The popup floats over the Peek: a Peek prompt under an
+                // open popup waits for it.
+                if owner == PageOwner::Peek && self.popup.is_some() {
+                    return;
+                }
                 let target = self
                     .modal_focus(owner, cx)
-                    .or_else(|| self.peek.as_ref().map(|p| p.surface.read(cx).focus_handle().clone()));
+                    .or_else(|| self.owner_surface(owner).map(|s| s.read(cx).focus_handle().clone()));
                 if let Some(handle) = target {
                     window.focus(&handle, cx);
                 }
             }
-            PageOwner::Tab(id) if self.active_tab() == Some(id) && self.peek.is_none() => {
+            PageOwner::Tab(id) if self.active_tab() == Some(id) && self.peek.is_none() && self.popup.is_none() => {
                 self.focus_selected_page(window, cx);
             }
             PageOwner::Tab(_) => {}
         }
     }
 
-    /// The page whose prompts are on top: the Peek if open, else the
-    /// active tab (the focused split pane or the selected tab).
+    /// A Peek or floating popup covers the pages.
+    pub fn page_overlay_open(&self) -> bool {
+        self.peek.is_some() || self.popup.is_some()
+    }
+
+    /// The page whose prompts are on top: the popup or Peek if open, else
+    /// the active tab (the focused split pane or the selected tab).
     pub fn front_owner(&self) -> Option<PageOwner> {
-        if self.peek.is_some() {
+        if self.popup.is_some() {
+            Some(PageOwner::Popup)
+        } else if self.peek.is_some() {
             Some(PageOwner::Peek)
         } else {
             self.active_tab().map(PageOwner::Tab)
         }
     }
 
-    fn forget_prompts(&mut self, owner: PageOwner) {
+    /// A page changed hands (Peek or popup became a tab): its waiting
+    /// prompts go with it.
+    /// The connection state to show for `owner`'s page at `url`.
+    pub fn page_security(&self, owner: PageOwner, url: &str) -> mori_core::security::Security {
+        use mori_core::security;
+        let error_page = match owner {
+            PageOwner::Tab(id) => self
+                .live
+                .get(&id)
+                .and_then(|l| l.error.as_ref())
+                .is_some_and(|e| security::is_certificate_error_code(e.code)),
+            _ => false,
+        };
+        // What Chromium itself recorded for the page on screen: this also
+        // covers its own interstitial and a "Proceed" chosen there.
+        let bad_cert = self
+            .owner_view(owner)
+            .and_then(|v| v.cert_status())
+            .is_some_and(security::cert_status_is_error);
+        security::classify(url, error_page || bad_cert || self.cert_errors.has(owner), &self.cert_exceptions)
+    }
+
+    pub(super) fn reassign_prompts(&mut self, from: PageOwner, to: PageOwner) {
+        self.dialogs.reassign(from, to);
+        self.auth_prompts.reassign(from, to);
+        self.permissions.reassign(from, to);
+        self.cert_errors.reassign(from, to);
+    }
+
+    pub(super) fn forget_prompts(&mut self, owner: PageOwner) {
         self.dialogs.take_owner(owner);
         self.auth_prompts.take_owner(owner);
         self.permissions.take_owner(owner);
@@ -2726,11 +2793,7 @@ impl Browser {
         let store = &self.site_permissions;
         while let Some((owner, other)) = self.permissions.take(|r| remembered_permission(store, r).is_some()) {
             let allow = remembered_permission(store, &other) == Some(true);
-            let view = match owner {
-                PageOwner::Tab(id) => self.live.get(&id).map(|l| l.view.clone()),
-                PageOwner::Peek => self.peek.as_ref().map(|p| p.view.clone()),
-            };
-            if let Some(view) = view {
+            if let Some(view) = self.owner_view(owner) {
                 view.resolve_permission(other.id, allow);
             }
         }
@@ -2778,7 +2841,12 @@ impl Browser {
 
     /// Answer a certificate error: proceed to the site anyway, or go back.
     pub fn resolve_certificate_error(&mut self, id: mori_engine::CertErrorId, proceed: bool, cx: &mut Context<Self>) {
-        let Some((owner, _)) = self.cert_errors.take(|e| e.id == id) else { return };
+        let Some((owner, err)) = self.cert_errors.take(|e| e.id == id) else { return };
+        if proceed {
+            // Chromium lets the host through for the rest of the session;
+            // the address bar must keep saying it isn't secure.
+            self.cert_exceptions.allow(&err.url);
+        }
         if let Some(view) = self.owner_view(owner) {
             view.resolve_certificate_error(id, proceed);
             if !proceed && view.can_go_back() {
