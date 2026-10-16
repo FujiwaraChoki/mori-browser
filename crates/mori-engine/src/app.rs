@@ -82,13 +82,16 @@ wrap_browser_process_handler! {
         ) -> ::std::os::raw::c_int {
             // A second `mori` was started with the same profile: Chromium's
             // process singleton hands its command line to us instead.
-            let mut urls = Vec::new();
+            let mut relaunch = crate::Relaunch::default();
             if let Some(cmd) = command_line {
                 let mut args = CefStringList::new();
                 cmd.arguments(Some(&mut args));
-                urls = args.into_iter().filter(|a| !a.starts_with("--")).collect();
+                relaunch.urls = args.into_iter().filter(|a| !a.is_empty() && !a.starts_with("--")).collect();
+                let has = |name: &str| cmd.has_switch(Some(&CefString::from(name))) == 1;
+                relaunch.new_window = has("new-window");
+                relaunch.private_window = has("private-window");
             }
-            crate::push_relaunch(urls);
+            crate::push_relaunch(relaunch);
             1
         }
     }

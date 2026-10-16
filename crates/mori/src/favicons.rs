@@ -1,10 +1,14 @@
 //! Favicon cache: decoded per host, kept in memory for drawing, and written
 //! to `<data>/favicons/<host>.png` so sleeping and restored tabs keep their
-//! icons without loading the page.
+//! icons without loading the page. Windows share one cache (an icon one
+//! window learns shows in all of them); a private window's cache is its own
+//! and reads the saved icons but writes nothing.
 
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet},
     path::PathBuf,
+    rc::Rc,
     sync::Arc,
 };
 
@@ -12,8 +16,14 @@ use gpui_kit::*;
 use mori_engine::Frame;
 use smallvec::SmallVec;
 
-pub struct Favicons {
+/// A handle to a favicon cache; clones share it.
+#[derive(Clone)]
+pub struct Favicons(Rc<RefCell<Cache>>);
+
+struct Cache {
     dir: PathBuf,
+    /// Icons of new pages are written to `dir`.
+    persist: bool,
     images: HashMap<String, Arc<RenderImage>>,
     missing: HashSet<String>,
 }
@@ -29,22 +39,33 @@ fn file_name(host: &str) -> String {
 impl Favicons {
     pub fn new(dir: PathBuf) -> Self {
         std::fs::create_dir_all(&dir).ok();
-        Favicons {
+        Self::with(dir, true)
+    }
+
+    /// A cache that keeps the icons it sees in memory only.
+    pub fn in_memory(dir: PathBuf) -> Self {
+        Self::with(dir, false)
+    }
+
+    fn with(dir: PathBuf, persist: bool) -> Self {
+        Favicons(Rc::new(RefCell::new(Cache {
             dir,
+            persist,
             images: HashMap::new(),
             missing: HashSet::new(),
-        }
+        })))
     }
 
     /// The icon for `host`, loading it from disk on first use.
-    pub fn get(&mut self, host: &str) -> Option<Arc<RenderImage>> {
-        if let Some(img) = self.images.get(host) {
+    pub fn get(&self, host: &str) -> Option<Arc<RenderImage>> {
+        let mut cache = self.0.borrow_mut();
+        if let Some(img) = cache.images.get(host) {
             return Some(img.clone());
         }
-        if self.missing.contains(host) {
+        if cache.missing.contains(host) {
             return None;
         }
-        let path = self.dir.join(file_name(host));
+        let path = cache.dir.join(file_name(host));
         let loaded = image::open(&path).ok().map(|img| {
             let mut rgba = img.to_rgba8();
             // RenderImage expects BGRA.
@@ -55,36 +76,41 @@ impl Favicons {
         });
         match loaded {
             Some(img) => {
-                self.images.insert(host.to_string(), img.clone());
+                cache.images.insert(host.to_string(), img.clone());
                 Some(img)
             }
             None => {
-                self.missing.insert(host.to_string());
+                cache.missing.insert(host.to_string());
                 None
             }
         }
     }
 
-    pub fn insert(&mut self, host: &str, frame: Frame, cx: &mut App) {
+    pub fn insert(&self, host: &str, frame: Frame, cx: &mut App) {
         let Frame { width, height, bgra } = frame;
         let Some(buffer) = image::RgbaImage::from_raw(width, height, bgra) else {
             return;
         };
-        // Persist as RGBA PNG off the main thread.
-        let mut rgba = buffer.clone();
-        for px in rgba.pixels_mut() {
-            px.0.swap(0, 2);
+        let mut cache = self.0.borrow_mut();
+        if cache.persist {
+            // Persist as RGBA PNG off the main thread.
+            let mut rgba = buffer.clone();
+            for px in rgba.pixels_mut() {
+                px.0.swap(0, 2);
+            }
+            let path = cache.dir.join(file_name(host));
+            cx.background_executor()
+                .spawn(async move {
+                    if let Err(e) = rgba.save(&path) {
+                        log::debug!("saving favicon {}: {e}", path.display());
+                    }
+                })
+                .detach();
         }
-        let path = self.dir.join(file_name(host));
-        cx.background_executor()
-            .spawn(async move {
-                if let Err(e) = rgba.save(&path) {
-                    log::debug!("saving favicon {}: {e}", path.display());
-                }
-            })
-            .detach();
-        self.missing.remove(host);
-        if let Some(old) = self.images.insert(host.to_string(), to_render_image(buffer)) {
+        cache.missing.remove(host);
+        let old = cache.images.insert(host.to_string(), to_render_image(buffer));
+        drop(cache);
+        if let Some(old) = old {
             cx.drop_image(old, None);
         }
     }

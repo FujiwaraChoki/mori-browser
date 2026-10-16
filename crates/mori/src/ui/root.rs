@@ -114,7 +114,8 @@ impl Browser {
         } else if Browser::shows_new_tab_page(&url) {
             self.render_new_tab_page(cx).into_any_element()
         } else {
-            div().size_full().into_any_element()
+            self.render_page_elsewhere(cx)
+                .unwrap_or_else(|| div().size_full().into_any_element())
         };
 
         let live = self.selected_live();
@@ -462,10 +463,13 @@ fn loading_pill(cx: &App) -> impl IntoElement {
 
 impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::windows::use_theme(self.window_handle, cx);
         self.sync_view_visibility(cx);
         let t = cx.tokens().clone();
         let fullscreen = self.selected_live().is_some_and(|l| l.fullscreen);
-        let show_sidebar = self.settings.sidebar_visible && !fullscreen;
+        // Little Mori has a compact header instead of the sidebar.
+        let little = self.kind == crate::windows::WindowKind::Little;
+        let show_sidebar = self.settings.sidebar_visible && !fullscreen && !little;
         let left = self.settings.sidebar_position == SidebarPosition::Left;
         let inset = if fullscreen { px(0.) } else { metrics::CARD_INSET };
         let loading = !self.settings_open
@@ -527,10 +531,19 @@ impl Render for Browser {
                 .children(resize_handle)
                 .children(sidebar);
         }
+        let row = if little && !fullscreen {
+            v_flex()
+                .size_full()
+                .child(self.render_little_header(cx))
+                .child(row.flex_1().min_h_0())
+                .into_any_element()
+        } else {
+            row.into_any_element()
+        };
 
         // Hidden sidebar: touching the window edge reveals it as a card
         // (see `track_sidebar_peek`).
-        let floating = (self.sidebar_peek && !show_sidebar && !fullscreen).then(|| {
+        let floating = (self.sidebar_peek && !show_sidebar && !fullscreen && !little).then(|| {
             let sidebar = self.render_sidebar(true, window, cx);
             // Opaque, with the space's wash painted inside it, so the page
             // never reads through the tab list.
@@ -684,6 +697,7 @@ impl Render for Browser {
             .on_action(cx.listener(|this, _: &CloseSplit, _, cx| this.close_split(cx)))
             .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss(window, cx)))
             .on_action(cx.listener(|this, _: &Quit, _, cx| this.quit(cx)))
+            .on_action(cx.listener(|_, _: &CloseWindow, window, _| window.remove_window()))
             .on_action(cx.listener(|this, _: &SelectTab1, w, cx| this.select_ordinal(1, w, cx)))
             .on_action(cx.listener(|this, _: &SelectTab2, w, cx| this.select_ordinal(2, w, cx)))
             .on_action(cx.listener(|this, _: &SelectTab3, w, cx| this.select_ordinal(3, w, cx)))

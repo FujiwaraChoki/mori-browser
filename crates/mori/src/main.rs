@@ -5,6 +5,7 @@ mod assets;
 mod assistant;
 mod browser;
 mod commands;
+mod default_browser;
 mod devtools_bridge;
 mod engine_hub;
 mod favicons;
@@ -12,11 +13,11 @@ mod screenshot;
 mod theme;
 mod ui;
 mod web_surface;
+mod windows;
 
-use gpui_kit::*;
 use mori_engine::EngineConfig;
 
-use crate::{browser::Browser, engine_hub::EngineHub};
+use crate::engine_hub::EngineHub;
 
 fn main() {
     // Chromium re-executes this binary for renderer/GPU/utility processes.
@@ -49,10 +50,13 @@ fn main() {
             std::process::exit(1);
         }
     }
-    let start_urls: Vec<String> = std::env::args()
-        .skip(1)
-        .filter(|a| !a.starts_with("--"))
-        .collect();
+    // Profiles deleted last time go now; this instance owns the profile
+    // directory, and Chromium only opens a profile once a page needs it.
+    windows::purge_deleted_profiles(&data_dir, &config.profile_dir);
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let private = args.iter().any(|a| a == "--private-window");
+    let start_urls: Vec<String> = args.into_iter().filter(|a| !a.is_empty() && !a.starts_with("--")).collect();
 
     gpui_kit::application()
         .with_assets(assets::MoriAssets)
@@ -60,41 +64,9 @@ fn main() {
             gpui_kit::init(cx);
             actions::bind_keys(cx);
             EngineHub::start(cx);
+            windows::init(cx);
+            windows::start(start_urls, private, cx);
 
-            let options = WindowOptions {
-                window_bounds: Some(WindowBounds::centered(size(px(1280.), px(820.)), cx)),
-                app_id: Some("mori".into()),
-                titlebar: Some(TitlebarOptions {
-                    title: Some("Mori".into()),
-                    appears_transparent: true,
-                    traffic_light_position: None,
-                }),
-                window_decorations: Some(WindowDecorations::Client),
-                window_min_size: Some(size(px(640.), px(420.))),
-                ..Default::default()
-            };
-            let (window, browser) = gpui_kit::open_window(options, cx, |window, cx| {
-                cx.new(|cx| Browser::new(window, cx))
-            })
-            .expect("failed to open window");
-            let open_urls = move |urls: Vec<String>, cx: &mut App| {
-                let browser = browser.clone();
-                window
-                    .update(cx, |_, window, cx| {
-                        browser.update(cx, |b, cx| b.open_external_urls(&urls, window, cx));
-                        window.activate_window();
-                    })
-                    .ok();
-            };
-            open_urls(start_urls.clone(), cx);
-            EngineHub::on_relaunch(cx, open_urls);
-
-            cx.on_window_closed(|cx, _| {
-                if cx.windows().is_empty() {
-                    cx.quit();
-                }
-            })
-            .detach();
             cx.on_app_quit(|_| async {
                 mori_engine::close_all(std::time::Duration::from_millis(800));
                 mori_engine::shutdown();

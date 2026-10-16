@@ -8,7 +8,6 @@ use mori_engine::{DownloadId, DownloadUpdate, ViewId};
 use uuid::Uuid;
 
 use super::{Browser, ToastAction, ToastStyle};
-use crate::engine_hub::EngineHub;
 
 fn progress_of(update: &DownloadUpdate) -> DownloadProgress {
     use mori_engine::DownloadState as E;
@@ -32,21 +31,9 @@ fn progress_of(update: &DownloadUpdate) -> DownloadProgress {
 }
 
 impl Browser {
-    /// Route the engine's download updates to this window.
-    pub(super) fn watch_downloads(&mut self, cx: &mut Context<Self>) {
-        let weak = cx.entity().downgrade();
-        let handle = self.window_handle;
-        EngineHub::on_downloads(cx, move |updates, cx| {
-            let weak = weak.clone();
-            handle
-                .update(cx, |_, window, cx| {
-                    weak.update(cx, |this, cx| this.on_download_updates(updates, window, cx)).ok();
-                })
-                .ok();
-        });
-    }
-
-    fn on_download_updates(&mut self, updates: Vec<DownloadUpdate>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Download progress for this window (`windows` routes each download to
+    /// the window whose page started it).
+    pub(crate) fn on_download_updates(&mut self, updates: Vec<DownloadUpdate>, window: &mut Window, cx: &mut Context<Self>) {
         let mut save = false;
         for update in updates {
             // Remember which tab started it, so its page isn't slept mid-way.

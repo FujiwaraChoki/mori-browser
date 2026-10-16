@@ -347,10 +347,12 @@ impl ActiveTokens for App {
 }
 
 /// Recompute tokens for the current appearance and space theme, and mirror
-/// them into GPUI Component's theme.
+/// them into GPUI Component's theme. With `pages`, web pages follow the
+/// chrome's light or dark scheme.
 pub fn apply(
     appearance: mori_core::settings::Appearance,
     gradient: &GradientTheme,
+    pages: bool,
     window: Option<&mut Window>,
     cx: &mut App,
 ) {
@@ -369,15 +371,21 @@ pub fn apply(
     let palette = core_theme::themed_palette(base, gradient, dark);
 
     if let Some(old) = cx.try_global::<Tokens>() {
-        for image in [old.wash.clone(), old.grain.clone()].into_iter().flatten() {
-            cx.drop_image(image, None);
+        // Another window may still be drawn with them (see `windows`).
+        let images: Vec<_> = [old.wash.clone(), old.grain.clone()].into_iter().flatten().collect();
+        for image in images {
+            if !crate::windows::theme_image_in_use(&image) {
+                cx.drop_image(image, None);
+            }
         }
     }
     let tokens = Tokens::from_palette(&palette, dark, gradient.clone());
 
     // Pages follow the chrome, so dark-aware sites (and their favicons)
     // render dark while Mori is dark.
-    mori_engine::set_color_scheme(dark);
+    if pages {
+        mori_engine::set_color_scheme(dark);
+    }
 
     KitTheme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, window, cx);
     let kit = KitTheme::global_mut(cx);

@@ -30,12 +30,15 @@ runtime files are copied next to the binary in `target/<profile>/`, so the
 binary runs straight from there:
 
 ```sh
-target/release/mori                 # restores the last session
-target/release/mori example.com     # also opens a tab
+target/release/mori                 # restores the last session (every window)
+target/release/mori example.com     # opens the link in Little Mori, or as a tab
+                                    #   (Settings > General > Links from other apps)
+target/release/mori --new-window    # a new window
+target/release/mori --private-window
 ```
 
-Starting `mori` again while it runs hands the URLs to the running instance
-(Chromium's process singleton) and exits.
+Starting `mori` again while it runs hands the URLs and window switches to the
+running instance (Chromium's process singleton) and exits.
 
 ### Package and install
 
@@ -43,6 +46,7 @@ Starting `mori` again while it runs hands the URLs to the running instance
 scripts/package-linux.sh            # -> dist/mori-linux-x86_64/
 scripts/install-linux.sh            # -> ~/.local/opt/mori, ~/.local/bin/mori,
                                     #    desktop entry and icon
+scripts/install-linux.sh --default  # ... and make Mori the default browser
 ```
 
 Both scripts move an existing output to the trash with `gio trash`; they never

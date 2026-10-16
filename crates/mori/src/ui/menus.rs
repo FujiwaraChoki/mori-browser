@@ -190,18 +190,25 @@ fn entries(b: &Browser, kind: &MenuKind) -> Vec<Entry> {
                     b.schedule_save(cx);
                 })
                 .enabled(index + 1 < count),
+            ]
+            .into_iter()
+            .chain(crate::ui::windows::profile_entries(b, sid))
+            .chain([
                 Entry::Separator,
                 cmd("New Space", "layers", Command::NewSpace),
                 item("Delete Space", "trash", move |b, w, cx| b.delete_space(sid, w, cx))
                     .enabled(count > 1)
                     .destructive(),
-            ]
+            ])
+            .collect()
         }
         MenuKind::Sidebar => vec![
             item("New Tab", "plus", |b, w, cx| b.open_launcher(LauncherMode::NewTab, w, cx))
                 .shortcut("secondary-t"),
             item("New Folder", "folder-plus", |b, w, cx| b.new_folder(Vec::new(), w, cx)),
             cmd("New Space", "layers", Command::NewSpace),
+            cmd("New Window", "app-window", Command::NewWindow).shortcut("secondary-n"),
+            cmd("Private Window", "hat-glasses", Command::NewPrivateWindow).shortcut("secondary-shift-n"),
             Entry::Separator,
             cmd("Reopen Closed Tab", "rotate-ccw", Command::ReopenClosedTab)
                 .shortcut("secondary-shift-t")
@@ -519,6 +526,7 @@ fn tab_entries(b: &Browser, id: TabId) -> Vec<Entry> {
             b.move_tab_to_space(id, sid, w, cx);
         }));
     }
+    v.extend(crate::ui::windows::move_to_window_entries(b, id));
     if is_web {
         let url = url.clone();
         v.push(item("Always Open in This Space", "route", move |b, _, cx| {

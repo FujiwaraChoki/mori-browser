@@ -494,6 +494,7 @@ impl Browser {
             .pb(px(10.))
             .gap(px(7.))
             .children(controls)
+            .children(crate::ui::windows::private_badge(self, cx))
             .child(nav)
             .child(self.render_omnibox(cx))
     }

@@ -45,6 +45,7 @@ use crate::{
         launcher::{Launcher, LauncherEvent, LauncherMode},
     },
     web_surface::WebSurface,
+    windows::{PageElsewhere, Seed, Start, WindowKind},
 };
 
 mod devtools;
@@ -149,6 +150,10 @@ pub enum ToastAction {
     UndoDeleteSpace(Box<(DeletedSpace, Vec<Route>)>),
     UndoClearHistory(Box<HistoryStore>),
     OpenDownloads,
+    /// Register Mori as the desktop's default web browser.
+    MakeDefaultBrowser,
+    /// Undo deleting a profile (its data stays until Mori restarts).
+    UndoDeleteProfile(Box<mori_core::profiles::DeletedProfile>),
     /// Show a file in the file manager.
     Reveal(PathBuf),
     ResetZoom,
@@ -227,6 +232,17 @@ pub struct Browser {
     pub boosts: BoostStore,
     pub site_permissions: SitePermissionStore,
     pub favicons: Favicons,
+
+    /// A normal browser window, a private one, or a Little Mori window.
+    pub kind: WindowKind,
+    /// The browsing context every page of this window uses: the in-memory
+    /// one of a private window, or the profile a Little Mori page opened in.
+    pub private_context: Option<mori_engine::BrowsingContext>,
+    /// This window writes the shared stores to disk (one window does; see
+    /// `windows`).
+    pub(crate) writes_state: bool,
+    /// Text fields of the window and profile settings.
+    pub(crate) window_ui: crate::ui::windows::WindowUi,
 
     pub live: HashMap<TabId, LiveTab>,
     pub downloads: DownloadStore,
@@ -318,38 +334,50 @@ pub struct Browser {
     pub settings_inputs: Option<crate::ui::settings::SettingsInputs>,
 
     pub focus_handle: FocusHandle,
-    window_handle: AnyWindowHandle,
+    pub(crate) window_handle: AnyWindowHandle,
     saver: Saver,
-    /// `MORI_START_URL` sessions are throwaway: the real session file is
-    /// never overwritten.
-    ephemeral_session: bool,
+    /// `MORI_START_URL` sessions and Little Mori windows are throwaway:
+    /// the real session file is never overwritten.
+    pub(crate) ephemeral_session: bool,
     save_scheduled: bool,
     last_maintenance: Instant,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Browser {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// The browser of a new window, starting from `seed` (see `windows`).
+    pub fn new(window: &mut Window, cx: &mut Context<Self>, seed: Seed) -> Self {
         let data_dir = mori_core::paths::data_dir();
-        let settings = Settings::load(&data_dir);
-        let mut ws = Workspace::load(&data_dir);
-        let start_url = std::env::var("MORI_START_URL").ok();
-        if let Some(url) = &start_url {
-            ws = Workspace::new();
-            ws.add_new_tab(TabRecord::new(url.clone()));
-        }
-
-        let downloads = DownloadStore::load(&data_dir);
-        let zoom = ZoomStore::load(&data_dir);
         let saver = Saver::new(&data_dir);
+        let Seed {
+            kind,
+            ws,
+            settings,
+            history,
+            bookmarks,
+            archive,
+            routes,
+            boosts,
+            site_permissions,
+            zoom,
+            downloads,
+            favicons,
+            private_context,
+            ephemeral_session,
+            start,
+        } = seed;
         let mut this = Browser {
-            history: HistoryStore::load(&data_dir),
-            bookmarks: BookmarkStore::load(&data_dir),
-            archive: ArchiveStore::load(&data_dir),
-            routes: RouteStore::load(&data_dir),
-            boosts: BoostStore::load(&data_dir),
-            site_permissions: SitePermissionStore::load(&data_dir),
-            favicons: Favicons::new(data_dir.join("favicons")),
+            history,
+            bookmarks,
+            archive,
+            routes,
+            boosts,
+            site_permissions,
+            favicons,
+            kind,
+            private_context,
+            writes_state: false,
+            window_ui: Default::default(),
             ws,
             settings,
             live: HashMap::new(),
@@ -409,12 +437,17 @@ impl Browser {
             focus_handle: cx.focus_handle(),
             window_handle: window.window_handle(),
             saver,
-            ephemeral_session: start_url.is_some(),
+            ephemeral_session,
             save_scheduled: false,
             last_maintenance: Instant::now(),
             _subscriptions: Vec::new(),
         };
         this.settings.sidebar_visible = this.settings.launch_sidebar_visible();
+        if start == Start::Blank {
+            // A new window over the same tabs: it starts on the space's
+            // new-tab page with the command bar, not on another window's tab.
+            this.ws.active_mut().selected = None;
+        }
 
         let appearance = cx.observe_window_appearance(window, |this, window, cx| {
             this.apply_theme(Some(window), cx);
@@ -426,7 +459,6 @@ impl Browser {
             this.sync_view_visibility(cx);
         });
         this._subscriptions.push(visibility);
-        this.watch_downloads(cx);
         // Persist on quit and when the window goes away.
         this._subscriptions.push(cx.on_app_quit(|this, _| {
             this.save_and_flush();
@@ -437,6 +469,8 @@ impl Browser {
 
         if this.ws.tabs.is_empty() {
             this.open_blank_tab(window, cx);
+        } else if start == Start::Blank {
+            cx.defer_in(window, |this, window, cx| this.open_launcher(LauncherMode::NewTab, window, cx));
         } else {
             let selected = this
                 .ws
@@ -455,6 +489,9 @@ impl Browser {
 
     /// Coalesce saves: write the session on the next tick.
     pub fn schedule_save(&mut self, cx: &mut Context<Self>) {
+        // Something changed: other windows catch up when this one notifies
+        // (see `windows`).
+        cx.notify();
         if self.save_scheduled {
             return;
         }
@@ -478,6 +515,11 @@ impl Browser {
         use mori_core::{
             archive, bookmarks, boosts, downloads, history, routes, settings, site_permissions, workspace, zoom,
         };
+        // Other windows hold the same stores; one of them writes them, and a
+        // private window writes nothing.
+        if !self.writes_state {
+            return;
+        }
         let saver = &mut self.saver;
         let session = if self.ephemeral_session {
             Ok(false)
@@ -519,7 +561,12 @@ impl Browser {
 
     pub fn apply_theme(&mut self, window: Option<&mut Window>, cx: &mut App) {
         let gradient = self.ws.active().theme.clone();
-        crate::theme::apply(self.settings.appearance, &gradient, window, cx);
+        // A private window is always dark, and leaves the pages of the
+        // other windows on their scheme.
+        let private = self.kind == WindowKind::Private;
+        let appearance = if private { mori_core::Appearance::Dark } else { self.settings.appearance };
+        crate::theme::apply(appearance, &gradient, !private, window, cx);
+        crate::windows::remember_theme(self.window_handle, cx);
     }
 
     // ---- Toasts --------------------------------------------------------------
@@ -641,6 +688,8 @@ impl Browser {
                 self.schedule_save(cx);
             }
             ToastAction::OpenDownloads => self.panel = Some(Panel::Downloads),
+            ToastAction::MakeDefaultBrowser => crate::default_browser::make_default(cx),
+            ToastAction::UndoDeleteProfile(deleted) => crate::windows::restore_profile(*deleted, cx),
             ToastAction::Reveal(path) => crate::ui::panels::reveal(&path),
             ToastAction::ResetZoom => self.zoom(0.0, cx),
             ToastAction::PrintTab(tab) => self.print_tab(tab, cx),
@@ -719,11 +768,28 @@ impl Browser {
         if Self::is_internal(&record.url) {
             return;
         }
-        let view = WebView::new(&record.url, self.card_size(window), window.scale_factor());
+        // Another window may have the page loaded: it moves here, unless
+        // it is waiting for the user there.
+        match crate::windows::take_page_from_other_window(self, id, cx) {
+            PageElsewhere::Moved(view) => {
+                let (width, height) = self.card_size(window);
+                view.resize(width, height, window.scale_factor());
+                // The old window's surface took the last frame.
+                view.invalidate();
+                self.adopt_view(id, view, window, cx);
+                // The running page is where it was; nothing to restore.
+                self.pending_scroll.remove(&id);
+                return;
+            }
+            PageElsewhere::Busy => return,
+            PageElsewhere::Nowhere => {}
+        }
+        let context = crate::windows::context_for_tab(self, id);
+        let view = WebView::new_in(&record.url, self.card_size(window), window.scale_factor(), &context);
         self.adopt_view(id, view, window, cx);
     }
 
-    fn adopt_view(&mut self, id: TabId, view: WebView, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn adopt_view(&mut self, id: TabId, view: WebView, window: &mut Window, cx: &mut Context<Self>) {
         let surface = cx.new(|cx| WebSurface::new(view.clone(), cx));
         let surface_events = self.watch_surface(&surface, cx);
         let scroll_y = self.ws.tab(id).map(|t| t.scroll_y).unwrap_or_default();
@@ -814,6 +880,37 @@ impl Browser {
         self.forget_prompts(PageOwner::Tab(id));
         self.pending_scroll.remove(&id);
         cx.notify();
+    }
+
+    /// Whether a page of this window is waiting for the user (a dialog,
+    /// sign-in, permission or certificate question).
+    fn has_open_prompt(&self, id: TabId) -> bool {
+        let owner = PageOwner::Tab(id);
+        self.dialogs.has(owner) || self.auth_prompts.has(owner) || self.permissions.has(owner) || self.cert_errors.has(owner)
+    }
+
+    /// Hand a tab's running page over to another window: like [`unload`]
+    /// but the page keeps running. `None` if it isn't loaded here or is
+    /// waiting for the user.
+    ///
+    /// [`unload`]: Browser::unload
+    pub(crate) fn detach_page(&mut self, id: TabId, cx: &mut Context<Self>) -> Option<WebView> {
+        if self.has_open_prompt(id) || self.live.get(&id).is_none_or(|l| l.close_requested.is_some()) {
+            return None;
+        }
+        if self.split == Some(id) {
+            self.split = None;
+            self.split_focused = false;
+        }
+        let live = self.live.remove(&id)?;
+        EngineHub::unregister(cx, live.view.id());
+        live.surface.update(cx, |s, _| s.blur());
+        self.drop_devtools(id, cx);
+        self.drop_popup_of(id, cx);
+        self.pending_scroll.remove(&id);
+        self.media.remove(&id);
+        cx.notify();
+        Some(live.view)
     }
 
     /// Select a tab. A tab in a split pair shows the pair (its left tab
@@ -2248,7 +2345,8 @@ impl Browser {
 
     pub fn peek_url(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         let size = self.peek_view_size(window, cx);
-        let view = WebView::new(url, size, window.scale_factor());
+        let context = crate::windows::context_for_space(self, self.ws.active_space);
+        let view = WebView::new_in(url, size, window.scale_factor(), &context);
         self.peek_view(view, url, window, cx);
     }
 
@@ -3184,6 +3282,8 @@ impl Browser {
         for id in self.visible_tabs().into_iter().flatten() {
             self.capture_scroll(id, cx);
         }
+        // Pages another window has loaded are left to that window.
+        in_use.extend(crate::windows::pages_in_other_windows(self, cx));
         let downloading: Vec<TabId> = self
             .downloads
             .iter()

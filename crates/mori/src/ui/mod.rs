@@ -17,3 +17,4 @@ pub mod sidebar;
 pub mod space_editor;
 pub mod site_info;
 pub mod toasts;
+pub mod windows;
