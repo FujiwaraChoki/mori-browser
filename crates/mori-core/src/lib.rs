@@ -10,6 +10,8 @@ pub mod bookmarks;
 pub mod boosts;
 pub mod history;
 pub mod launcher;
+pub mod maintenance;
+pub mod navigation;
 pub mod omnibox;
 pub mod paths;
 pub mod routes;
