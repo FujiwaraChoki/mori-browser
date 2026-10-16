@@ -11,6 +11,8 @@ use mori_core::{
     theme::{GradientTheme, Rgba, SOLID_SWATCHES, presets},
 };
 
+mod privacy;
+
 use crate::{
     browser::{Browser, ToastStyle},
     theme::{ActiveTokens, metrics},
@@ -35,16 +37,18 @@ pub enum SettingsCategory {
     Appearance,
     Tabs,
     Sites,
+    Privacy,
     Assistant,
     About,
 }
 
 impl SettingsCategory {
-    pub const ALL: [SettingsCategory; 6] = [
+    pub const ALL: [SettingsCategory; 7] = [
         SettingsCategory::General,
         SettingsCategory::Appearance,
         SettingsCategory::Tabs,
         SettingsCategory::Sites,
+        SettingsCategory::Privacy,
         SettingsCategory::Assistant,
         SettingsCategory::About,
     ];
@@ -55,6 +59,7 @@ impl SettingsCategory {
             SettingsCategory::Appearance => "Appearance",
             SettingsCategory::Tabs => "Tabs",
             SettingsCategory::Sites => "Sites",
+            SettingsCategory::Privacy => "Privacy",
             SettingsCategory::Assistant => "Assistant",
             SettingsCategory::About => "About Mori",
         }
@@ -66,6 +71,7 @@ impl SettingsCategory {
             SettingsCategory::Appearance => "palette",
             SettingsCategory::Tabs => "app-window",
             SettingsCategory::Sites => "globe",
+            SettingsCategory::Privacy => "shield",
             SettingsCategory::Assistant => "sparkles",
             SettingsCategory::About => "info",
         }
@@ -327,6 +333,7 @@ impl Browser {
             SettingsCategory::Appearance => self.render_appearance_settings(cx).into_any_element(),
             SettingsCategory::Tabs => self.render_tab_settings(cx).into_any_element(),
             SettingsCategory::Sites => self.render_site_settings(window, cx).into_any_element(),
+            SettingsCategory::Privacy => self.render_privacy_settings(cx).into_any_element(),
             SettingsCategory::Assistant => self.render_assistant_settings(cx).into_any_element(),
             SettingsCategory::About => self.render_about_settings(cx).into_any_element(),
         };
@@ -660,6 +667,20 @@ impl Browser {
                             cx,
                         ))
                         .child(hint("Unpinned tabs move to the archive in History & Bookmarks.", cx)),
+                ),
+            )
+            .child(
+                section("Media", cx).child(
+                    card(cx)
+                        .child(field(
+                            "Picture-in-Picture",
+                            toggle("auto-pip", s.auto_pip, |b, on| b.settings.auto_pip = on, cx),
+                            cx,
+                        ))
+                        .child(hint(
+                            "A playing video pops out into a floating window when you switch away from its tab.",
+                            cx,
+                        )),
                 ),
             )
     }

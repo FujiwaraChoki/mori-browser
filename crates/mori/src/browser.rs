@@ -51,6 +51,7 @@ mod devtools;
 mod downloads;
 mod page_tools;
 mod popups;
+pub mod privacy;
 
 pub use devtools::DevToolsPane;
 pub use popups::PopupWindow;
@@ -304,6 +305,10 @@ pub struct Browser {
     /// pushed into Chromium's clipboard.
     clip_seq: HashMap<mori_engine::ViewId, u64>,
     clip_seeded: Option<String>,
+    /// Content blocker exceptions, "Clear browsing data" choices, cookies.
+    pub privacy: privacy::PrivacyState,
+    /// The open Picture-in-Picture window.
+    pub pip: Option<crate::ui::pip::PipState>,
     pub library_tab: crate::ui::panels::LibraryTab,
     pub library_search: Option<Entity<gpui_kit::component::input::InputState>>,
     pub settings_inputs: Option<crate::ui::settings::SettingsInputs>,
@@ -390,6 +395,8 @@ impl Browser {
             media_checks: Default::default(),
             clip_seq: HashMap::new(),
             clip_seeded: None,
+            privacy: privacy::PrivacyState::load(&data_dir),
+            pip: None,
             library_tab: Default::default(),
             library_search: None,
             settings_inputs: None,
@@ -435,6 +442,7 @@ impl Browser {
         }
         this.start_maintenance(cx);
         this.start_media_polling(cx);
+        this.start_privacy(cx);
         this
     }
 
@@ -463,7 +471,8 @@ impl Browser {
     /// happens here; the atomic writes run on the saver's own thread.
     pub fn save_now(&mut self) {
         use mori_core::{
-            archive, bookmarks, boosts, downloads, history, routes, settings, site_permissions, workspace, zoom,
+            archive, bookmarks, boosts, content_blocker, downloads, history, routes, settings, site_permissions,
+            workspace, zoom,
         };
         let saver = &mut self.saver;
         let session = if self.ephemeral_session {
@@ -484,6 +493,10 @@ impl Browser {
             (
                 "site permissions",
                 saver.stage(site_permissions::SITE_PERMISSIONS_FILE, &self.site_permissions),
+            ),
+            (
+                "content blocker exceptions",
+                saver.stage(content_blocker::EXCEPTIONS_FILE, &self.privacy.exceptions),
             ),
         ];
         for (what, result) in results {
@@ -785,10 +798,14 @@ impl Browser {
             self.split = None;
             self.split_focused = false;
         }
+        if self.pip_tab() == Some(id) {
+            self.close_pip(false, cx);
+        }
         if let Some(live) = self.live.remove(&id) {
             EngineHub::unregister(cx, live.view.id());
             live.view.close();
         }
+        crate::notifications::Notifier::forget_tab(id, cx);
         self.drop_devtools(id, cx);
         self.drop_popup_of(id, cx);
         // Closing the view already answered its callbacks.
@@ -836,13 +853,16 @@ impl Browser {
         }
         self.split_focused = self.split.is_some() && self.split == Some(id);
         let split = self.split;
+        let pip = self.pip_tab();
         for (tab, live) in &self.live {
             let hidden = *tab != left && Some(*tab) != split;
-            live.view.set_hidden(hidden);
+            live.view.set_hidden(hidden && Some(*tab) != pip);
             if hidden {
                 live.surface.update(cx, |s, _| s.blur());
             }
         }
+        let left_screen: Vec<TabId> = previous.into_iter().flatten().collect();
+        self.sync_pip(&left_screen, cx);
         for tab in previous.into_iter().flatten() {
             if tab != left && Some(tab) != split {
                 self.capture_scroll(tab, cx);
@@ -2291,6 +2311,7 @@ impl Browser {
                     | ViewEvent::LoadProgress(_)
                     | ViewEvent::AudioStateChanged { .. }
                     | ViewEvent::MediaAccessChanged { .. }
+                    | ViewEvent::ContentBlocked { .. }
             );
             let Some(ev) = self.on_page_event(PageOwner::Tab(id), ev, window, cx) else { continue };
             match ev {
@@ -2307,6 +2328,7 @@ impl Browser {
                         live.reader = false;
                     }
                     self.apply_site_zoom(id);
+                    self.apply_site_cosmetics(id, cx);
                     if self
                         .typed_https
                         .get(&id)
@@ -2378,6 +2400,7 @@ impl Browser {
                     }
                     self.apply_site_zoom(id);
                     self.check_media_soon(id, cx);
+                    self.apply_generic_cosmetics(id, cx);
                 }
                 ViewEvent::LoadError { code, text, url } => {
                     // A typed address Mori upgraded to https: retry over http.
@@ -2522,6 +2545,14 @@ impl Browser {
                         self.peek_url(&url, window, cx);
                     }
                 }
+                // The site-info popover shows the count of the page on screen.
+                ViewEvent::ContentBlocked { .. } => {
+                    if self.active_tab() == Some(id)
+                        && self.menu.as_ref().is_some_and(|m| matches!(m.kind, MenuKind::SiteInfo))
+                    {
+                        cx.notify();
+                    }
+                }
                 ViewEvent::Created
                 | ViewEvent::Painted
                 | ViewEvent::PopupWidgetChanged
@@ -2538,7 +2569,8 @@ impl Browser {
                 | ViewEvent::PermissionPrompt(_)
                 | ViewEvent::PermissionDismissed(_)
                 | ViewEvent::AuthRequired(_)
-                | ViewEvent::CertificateError(_) => {}
+                | ViewEvent::CertificateError(_)
+                | ViewEvent::PageMessage(_) => {}
             }
         }
         if save {
@@ -2610,6 +2642,10 @@ impl Browser {
                 if let Some(surface) = self.owner_surface(owner) {
                     surface.update(cx, |s, cx| s.run_unhandled_shortcut(key, window, cx));
                 }
+            }
+            ViewEvent::PageMessage(message) => {
+                self.on_page_message(owner, message, cx);
+                return None;
             }
             ev => return Some(ev),
         }

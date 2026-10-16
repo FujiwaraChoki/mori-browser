@@ -8,6 +8,7 @@ mod commands;
 mod devtools_bridge;
 mod engine_hub;
 mod favicons;
+mod notifications;
 mod screenshot;
 mod theme;
 mod ui;

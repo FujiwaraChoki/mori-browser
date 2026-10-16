@@ -161,35 +161,47 @@ impl Browser {
         }
     }
 
+    /// The mini player at the bottom of the sidebar (Arc's): the site's
+    /// icon and what plays, play/pause, skip, mute and Picture-in-Picture;
+    /// clicking the title jumps to the tab.
     pub fn render_media_strip(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let id = self.media_source()?;
         let media = self.media.get(&id)?.state.clone();
         let t = cx.tokens().clone();
-        let tab_title = self.ws.tab(id).map(|r| r.display_title().to_string()).unwrap_or_default();
+        let record = self.ws.tab(id);
+        let tab_title = record.map(|r| r.display_title().to_string()).unwrap_or_default();
+        let host = record.and_then(|r| mori_core::util::host_of(&r.url));
+        let favicon = host.as_deref().and_then(|h| self.favicons.get(h));
         let title = if media.title.is_empty() { tab_title } else { media.title.clone() };
+        let muted = media.muted || self.live.get(&id).is_some_and(|l| l.muted);
+        let in_pip = self.pip_tab() == Some(id);
         let progress = if media.duration > 0.0 {
             (media.position / media.duration).clamp(0.0, 1.0) as f32
         } else {
             0.0
         };
+        let button = |name: &'static str, glyph: &'static str, size: Pixels, cx: &App| icon_button(name, glyph, size, true, cx);
         Some(
             v_flex()
                 .id("media-strip")
                 .mx(px(8.))
                 .mb_1()
-                .p_2()
-                .gap_1()
+                .p(px(8.))
+                .gap(px(6.))
                 .rounded(metrics::RADIUS_POPOVER)
                 .bg(t.foreground.opacity(0.06))
+                .border_1()
+                .border_color(t.foreground.opacity(0.05))
                 .child(
                     h_flex()
+                        .id("media-title")
                         .gap_2()
+                        .cursor_pointer()
+                        .child(favicon_el(favicon, cx))
                         .child(
                             v_flex()
-                                .id("media-title")
                                 .flex_1()
                                 .min_w_0()
-                                .cursor_pointer()
                                 .child(div().truncate().font_weight(FontWeight::MEDIUM).child(title))
                                 .when(!media.artist.is_empty(), |s| {
                                     s.child(
@@ -199,21 +211,46 @@ impl Browser {
                                             .text_color(t.muted_foreground)
                                             .child(media.artist.clone()),
                                     )
-                                })
-                                .on_click(cx.listener(move |this, _, window, cx| this.select_tab(id, window, cx))),
+                                }),
                         )
-                        .child(icon_button("media-back", "rotate-ccw", px(26.), true, cx).on_click(cx.listener(
+                        .on_click(cx.listener(move |this, _, window, cx| this.select_tab(id, window, cx))),
+                )
+                .child(
+                    h_flex()
+                        .gap(px(2.))
+                        .child(button("media-back", "rotate-ccw", px(26.), cx).on_click(cx.listener(
                             move |this, _, _, cx| this.media_command(id, MediaCommand::SeekBy(-10.0), cx),
                         )))
                         .child(
-                            icon_button("media-play", if media.playing { "pause" } else { "play" }, px(28.), true, cx)
+                            button("media-play", if media.playing { "pause" } else { "play" }, px(28.), cx)
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.media_command(id, MediaCommand::TogglePlay, cx)
                                 })),
                         )
-                        .child(icon_button("media-fwd", "rotate-cw", px(26.), true, cx).on_click(cx.listener(
+                        .child(button("media-fwd", "rotate-cw", px(26.), cx).on_click(cx.listener(
                             move |this, _, _, cx| this.media_command(id, MediaCommand::SeekBy(10.0), cx),
-                        ))),
+                        )))
+                        .child(div().flex_1())
+                        .child(
+                            button("media-mute", if muted { "volume-x" } else { "volume-2" }, px(26.), cx)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.toggle_mute(id, cx);
+                                    this.check_media_soon(id, cx);
+                                })),
+                        )
+                        .when(media.is_video, |row| {
+                            row.child(
+                                button("media-pip", "picture-in-picture-2", px(26.), cx)
+                                    .when(in_pip, |b| b.bg(t.foreground.opacity(0.1)))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        if this.pip_tab() == Some(id) {
+                                            this.close_pip(false, cx);
+                                        } else {
+                                            this.open_pip(id, true, cx);
+                                        }
+                                    })),
+                            )
+                        }),
                 )
                 .child(
                     div()
@@ -225,6 +262,10 @@ impl Browser {
                 .into_any_element(),
         )
     }
+}
+
+fn favicon_el(image: Option<std::sync::Arc<RenderImage>>, cx: &App) -> AnyElement {
+    crate::ui::components::favicon(image, px(16.), false, cx)
 }
 
 #[cfg(test)]

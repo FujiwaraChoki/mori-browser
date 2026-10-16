@@ -43,6 +43,9 @@ pub enum SurfaceEvent {
     PasteRequested { key: KeyInput },
 }
 
+/// A page frame as an image and its size in device pixels.
+pub type SharedFrame = Option<(Arc<RenderImage>, (u32, u32))>;
+
 pub struct WebSurface {
     view: WebView,
     focus_handle: FocusHandle,
@@ -266,6 +269,15 @@ impl WebSurface {
         if self.view.frame_generation() != self.generation {
             cx.notify();
         }
+    }
+
+    /// The newest page frame as an image, for another window showing this
+    /// page (Picture-in-Picture), and the images it replaced, which that
+    /// window releases. Pulls the frame like a render of this view would.
+    pub fn share_frame(&mut self) -> (SharedFrame, Vec<Arc<RenderImage>>) {
+        self.pull_frames();
+        let frame = self.image.clone().map(|image| (image, self.image_size));
+        (frame, std::mem::take(&mut self.stale))
     }
 
     pub fn sync_popup(&mut self, cx: &mut Context<Self>) {
@@ -650,8 +662,9 @@ impl Render for WebSurface {
                 canvas(
                     |bounds, window, _cx| window.insert_hitbox(bounds, HitboxBehavior::Normal),
                     move |bounds, hitbox, window, cx| {
+                        // From every window: Picture-in-Picture may have drawn it too.
                         for old in stale {
-                            let _ = window.drop_image(old);
+                            cx.drop_image(old, Some(window));
                         }
                         let scale = window.scale_factor();
                         entity.update(cx, |this, _| {
