@@ -62,6 +62,9 @@ pub struct PipWindow {
     tab: TabId,
     surface: Entity<WebSurface>,
     rect: Option<VideoRect>,
+    /// Holds the window's keyboard focus so key presses reach
+    /// [`PipWindow::forward_key`].
+    focus: FocusHandle,
     _frames: Subscription,
     _poll: Task<()>,
 }
@@ -97,13 +100,33 @@ impl PipWindow {
                 cx.background_executor().timer(RECT_POLL).await;
             }
         });
-        PipWindow { browser, tab, surface, rect: None, _frames: frames, _poll: poll }
+        PipWindow { browser, tab, surface, rect: None, focus: cx.focus_handle(), _frames: frames, _poll: poll }
     }
 
     fn with_browser(&self, cx: &mut App, f: impl FnOnce(&mut Browser, &mut Window, &mut Context<Browser>) + 'static) {
         let Some(browser) = self.browser.upgrade() else { return };
         let handle = browser.read(cx).window_handle();
         let _ = handle.update(cx, |_, window, cx| browser.update(cx, |b, cx| f(b, window, cx)));
+    }
+
+    /// Compositors give a new window the keyboard (Wayland lets no client
+    /// refuse it), so keys pressed while this window has it go on to the
+    /// browser window, where the user was typing: switching tabs with the
+    /// keyboard keeps working after auto Picture-in-Picture pops up.
+    fn forward_key(&self, input: PlatformInput, cx: &mut App) {
+        let Some(browser) = self.browser.upgrade() else { return };
+        let handle = browser.read(cx).window_handle();
+        // Outside this event's dispatch: the browser may update this window.
+        cx.defer(move |cx| {
+            let _ = handle.update(cx, |_, window, cx| match input {
+                PlatformInput::KeyDown(down) => {
+                    window.dispatch_keystroke(down.keystroke, cx);
+                }
+                other => {
+                    window.dispatch_event(other, cx);
+                }
+            });
+        });
     }
 }
 
@@ -137,7 +160,17 @@ impl Render for PipWindow {
             .rounded(metrics::RADIUS_MD)
             .border_1()
             .border_color(t.border.opacity(0.4))
+            .track_focus(&self.focus)
             .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
+            .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
+                this.forward_key(PlatformInput::KeyDown(ev.clone()), cx);
+            }))
+            .on_key_up(cx.listener(|this, ev: &KeyUpEvent, _, cx| {
+                this.forward_key(PlatformInput::KeyUp(ev.clone()), cx);
+            }))
+            .on_modifiers_changed(cx.listener(|this, ev: &ModifiersChangedEvent, _, cx| {
+                this.forward_key(PlatformInput::ModifiersChanged(ev.clone()), cx);
+            }))
             .child(
                 canvas(
                     |_, _, _| {},
@@ -276,8 +309,11 @@ impl Browser {
             inactive_frame_interval: None,
             ..Default::default()
         };
-        let opened = gpui_kit::open_window(options, cx, |_, cx| {
-            cx.new(|cx| PipWindow::new(browser.clone(), tab, surface, cx))
+        let opened = gpui_kit::open_window(options, cx, |window, cx| {
+            let view = cx.new(|cx| PipWindow::new(browser.clone(), tab, surface, cx));
+            let focus = view.read(cx).focus.clone();
+            window.focus(&focus, cx);
+            view
         });
         let (window, _) = match opened {
             Ok(opened) => opened,

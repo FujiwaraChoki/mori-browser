@@ -164,31 +164,31 @@ impl Notifier {
             .name("mori-notifications".into())
             .spawn(move || {
                 let Some(conn) = connection() else { return };
-                let proxy = match zbus::blocking::Proxy::new(conn, DESTINATION, PATH, INTERFACE) {
-                    Ok(p) => p,
+                // One stream for both signals: servers send `ActionInvoked`
+                // and then `NotificationClosed` for a click, and the click
+                // must be seen first (the close forgets the notification).
+                let rule = format!("type='signal',interface='{INTERFACE}',path='{PATH}'");
+                let signals = match zbus::blocking::MessageIterator::for_match_rule(rule.as_str(), conn, None) {
+                    Ok(s) => s,
                     Err(e) => {
                         log::warn!("notification signals unavailable: {e}");
                         return;
                     }
                 };
-                let (Ok(clicks), Ok(closes)) = (proxy.receive_signal("ActionInvoked"), proxy.receive_signal("NotificationClosed")) else {
-                    return;
-                };
-                let closes_tx = tx.clone();
-                std::thread::spawn(move || {
-                    for msg in closes {
-                        if let Ok((id, _reason)) = msg.body().deserialize::<(u32, u32)>()
-                            && closes_tx.unbounded_send(Signal::Closed(id)).is_err()
-                        {
-                            break;
-                        }
-                    }
-                });
-                for msg in clicks {
-                    if let Ok((id, action)) = msg.body().deserialize::<(u32, String)>()
-                        && action == "default"
-                        && tx.unbounded_send(Signal::Clicked(id)).is_err()
-                    {
+                for msg in signals.flatten() {
+                    let header = msg.header();
+                    let signal = match header.member().map(|m| m.as_str()) {
+                        Some("ActionInvoked") => match msg.body().deserialize::<(u32, String)>() {
+                            Ok((id, action)) if action == "default" => Signal::Clicked(id),
+                            _ => continue,
+                        },
+                        Some("NotificationClosed") => match msg.body().deserialize::<(u32, u32)>() {
+                            Ok((id, _reason)) => Signal::Closed(id),
+                            Err(_) => continue,
+                        },
+                        _ => continue,
+                    };
+                    if tx.unbounded_send(signal).is_err() {
                         break;
                     }
                 }

@@ -252,6 +252,10 @@ impl Browser {
     /// Apply generic cosmetic rules for the classes and ids on the loaded
     /// page, now and once more a little later.
     pub(super) fn apply_generic_cosmetics(&self, id: TabId, cx: &mut Context<Self>) {
+        // The host rules again: injected on the address change, they may
+        // have reached the document being replaced. (Same style element, so
+        // this is a no-op when they did land.)
+        self.apply_site_cosmetics(id, cx);
         self.collect_and_hide(id, cx);
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(LATE_COSMETICS_DELAY).await;
@@ -340,7 +344,12 @@ impl Browser {
                 }
             }
             BridgeMessage::Pip { rid, open } => {
-                let ok = if open { self.open_pip(tab, true, cx) } else {
+                // A page asks from a user gesture, so only the page on
+                // screen can (or the one already in Picture-in-Picture).
+                let ok = if open {
+                    (self.pip_tab() == Some(tab) || self.visible_tabs().contains(&Some(tab)))
+                        && self.open_pip(tab, true, cx)
+                } else {
                     if self.pip_tab() == Some(tab) {
                         self.close_pip(false, cx);
                     }

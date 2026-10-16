@@ -149,8 +149,9 @@ impl Blocker {
 fn hiding_css(selectors: &[String]) -> String {
     let mut css = String::new();
     for selector in selectors {
-        // A selector carrying a block would escape the rule.
-        if selector.contains(['{', '}']) {
+        // A selector carrying a block would escape the rule, and a comment
+        // opener would swallow the rules after it.
+        if selector.contains(['{', '}']) || selector.contains("/*") {
             continue;
         }
         css.push_str(selector);
@@ -463,7 +464,7 @@ mod tests {
         assert!(b.cosmetics("https://other.test/").css.is_empty());
         let generic = b.generic_css(&["adsbygoogle".into(), "story".into()], &[], &c.exceptions);
         assert_eq!(generic, ".adsbygoogle{display:none!important}\n");
-        assert_eq!(hiding_css(&["a{}b".into(), "#x".into()]), "#x{display:none!important}\n");
+        assert_eq!(hiding_css(&["a{}b".into(), "#x".into(), "a/*".into()]), "#x{display:none!important}\n");
     }
 
     #[test]

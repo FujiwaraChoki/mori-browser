@@ -805,7 +805,6 @@ impl Browser {
             EngineHub::unregister(cx, live.view.id());
             live.view.close();
         }
-        crate::notifications::Notifier::forget_tab(id, cx);
         self.drop_devtools(id, cx);
         self.drop_popup_of(id, cx);
         // Closing the view already answered its callbacks.
@@ -1186,6 +1185,9 @@ impl Browser {
     /// on the recently-closed stack.
     fn take_tab(&mut self, id: TabId, reopenable: bool, cx: &mut Context<Self>) -> Option<ClosedTab> {
         self.unload(id, cx);
+        // A sleeping tab's notifications still bring it back when clicked;
+        // a closed tab's can no longer be answered.
+        crate::notifications::Notifier::forget_tab(id, cx);
         self.multi_select.retain(|t| *t != id);
         self.typed_https.remove(&id);
         if reopenable {

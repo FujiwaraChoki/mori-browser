@@ -271,7 +271,19 @@ const PAGE_BRIDGE_SCRIPT: &str = r#"(() => {
   const log = console.debug.bind(console);
   const marker = __MARKER__;
   const token = "__MORI_BRIDGE_TOKEN__";
-  const send = (msg) => { try { msg.token = token; log(marker + JSON.stringify(msg)); } catch (e) {} };
+  // The token must not reach page script: the message is copied into an
+  // object without a prototype (no inherited `token` setter or `toJSON`
+  // sees it) and serialised with the original JSON.stringify.
+  const stringify = JSON.stringify;
+  const assign = Object.assign;
+  const bare = () => Object.create(null);
+  const send = (msg) => {
+    try {
+      const m = assign(bare(), msg);
+      m.token = token;
+      log(marker + stringify(m));
+    } catch (e) {}
+  };
   // Random start: a stale answer meant for the previous document can't
   // match a request of this one.
   let nextId = Math.floor(Math.random() * 1e9) + 1;
@@ -279,8 +291,9 @@ const PAGE_BRIDGE_SCRIPT: &str = r#"(() => {
   const request = (msg) => new Promise((resolve) => {
     const rid = nextId++;
     pending.set(rid, resolve);
-    msg.rid = rid;
-    send(msg);
+    const m = assign(bare(), msg);
+    m.rid = rid;
+    send(m);
   });
   const hidden = (name, value) => Object.defineProperty(window, name, { value, enumerable: false });
   const handlers = {};
@@ -454,8 +467,22 @@ const PAGE_BRIDGE_SCRIPT: &str = r#"(() => {
       if (el) el.dispatchEvent(new Event('leavepictureinpicture', { bubbles: true }));
     };
     handlers['pip-left'] = leave;
+    const activation = navigator.userActivation;
     HTMLVideoElement.prototype.requestPictureInPicture = function () {
       const el = this;
+      // Chrome's rules: not for videos that opt out or have no metadata
+      // yet, and only from a user gesture unless already in
+      // Picture-in-Picture.
+      if (el.disablePictureInPicture) {
+        return Promise.reject(new DOMException('"disablePictureInPicture" attribute is present.', 'InvalidStateError'));
+      }
+      if (el.readyState === 0) {
+        return Promise.reject(new DOMException('Metadata for the video element are not loaded yet.', 'InvalidStateError'));
+      }
+      if (!pipElement && activation && !activation.isActive) {
+        return Promise.reject(new DOMException(
+          "Must be handling a user gesture if there isn't already an element in Picture-in-Picture.", 'NotAllowedError'));
+      }
       if (pipElement && pipElement !== el) leave();
       el.__moriMediaUserSelected = true;
       pipElement = el;
@@ -568,5 +595,18 @@ mod tests {
         assert!(on.contains(r#"const marker = "\u0001mori-bridge:";"#));
         assert!(!on.contains("__MARKER__"));
         assert!(page_bridge_script(false).contains("if (false)"));
+    }
+
+    #[test]
+    fn bridge_script_keeps_its_token_to_itself() {
+        let s = page_bridge_script(false);
+        // Never set on an object page script can reach through its
+        // prototype, nor serialised with a JSON.stringify read at call time.
+        assert!(!s.contains("msg.token"));
+        assert!(s.contains("const stringify = JSON.stringify;"));
+        assert!(s.contains("Object.create(null)"));
+        assert!(!s.contains("JSON.stringify(m"));
+        // Picture-in-Picture wants a user gesture, as in Chrome.
+        assert!(s.contains("activation.isActive"));
     }
 }
