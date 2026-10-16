@@ -30,11 +30,16 @@ static WANTED: AtomicU8 = AtomicU8::new(UNSET);
 /// Installed into every document as it starts loading. Page styles
 /// still win: they come later in the cascade, and `scrollbar-width` /
 /// `scrollbar-color` replace `::-webkit-scrollbar` styling entirely.
-/// The thumb shows while the page scrolls or the pointer is over a
-/// scrollbar, and fades out about a second later (GTK/Zen behaviour).
+/// A thumb shows while its scroller scrolls or the pointer is over it, and
+/// fades out about a second later (GTK/Zen behaviour). Only the element
+/// that scrolled is marked, and the selector has no descendant combinator,
+/// so toggling the mark restyles that one element rather than the whole
+/// document (a full style recalc at every scroll start would jank large
+/// pages).
 const SCROLLBAR_SCRIPT: &str = r#"(() => {
   if (window.__moriScrollbars) return;
   window.__moriScrollbars = true;
+  const mark = '__mori-scrolling';
   const css = `
     ::-webkit-scrollbar { width: 10px; height: 10px; background: transparent; }
     ::-webkit-scrollbar-button, ::-webkit-scrollbar-corner { display: none; background: transparent; }
@@ -43,18 +48,29 @@ const SCROLLBAR_SCRIPT: &str = r#"(() => {
       background-color: transparent; border-radius: 5px;
       border: 2px solid transparent; background-clip: content-box;
     }
-    :root.__mori-scrolling ::-webkit-scrollbar-thumb, ::-webkit-scrollbar-thumb:hover {
+    .${mark}::-webkit-scrollbar-thumb, ::-webkit-scrollbar-thumb:hover {
       background-color: rgba(128, 128, 128, 0.55);
     }
     ::-webkit-scrollbar-thumb:active { background-color: rgba(128, 128, 128, 0.75); }
   `;
-  let timer = 0;
-  const scrolling = () => {
-    const root = document.documentElement;
-    if (!root) return;
-    root.classList.add('__mori-scrolling');
-    clearTimeout(timer);
-    timer = setTimeout(() => root.classList.remove('__mori-scrolling'), 1000);
+  const timers = new WeakMap();
+  const show = (el) => {
+    el.classList.add(mark);
+    clearTimeout(timers.get(el));
+    timers.set(el, setTimeout(() => el.classList.remove(mark), 1000));
+  };
+  const scrolling = (event) => {
+    const target = event.target;
+    if (target instanceof Element) {
+      show(target);
+      return;
+    }
+    // The page itself scrolled. Blink only repaints the viewport's
+    // scrollbar for a change on <body>; mark <html> too for documents
+    // without one.
+    for (const el of [document.documentElement, document.body]) {
+      if (el) show(el);
+    }
   };
   const install = () => {
     const style = document.createElement('style');
