@@ -313,6 +313,12 @@ pub enum ViewEvent {
         source: String,
         line: i32,
     },
+    /// A script called a binding installed with the DevTools method
+    /// `Runtime.addBinding` (see [`WebView::devtools_call`]).
+    BindingCalled {
+        name: String,
+        payload: String,
+    },
 }
 
 pub(crate) struct ViewInner {

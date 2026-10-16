@@ -10,6 +10,10 @@
 //!
 //! Both share the session: Mori's own requests use ids from a range the
 //! frontend never reaches, and their replies are kept from the frontend.
+//!
+//! Calls of bindings Mori installs (`Runtime.addBinding`, usually limited to
+//! an isolated world page script cannot reach) arrive as
+//! [`crate::ViewEvent::BindingCalled`] and are kept from the frontend too.
 
 use std::rc::{Rc, Weak};
 
@@ -89,6 +93,27 @@ pub(crate) fn send(view: &ViewInner, message: &[u8]) -> bool {
         .is_some_and(|host| host.send_dev_tools_message(Some(message)) == 1)
 }
 
+/// A `Runtime.bindingCalled` event: the binding's name and its payload.
+fn binding_call(message: &[u8]) -> Option<(String, String)> {
+    const METHOD: &[u8] = b"Runtime.bindingCalled";
+    // Most messages are replies and other events: skip them unparsed.
+    if !message.windows(METHOD.len()).any(|w| w == METHOD) {
+        return None;
+    }
+    #[derive(serde::Deserialize)]
+    struct Params {
+        name: String,
+        payload: String,
+    }
+    #[derive(serde::Deserialize)]
+    struct Event {
+        method: String,
+        params: Params,
+    }
+    let event: Event = serde_json::from_slice(message).ok()?;
+    (event.method == "Runtime.bindingCalled").then_some((event.params.name, event.params.payload))
+}
+
 /// The `id` of a protocol reply, if the message is one.
 fn message_id(message: &[u8]) -> Option<i64> {
     #[derive(serde::Deserialize)]
@@ -144,6 +169,12 @@ wrap_dev_tools_message_observer! {
                 // Mori's own request: handled in `on_dev_tools_method_result`.
                 return 0;
             }
+            if let Some((name, payload)) = binding_call(message) {
+                // Mori's own channel (it may carry what the user typed):
+                // not for an attached frontend.
+                view.push(crate::ViewEvent::BindingCalled { name, payload });
+                return 1;
+            }
             let sink = view.devtools_sink.borrow();
             match sink.as_ref() {
                 Some(sink) => {
@@ -177,6 +208,14 @@ mod tests {
         assert_eq!(message_id(br#"{"id":7,"result":{}}"#), Some(7));
         assert_eq!(message_id(br#"{"method":"Page.loadEventFired","params":{}}"#), None);
         assert_eq!(message_id(b"not json"), None);
+    }
+
+    #[test]
+    fn reads_binding_calls() {
+        let event = br#"{"method":"Runtime.bindingCalled","params":{"name":"__mori","payload":"{\"a\":1}","executionContextId":3}}"#;
+        assert_eq!(binding_call(event), Some(("__mori".into(), r#"{"a":1}"#.into())));
+        assert_eq!(binding_call(br#"{"id":4,"result":{"value":"Runtime.bindingCalled"}}"#), None);
+        assert_eq!(binding_call(br#"{"method":"Page.loadEventFired","params":{}}"#), None);
     }
 
     #[test]
