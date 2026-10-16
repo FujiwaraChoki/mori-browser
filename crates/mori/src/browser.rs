@@ -162,6 +162,9 @@ pub struct Browser {
     pub panel: Option<Panel>,
     pub settings_open: bool,
     pub peek: Option<Peek>,
+    /// When the user last Alt+clicked in the window; a page's Peek request
+    /// (PEEK_LINK_SCRIPT) is only honoured right after one.
+    pub alt_click_at: Option<Instant>,
     pub dialogs: Vec<(TabId, JsDialog)>,
     pub dialog_input: Option<Entity<gpui_kit::component::input::InputState>>,
     pub permissions: Vec<(TabId, PermissionRequest)>,
@@ -225,6 +228,7 @@ impl Browser {
             panel: None,
             settings_open: false,
             peek: None,
+            alt_click_at: None,
             dialogs: Vec::new(),
             dialog_input: None,
             permissions: Vec::new(),
@@ -526,11 +530,13 @@ impl Browser {
         for (tab, live) in &self.live {
             live.view.set_hidden(*tab != id && Some(*tab) != split);
         }
-        if let Some(find) = &self.find_bar {
-            if let Some(prev) = previous_selected.filter(|p| *p != id).and_then(|p| self.live.get(&p)) {
+        if let Some(find) = &self.find_bar
+            && previous_selected != Some(id)
+        {
+            if let Some(prev) = previous_selected.and_then(|p| self.live.get(&p)) {
                 prev.view.stop_finding(true);
             }
-            find.update(cx, |f, cx| f.reset_results(cx));
+            find.update(cx, |f, cx| f.rerun(cx));
         }
         self.focus_selected_page(window, cx);
         self.schedule_save(cx);
@@ -1675,8 +1681,12 @@ impl Browser {
                 }
                 // Alt+click on a link in the visible page (PEEK_LINK_SCRIPT).
                 ViewEvent::ConsoleMessage { message, .. } => {
+                    // Any page can log the marker, so only act on it right
+                    // after a real Alt+click; otherwise it would open
+                    // previews without a user gesture (a popup-blocker bypass).
                     if self.selected() == Some(id)
                         && let Some(url) = mori_core::page_actions::peek_request(&message)
+                        && self.alt_click_at.take().is_some_and(|t| t.elapsed() < Duration::from_secs(2))
                     {
                         self.peek_url(&url, window, cx);
                     }

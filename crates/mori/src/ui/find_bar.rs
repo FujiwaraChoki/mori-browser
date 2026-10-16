@@ -25,8 +25,9 @@ pub struct FindBar {
     input: Entity<InputState>,
     count: i32,
     active: i32,
-    /// Whether the current query already asked Chromium to select its first
-    /// match (a new search only highlights; see [`FindBar::set_results`]).
+    /// Whether the user stepped through the current query's matches; until
+    /// then a settled result without an active match is stepped once (see
+    /// [`FindBar::set_results`]).
     primed: bool,
     match_case: bool,
     _subscriptions: Vec<Subscription>,
@@ -38,7 +39,7 @@ impl FindBar {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in page"));
         let sub = cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, _, cx| match ev {
-            InputEvent::Change => this.search(cx),
+            InputEvent::Change => this.search(false, cx),
             InputEvent::PressEnter { shift, .. } => this.step(!*shift, cx),
             _ => {}
         });
@@ -52,15 +53,31 @@ impl FindBar {
         }
     }
 
-    /// Start a new search for the current text.
-    fn search(&mut self, cx: &mut Context<Self>) {
+    /// Start a new search for the current text. With `restart`, the old
+    /// session is dropped first so the search starts over instead of from
+    /// the previous match (the query is the same, only options changed).
+    fn search(&mut self, restart: bool, cx: &mut Context<Self>) {
         self.count = 0;
         self.active = 0;
         self.primed = false;
+        let text = self.text(cx);
+        if restart && !text.is_empty() {
+            cx.emit(FindBarEvent::Search {
+                text: String::new(),
+                forward: true,
+                next: false,
+                match_case: self.match_case,
+            });
+        }
+        // A changed query sent as "find next" starts a new session that
+        // selects the first match at or after the current one, like Chrome's
+        // find-as-you-type. A plain new session would only highlight, and
+        // stepping from the previous query's match afterwards skips the
+        // match the selection sits on ("appl" -> "apple" lands on 2/6).
         cx.emit(FindBarEvent::Search {
-            text: self.text(cx),
+            text,
             forward: true,
-            next: false,
+            next: true,
             match_case: self.match_case,
         });
         cx.notify();
@@ -97,9 +114,9 @@ impl FindBar {
     }
 
     /// A find result from the page. Intermediate updates report ordinal 0,
-    /// so the last real ordinal is kept. A fresh search only highlights; once
-    /// it settles with matches but none active, step to the first one so it
-    /// is selected (and scrolled to) from the first keystroke, like Chrome.
+    /// so the last real ordinal is kept. Should a search settle with matches
+    /// but none active, step to the first one so it is selected (and
+    /// scrolled to) from the first keystroke, like Chrome.
     pub fn set_results(&mut self, count: i32, active: i32, final_update: bool, cx: &mut Context<Self>) {
         self.count = count;
         if active > 0 || count == 0 {
@@ -111,11 +128,18 @@ impl FindBar {
         cx.notify();
     }
 
-    pub fn reset_results(&mut self, cx: &mut Context<Self>) {
-        self.count = 0;
-        self.active = 0;
-        self.primed = false;
-        cx.notify();
+    /// The selected page changed: search it for the current text (or just
+    /// clear the count), so the bar never shows the old page's results or
+    /// "No results" for a page that has matches.
+    pub fn rerun(&mut self, cx: &mut Context<Self>) {
+        if self.text(cx).is_empty() {
+            self.count = 0;
+            self.active = 0;
+            self.primed = false;
+            cx.notify();
+        } else {
+            self.search(true, cx);
+        }
     }
 }
 
@@ -185,7 +209,7 @@ impl Render for FindBar {
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.match_case = !this.match_case;
                                 if !this.text(cx).is_empty() {
-                                    this.search(cx);
+                                    this.search(true, cx);
                                 }
                                 cx.notify();
                             })),

@@ -446,6 +446,11 @@ impl Render for Browser {
             .id("mori-root")
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
+            .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _, _| {
+                if ev.button == MouseButton::Left && ev.modifiers.alt {
+                    this.alt_click_at = Some(std::time::Instant::now());
+                }
+            }))
             .relative()
             .size_full()
             .bg(t.sidebar)

@@ -26,7 +26,8 @@ impl Browser {
             return None;
         }
         let t = cx.tokens().clone();
-        let top = TOAST_INSET + if self.find_bar.is_some() { FIND_BAR_CLEARANCE } else { px(0.) };
+        let find_bar_shown = self.find_bar.is_some() && !self.settings_open;
+        let top = TOAST_INSET + if find_bar_shown { FIND_BAR_CLEARANCE } else { px(0.) };
         let toasts: Vec<AnyElement> = self
             .toasts
             .iter()
