@@ -102,6 +102,11 @@ screenshots, session restore, single-instance URL hand-off, a system clipboard
 bridge, and the assistant panel (a local Codex app server with browser tools
 and per-action approval).
 
+Windows and profiles: several windows over the same spaces, each with its own
+space and tab and all restored on start; private windows that write nothing to
+disk; Little Mori, a small window for links opened from other apps; a profile
+per space for separate logins; and making Mori the default browser.
+
 Not yet ported from Mori 2: Chrome extensions, passkeys, automatic
 Picture-in-Picture, the back/forward history menu, and native drag sessions out
 of web pages.
@@ -132,7 +137,7 @@ Mori 3 on Linux:
 ```sh
 cargo run --release               # downloads CEF into .cef/ on first build
 scripts/package-linux.sh          # self-contained bundle in dist/
-scripts/install-linux.sh          # install to ~/.local
+scripts/install-linux.sh          # install to ~/.local (--default: make it the default browser)
 ```
 
 Mori 2 on macOS, the short version:
