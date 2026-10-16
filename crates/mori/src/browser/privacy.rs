@@ -156,13 +156,17 @@ impl Browser {
             return self.private_context.iter().cloned().collect();
         }
         let mut out = vec![BrowsingContext::shared()];
+        let current: Vec<String> = crate::windows::profiles().iter().map(|p| profiles::dir_name(p.id)).collect();
         if all_profiles {
-            for profile in crate::windows::profiles() {
-                out.extend(BrowsingContext::persistent(&profiles::dir_name(profile.id)));
+            for dir in &current {
+                out.extend(BrowsingContext::persistent(dir));
             }
         }
+        // (A deleted profile's context stays loaded until restart; its data
+        // is going away and nothing applies to it any more.)
         for context in BrowsingContext::loaded_persistent() {
-            if !out.iter().any(|c| c.same_as(&context)) {
+            let deleted = context.dir_name().is_some_and(|d| !current.iter().any(|c| c == d));
+            if !deleted && !out.iter().any(|c| c.same_as(&context)) {
                 out.push(context);
             }
         }
@@ -549,7 +553,8 @@ impl Browser {
         if opts.cookies {
             self.privacy.cookie_sites = None;
             let delete = move |c: &engine::CookieInfo| since.is_none_or(|t| c.created >= t);
-            self.delete_cookies_then_storage(delete, visited, since.is_none(), cx);
+            let contexts = self.privacy_contexts(true);
+            self.delete_cookies_then_storage(contexts, delete, visited, since.is_none(), cx);
         }
         self.toast(opts.summary(), ToastStyle::Success, None, cx);
         self.schedule_save(cx);
@@ -560,10 +565,12 @@ impl Browser {
     /// IndexedDB, caches, service workers) of `origins` and of the sites the
     /// deleted cookies belonged to.
     ///
-    /// This happens in every browsing context the window's choices go to:
-    /// the default context and each profile's, or a private window's own.
+    /// This happens in `contexts`: for the settings page, every browsing
+    /// context the window's choices go to (the default context and each
+    /// profile's, or a private window's own); for one page, its own.
     fn delete_cookies_then_storage(
         &mut self,
+        contexts: Vec<BrowsingContext>,
         delete: impl Fn(&engine::CookieInfo) -> bool + Send + Sync + 'static,
         origins: std::collections::BTreeSet<String>,
         everything: bool,
@@ -571,7 +578,7 @@ impl Browser {
     ) {
         let delete = Arc::new(delete);
         let mut pending = Vec::new();
-        for context in self.privacy_contexts(true) {
+        for context in contexts {
             let (tx, rx) = futures::channel::oneshot::channel();
             let delete = delete.clone();
             engine::delete_cookies(&context, move |c| delete(c), move |deleted| {
@@ -641,13 +648,20 @@ impl Browser {
         }
     }
 
-    /// Delete the cookies and stored data of the site of `url` (site info).
-    pub fn clear_site_data(&mut self, url: &str, cx: &mut Context<Self>) {
+    /// Delete the cookies and stored data of the site of the tab's page at
+    /// `url` (site info), in that page's browsing context only: the same
+    /// site stays signed in in other profiles.
+    pub fn clear_site_data(&mut self, tab: TabId, url: &str, cx: &mut Context<Self>) {
         let Some(host) = host_of(url) else { return };
         let site = privacy::site_of_host(&host);
-        let origins = [format!("https://{host}"), format!("http://{host}")].into_iter().collect();
+        let mut origins: std::collections::BTreeSet<String> =
+            [format!("https://{host}"), format!("http://{host}")].into_iter().collect();
+        // The page's own origin, port and all (a dev server on :8795).
+        origins.extend(mori_core::util::origin_of(url));
+        let contexts = vec![crate::windows::context_for_tab(self, tab)];
         let site_for_cookies = site.clone();
         self.delete_cookies_then_storage(
+            contexts,
             move |c| privacy::cookie_in_site(&c.domain, &site_for_cookies),
             origins,
             false,
@@ -660,7 +674,8 @@ impl Browser {
     pub fn remove_cookie_site(&mut self, site: &str, cx: &mut Context<Self>) {
         let site = site.to_string();
         let origins = [format!("https://{site}"), format!("https://www.{site}")].into_iter().collect();
-        self.delete_cookies_then_storage(move |c| privacy::cookie_in_site(&c.domain, &site), origins, false, cx);
+        let contexts = self.privacy_contexts(true);
+        self.delete_cookies_then_storage(contexts, move |c| privacy::cookie_in_site(&c.domain, &site), origins, false, cx);
     }
 
     /// Read which sites have cookies, for the settings page.

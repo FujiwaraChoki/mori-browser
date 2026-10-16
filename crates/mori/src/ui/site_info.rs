@@ -209,7 +209,7 @@ pub fn site_info_entries(b: &Browser, cx: &App) -> Vec<Entry> {
         }
         v.push(Entry::Separator);
         let page = url.clone();
-        v.push(item("Clear Cookies and Site Data", "cookie", move |b, _, cx| b.clear_site_data(&page, cx)));
+        v.push(item("Clear Cookies and Site Data", "cookie", move |b, _, cx| b.clear_site_data(tab, &page, cx)));
         v.push(item("Privacy Settings…", "shield", |b, w, cx| b.show_settings(SettingsCategory::Privacy, w, cx)));
     }
 

@@ -9,6 +9,15 @@ pub fn host_of(url: &str) -> Option<String> {
     (!host.is_empty()).then_some(host)
 }
 
+/// The origin of `url` as the web serialises it, port included when it
+/// isn't the scheme's default: `http://localhost:8795` for
+/// `http://localhost:8795/x`. `None` for URLs without one (`about:`,
+/// `data:`, `file:`).
+pub fn origin_of(url: &str) -> Option<String> {
+    let origin = Url::parse(url.trim()).ok()?.origin();
+    origin.is_tuple().then(|| origin.ascii_serialization())
+}
+
 /// `host` without a single leading `www.`.
 pub fn strip_www(host: &str) -> &str {
     host.strip_prefix("www.").unwrap_or(host)
@@ -77,6 +86,15 @@ mod tests {
         assert!(host_matches("example.com", "example.com"));
         assert!(!host_matches("badexample.com", "example.com"));
         assert_eq!(truncate_chars("héllo", 2), "hé");
+    }
+
+    #[test]
+    fn origins() {
+        assert_eq!(origin_of("http://localhost:8795/x?y").as_deref(), Some("http://localhost:8795"));
+        assert_eq!(origin_of("https://Example.com:443/a").as_deref(), Some("https://example.com"));
+        assert_eq!(origin_of("https://example.com:8443/").as_deref(), Some("https://example.com:8443"));
+        assert_eq!(origin_of("about:blank"), None);
+        assert_eq!(origin_of("data:text/plain,x"), None);
     }
 
     #[test]
