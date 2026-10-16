@@ -123,6 +123,18 @@ impl Appearance {
     }
 }
 
+/// Where a link opened from another app (a mail client, a chat app,
+/// `xdg-open`) shows up.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExternalLinks {
+    /// A small floating window, with a button to keep the page as a tab.
+    #[default]
+    LittleWindow,
+    /// A new tab in the current space of the last used window.
+    CurrentSpace,
+}
+
 /// Which window edge the sidebar sits on.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -138,6 +150,10 @@ pub enum SidebarPosition {
 pub struct Settings {
     pub homepage_url: String,
     pub new_tab_behavior: NewTabBehavior,
+    /// Where links opened from other apps go.
+    pub external_links: ExternalLinks,
+    /// Mori has offered once to become the default browser.
+    pub default_browser_offered: bool,
     pub search_engine: SearchEngine,
     pub custom_search_template: String,
     /// Ask the search engine for completions while typing in the launcher.
@@ -161,6 +177,8 @@ impl Default for Settings {
         Settings {
             homepage_url: "mori://newtab".into(),
             new_tab_behavior: NewTabBehavior::Homepage,
+            external_links: ExternalLinks::LittleWindow,
+            default_browser_offered: false,
             search_engine: SearchEngine::Google,
             custom_search_template: "https://www.example.com/search?q={query}".into(),
             search_suggestions: true,
@@ -274,6 +292,16 @@ mod tests {
         assert_eq!(s.search_engine, SearchEngine::Brave);
         assert_eq!(s.auto_sleep_minutes, 60);
         assert_eq!(s.homepage_url, "mori://newtab");
+    }
+
+    #[test]
+    fn links_from_other_apps_open_in_little_mori_unless_chosen() {
+        // Settings saved before the option existed.
+        let s: Settings = serde_json::from_str(r#"{"search_engine":"brave"}"#).unwrap();
+        assert_eq!(s.external_links, ExternalLinks::LittleWindow);
+        assert!(!s.default_browser_offered);
+        let s: Settings = serde_json::from_str(r#"{"external_links":"current_space"}"#).unwrap();
+        assert_eq!(s.external_links, ExternalLinks::CurrentSpace);
     }
 
     #[test]
