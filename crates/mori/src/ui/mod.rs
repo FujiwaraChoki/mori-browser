@@ -14,5 +14,6 @@ pub mod pointer;
 pub mod root;
 pub mod settings;
 pub mod sidebar;
+pub mod space_editor;
 pub mod site_info;
 pub mod toasts;

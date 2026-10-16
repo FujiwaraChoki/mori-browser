@@ -788,23 +788,24 @@ fn tab_label(b: &Browser, id: TabId) -> String {
 fn tab_records(b: &Browser) -> Vec<Value> {
     let selected = b.selected();
     let mut out = Vec::new();
-    for space in &b.ws.spaces {
-        for id in space.ordered() {
-            let Some(tab) = b.ws.tab(id) else { continue };
-            let live = b.live.get(&id);
-            out.push(json!({
-                "id": id.to_string(),
-                "title": tab.display_title(),
-                "url": tab_url(b, id),
-                "selected": selected == Some(id),
-                "pinned": b.ws.is_pinned(id),
-                "space": space.name,
-                "isLoading": live.is_some_and(|l| l.loading),
-                "canGoBack": live.is_some_and(|l| l.can_go_back),
-                "canGoForward": live.is_some_and(|l| l.can_go_forward),
-                "isAwake": live.is_some(),
-            }));
-        }
+    // Favorites belong to no space; they show in every one.
+    let favorites = b.ws.favorites.iter().map(|id| (*id, "Favorites"));
+    let spaces = b.ws.spaces.iter().flat_map(|s| s.ordered().into_iter().map(move |id| (id, s.name.as_str())));
+    for (id, space) in favorites.chain(spaces) {
+        let Some(tab) = b.ws.tab(id) else { continue };
+        let live = b.live.get(&id);
+        out.push(json!({
+            "id": id.to_string(),
+            "title": tab.display_title(),
+            "url": tab_url(b, id),
+            "selected": selected == Some(id),
+            "pinned": b.ws.is_saved(id),
+            "space": space,
+            "isLoading": live.is_some_and(|l| l.loading),
+            "canGoBack": live.is_some_and(|l| l.can_go_back),
+            "canGoForward": live.is_some_and(|l| l.can_go_forward),
+            "isAwake": live.is_some(),
+        }));
     }
     out
 }

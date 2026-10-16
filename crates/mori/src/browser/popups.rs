@@ -179,7 +179,7 @@ impl Browser {
             return;
         }
         if was_selected
-            && !self.ws.active().ordered().is_empty()
+            && !(self.ws.favorites.is_empty() && self.ws.active().ordered().is_empty())
             && let Some(next) = then.filter(|t| self.ws.tab(*t).is_some())
         {
             self.select_tab(next, window, cx);
