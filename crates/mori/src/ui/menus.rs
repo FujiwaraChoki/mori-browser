@@ -274,7 +274,19 @@ fn folder_entries(b: &Browser, fid: FolderId) -> Vec<Entry> {
     let Some((space, folder)) = b.ws.find_folder(fid) else { return Vec::new() };
     let depth = b.ws.space(space).and_then(|s| s.folder_depth(fid)).unwrap_or(1);
     let expanded = folder.is_expanded;
-    vec![
+    let moves: Vec<Entry> = b
+        .ws
+        .spaces
+        .iter()
+        .filter(|s| s.id != space)
+        .map(|s| {
+            let sid = s.id;
+            item(format!("Move to {}", s.name), "arrow-right-left", move |b, w, cx| {
+                b.move_folder_to_space(fid, sid, w, cx)
+            })
+        })
+        .collect();
+    let mut v = vec![
         item("New Tab in Folder", "plus", move |b, w, cx| {
             let url = b.settings.new_tab_url().to_string();
             let previous = b.selected();
@@ -305,17 +317,24 @@ fn folder_entries(b: &Browser, fid: FolderId) -> Vec<Entry> {
             current: folder.symbol.clone(),
         },
         Entry::Separator,
-        item("Ungroup Folder", "folder-open", move |b, _, cx| {
-            b.ws.ungroup_folder(fid);
-            b.schedule_save(cx);
-        }),
+    ];
+    if !moves.is_empty() {
+        v.extend(moves);
+        v.push(Entry::Separator);
+    }
+    v.push(item("Ungroup Folder", "folder-open", move |b, _, cx| {
+        b.ws.ungroup_folder(fid);
+        b.schedule_save(cx);
+    }));
+    v.push(
         item("Delete Folder", "trash", move |b, _, cx| {
             b.ws.delete_folder(fid);
             b.toast("Folder deleted — its tabs moved below the divider", ToastStyle::Info, None, cx);
             b.schedule_save(cx);
         })
         .destructive(),
-    ]
+    );
+    v
 }
 
 /// The menu of a tab that is part of a multi-selection: actions on all of

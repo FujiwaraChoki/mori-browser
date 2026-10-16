@@ -464,13 +464,6 @@ impl Space {
         out
     }
 
-    /// The pinned tabs (in folders too), in sidebar order.
-    pub fn pinned_tabs(&self) -> Vec<TabId> {
-        let mut out = Vec::new();
-        collect_tabs(&self.pinned, false, &mut out);
-        out
-    }
-
     pub fn folder(&self, id: FolderId) -> Option<&Folder> {
         find_folder(&self.pinned, id)
     }
@@ -2098,7 +2091,7 @@ mod tests {
         let b = ws.add_child_tab(TabRecord::new("https://b.test"), ids[0], Some(a));
         assert_eq!(ws.active().loose, vec![a, b]);
         let c = ws.add_child_tab(TabRecord::new("https://c.test"), ids[1], None);
-        assert_eq!(ws.active().pinned_tabs(), vec![ids[0], ids[1]]);
+        assert_eq!(ws.active().ordered()[..2], [ids[0], ids[1]]);
         assert_eq!(ws.active().loose, vec![c, a, b]);
         let d = ws.add_child_tab(TabRecord::new("https://d.test"), ids[2], None);
         assert_eq!(ws.favorites, vec![ids[2]]);

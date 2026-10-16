@@ -244,7 +244,7 @@ impl Browser {
         cx.notify();
     }
 
-    pub fn drop_folder(&mut self, dragged: &DraggedFolder, target: DropTarget, cx: &mut Context<Self>) {
+    pub fn drop_folder(&mut self, dragged: &DraggedFolder, target: DropTarget, window: &mut Window, cx: &mut Context<Self>) {
         let folder = dragged.id;
         match target {
             DropTarget::Slot(space, slot) => {
@@ -256,7 +256,12 @@ impl Browser {
                 self.ws.move_folder(folder, space, slot);
             }
             DropTarget::FolderEnd(space, into) => {
-                if !self.ws.move_folder(folder, space, Slot::Folder(into, usize::MAX)) && into != folder {
+                // Into itself or a folder inside it: nothing to say.
+                let own = self
+                    .ws
+                    .space(space)
+                    .is_some_and(|s| s.folder_trail(into).iter().any(|f| f.id == folder));
+                if !self.ws.move_folder(folder, space, Slot::Folder(into, usize::MAX)) && !own {
                     self.toast(
                         format!("Folders nest up to {} levels", mori_core::workspace::MAX_FOLDER_DEPTH),
                         crate::browser::ToastStyle::Info,
@@ -265,9 +270,10 @@ impl Browser {
                     );
                 }
             }
-            DropTarget::PinnedEnd(space) | DropTarget::Space(space) => {
+            DropTarget::PinnedEnd(space) => {
                 self.ws.move_folder(folder, space, Slot::Pinned(usize::MAX));
             }
+            DropTarget::Space(space) => self.move_folder_to_space(folder, space, window, cx),
             DropTarget::LooseEnd(_) | DropTarget::FavoritesEnd => {}
         }
         self.schedule_save(cx);
@@ -1059,9 +1065,9 @@ impl Browser {
                 .h(px(10.))
                 .drag_over::<DraggedFolder>(move |s, _, _, _| s.border_t_2().border_color(t.primary.opacity(0.8)))
                 .drag_over::<DraggedTab>(move |s, _, _, _| s.border_t_2().border_color(t.primary.opacity(0.8)))
-                .on_drop(cx.listener(move |this, d: &DraggedFolder, _, cx| {
+                .on_drop(cx.listener(move |this, d: &DraggedFolder, window, cx| {
                     if d.id != fid {
-                        this.drop_folder(d, DropTarget::Slot(space, slot), cx)
+                        this.drop_folder(d, DropTarget::Slot(space, slot), window, cx)
                     }
                 }))
                 .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
@@ -1136,9 +1142,9 @@ impl Browser {
             .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
                 this.drop_tab(d, DropTarget::FolderEnd(space, fid), window, cx)
             }))
-            .on_drop(cx.listener(move |this, d: &DraggedFolder, _, cx| {
+            .on_drop(cx.listener(move |this, d: &DraggedFolder, window, cx| {
                 if d.id != fid {
-                    this.drop_folder(d, DropTarget::FolderEnd(space, fid), cx)
+                    this.drop_folder(d, DropTarget::FolderEnd(space, fid), window, cx)
                 }
             }))
             .children(before_zone);
@@ -1205,7 +1211,15 @@ impl Browser {
             .cursor_pointer()
             .hover(|s| s.text_color(t.sidebar_foreground))
             // At rest this end is just more of the line.
-            .child(div().absolute().left_0().right_0().top(px(10.)).h(px(1.)).bg(line).group_hover("sidebar", |s| s.invisible()))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .group_hover("sidebar", |s| s.invisible())
+                    .child(div().w_full().h(px(1.)).bg(line)),
+            )
             .child(icon("arrow-down", px(10.), muted).invisible().group_hover("sidebar", |s| s.visible()))
             .child(div().invisible().group_hover("sidebar", |s| s.visible()).child("Clear"))
             .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Archive all unpinned tabs").build(window, cx))
@@ -1230,8 +1244,8 @@ impl Browser {
             .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
                 this.drop_tab(d, DropTarget::PinnedEnd(space), window, cx)
             }))
-            .on_drop(cx.listener(move |this, d: &DraggedFolder, _, cx| {
-                this.drop_folder(d, DropTarget::PinnedEnd(space), cx)
+            .on_drop(cx.listener(move |this, d: &DraggedFolder, window, cx| {
+                this.drop_folder(d, DropTarget::PinnedEnd(space), window, cx)
             }))
     }
 
@@ -1593,8 +1607,8 @@ impl Browser {
                         s.border_t_2()
                     }
                 })
-                .on_drop(cx.listener(move |this, d: &DraggedFolder, _, cx| {
-                    this.drop_folder(d, DropTarget::Onto(space, slot), cx)
+                .on_drop(cx.listener(move |this, d: &DraggedFolder, window, cx| {
+                    this.drop_folder(d, DropTarget::Onto(space, slot), window, cx)
                 }))
             })
             .into_any_element()
@@ -1709,8 +1723,8 @@ impl Browser {
                         .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
                             this.drop_tab(d, DropTarget::Space(id), window, cx)
                         }))
-                        .on_drop(cx.listener(move |this, d: &DraggedFolder, _, cx| {
-                            this.drop_folder(d, DropTarget::Space(id), cx)
+                        .on_drop(cx.listener(move |this, d: &DraggedFolder, window, cx| {
+                            this.drop_folder(d, DropTarget::Space(id), window, cx)
                         }))
                         .on_drop(cx.listener(move |this, d: &DraggedSpace, _, cx| {
                             // Onto a chip to the right: after it; to the left: before it.

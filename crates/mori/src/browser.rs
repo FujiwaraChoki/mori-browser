@@ -1727,6 +1727,23 @@ impl Browser {
         let visible = self.visible_tabs();
         let on_screen = tabs.iter().any(|t| visible.contains(&Some(*t)));
         self.ws.move_tabs_to_space(&tabs, space);
+        self.show_after_move(on_screen, window, cx);
+    }
+
+    /// Move a folder, with its tabs, to the end of another space's pinned
+    /// rows.
+    pub fn move_folder_to_space(&mut self, folder: FolderId, space: SpaceId, window: &mut Window, cx: &mut Context<Self>) {
+        let tabs = self.ws.find_folder(folder).map(|(_, f)| f.tabs()).unwrap_or_default();
+        let visible = self.visible_tabs();
+        let on_screen = tabs.iter().any(|t| visible.contains(&Some(*t)));
+        if self.ws.move_folder(folder, space, Slot::Pinned(usize::MAX)) {
+            self.show_after_move(on_screen && self.ws.active_space != space, window, cx);
+        }
+    }
+
+    /// Tabs on screen moved to another space: show what this space selects
+    /// now (a neighbour), or a fresh tab if nothing is left.
+    fn show_after_move(&mut self, on_screen: bool, window: &mut Window, cx: &mut Context<Self>) {
         if on_screen {
             match self.ws.selected().or_else(|| self.ws.active().visible().first().copied()) {
                 Some(next) => self.select_tab(next, window, cx),
