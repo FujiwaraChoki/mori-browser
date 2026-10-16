@@ -1927,7 +1927,7 @@ impl Browser {
             && !Self::is_internal(&t.url)
         {
             cx.write_to_clipboard(ClipboardItem::new_string(t.url.clone()));
-            self.toast("Copied URL", ToastStyle::Success, None, cx);
+            self.toast("Copied current URL!", ToastStyle::Success, None, cx);
         }
     }
 

@@ -50,7 +50,8 @@ pub fn icon_button(
     el
 }
 
-/// A tab's favicon, or a globe when it has none. Icons that would vanish
+/// A tab's favicon, or (as Zen draws it) a plain rounded square when it has
+/// none. Icons that would vanish
 /// into the sidebar (a black logo on dark chrome, a white one on light) sit
 /// on a small contrasting plate, as Arc draws them.
 pub fn favicon(image: Option<Arc<RenderImage>>, size: Pixels, dimmed: bool, cx: &App) -> AnyElement {
@@ -81,7 +82,12 @@ pub fn favicon(image: Option<Arc<RenderImage>>, size: Pixels, dimmed: bool, cx: 
                     .into_any_element(),
             }
         }
-        None => icon("globe", size, t.sidebar_foreground.opacity(if dimmed { 0.35 } else { 0.6 }))
+        None => div()
+            .size(size)
+            .flex_none()
+            .rounded(px(3.))
+            .bg(t.tile_rest())
+            .opacity(if dimmed { 0.5 } else { 1.0 })
             .into_any_element(),
     }
 }

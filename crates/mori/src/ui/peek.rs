@@ -81,28 +81,19 @@ impl Browser {
                 .items_center()
                 .justify_center()
                 .rounded_full()
-                .bg(t.popover)
-                .border_1()
-                .border_color(white().opacity(if t.dark { 0.10 } else { 0.0 }))
+                // Zen's Glance buttons: light grey discs with slate glyphs,
+                // in both appearances.
+                .bg(rgb(0xdfe0e1))
+                .hover(|s| s.bg(rgb(0xcfd1d3)))
                 .shadow(t.popover_shadow())
                 .cursor_pointer()
-                .child(
-                    div()
-                        .size_full()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded_full()
-                        .bg(t.primary.opacity(0.30))
-                        .hover(|s| s.bg(t.primary.opacity(0.45)))
-                        .child(icon(glyph, px(15.), t.foreground)),
-                )
+                .child(icon(glyph, px(15.), rgb(0x506278).into()))
                 .tooltip(move |window, cx| gpui_kit::component::tooltip::Tooltip::new(tip).build(window, cx))
         };
         let controls = v_flex()
             .absolute()
             .left(card.right() + px(14.))
-            .top(card.top() + px(14.))
+            .top(card.top() + px(27.))
             .gap(px(12.))
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(

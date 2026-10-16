@@ -36,7 +36,9 @@ use crate::{
 const MAX_ROWS: usize = 10;
 /// Rows reserved for tabs/history/bookmarks/commands when matches exist.
 const MIN_ITEMS: usize = 4;
-const ROW_HEIGHT: Pixels = px(44.);
+/// Result rows as in Zen: 45px tall on a 49px pitch.
+const ROW_HEIGHT: Pixels = px(45.);
+const ROW_GAP: Pixels = px(4.);
 const INPUT_ROW_HEIGHT: Pixels = px(62.);
 const INPUT_TEXT: Pixels = px(17.);
 const ROW_TEXT: Pixels = px(14.);
@@ -442,16 +444,24 @@ impl Launcher {
                 let url = c.url.clone().unwrap_or_default();
                 let fav = host_of(&url).and_then(|h| self.data.favicons.get(&h).cloned());
                 let source = omnibox::row_host(&url);
+                // A tab not loaded yet is titled by its address: the host
+                // after it would only repeat it.
+                let redundant = source == c.title
+                    || c.title == omnibox::placeholder_title(&url)
+                    || c.title.trim_end_matches('/') == source;
                 (
                     favicon(fav, px(16.), false, cx),
                     c.title.clone(),
-                    (!source.is_empty() && source != c.title).then_some(source),
+                    (!source.is_empty() && !redundant).then_some(source),
                     None,
                 )
             }
         };
         let is_tab = matches!(row, Row::Item(c) if c.kind == ItemKind::Tab);
-        let highlight_bg = t.primary.opacity(if t.dark { 0.32 } else { 0.16 });
+        // Zen's highlight: a muted slate in dark mode, a saturated blue with
+        // white text in light mode.
+        let highlight_bg: Hsla = if t.dark { rgb(0x3e4f64).into() } else { rgb(0x71affb).into() };
+        let on_highlight = highlighted && !t.dark;
         h_flex()
             .id(("launcher-row", i))
             .h(ROW_HEIGHT)
@@ -481,7 +491,7 @@ impl Launcher {
                             .flex_shrink(1.)
                             .truncate()
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(t.foreground)
+                            .text_color(if on_highlight { white() } else { t.foreground })
                             .child(title),
                     )
                     .when_some(source, |s, source| {
@@ -490,7 +500,13 @@ impl Launcher {
                                 .flex_none()
                                 .max_w(px(320.))
                                 .truncate()
-                                .text_color(if highlighted { t.foreground.opacity(0.75) } else { muted })
+                                .text_color(if on_highlight {
+                                    white().opacity(0.85)
+                                } else if highlighted {
+                                    t.foreground.opacity(0.75)
+                                } else {
+                                    muted
+                                })
                                 .child(source),
                         )
                     }),
@@ -502,7 +518,13 @@ impl Launcher {
                         .gap(px(8.))
                         .text_size(metrics::TEXT_LABEL)
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(if highlighted { t.foreground.opacity(0.8) } else { muted })
+                        .text_color(if on_highlight {
+                            white().opacity(0.9)
+                        } else if highlighted {
+                            t.foreground.opacity(0.8)
+                        } else {
+                            muted
+                        })
                         .child("Switch to Tab")
                         .child(
                             div()
@@ -538,7 +560,8 @@ impl Render for Launcher {
         let t = cx.tokens().clone();
         let viewport = window.viewport_size();
         let width = (viewport.width * 0.63).max(px(560.)).min(px(910.)).min(viewport.width - px(32.));
-        let top = (viewport.height * 0.3).min(px(280.)).max(px(16.));
+        // Zen's bar sits at about 0.316 of the height (y≈284 at 900px).
+        let top = (viewport.height * 0.316).min(px(296.)).max(px(16.));
         let results_max = (viewport.height - top - INPUT_ROW_HEIGHT - px(24.)).max(ROW_HEIGHT * 2.);
         let rows: Vec<_> = self
             .rows
@@ -548,11 +571,16 @@ impl Render for Launcher {
             .map(|(i, r)| self.render_row(i, r, cx).into_any_element())
             .collect();
         let has_rows = !rows.is_empty();
-        let border = t.popover_border();
+        // Zen's panel: #181818 with a #4b4b4b edge in dark mode, white in light.
+        let (panel_bg, border): (Hsla, Hsla) = if t.dark {
+            (rgb(0x181818).into(), rgb(0x4b4b4b).into())
+        } else {
+            (white(), t.popover_border())
+        };
         let typed = !self.is_idle(&self.query(cx));
         let shadow = vec![
             BoxShadow {
-                color: black().opacity(t.shadow_alpha(0.22, 0.5)),
+                color: black().opacity(t.shadow_alpha(0.11, 0.25)),
                 offset: point(px(0.), px(24.)),
                 blur_radius: px(110.),
                 spread_radius: px(0.),
@@ -573,7 +601,7 @@ impl Render for Launcher {
             .top(top)
             .left((viewport.width - width) / 2.)
             .w(width)
-            .bg(t.popover)
+            .bg(panel_bg)
             .rounded(metrics::RADIUS)
             .border_1()
             .border_color(border)
@@ -641,7 +669,7 @@ impl Render for Launcher {
                         v_flex()
                             .id("launcher-results")
                             .p(px(8.))
-                            .gap(px(2.))
+                            .gap(ROW_GAP)
                             .max_h(results_max)
                             .overflow_y_scroll()
                             .children(rows),

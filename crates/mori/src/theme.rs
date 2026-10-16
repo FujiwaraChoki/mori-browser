@@ -127,6 +127,9 @@ pub struct Tokens {
     pub sidebar_foreground: Hsla,
     pub sidebar_border: Hsla,
     pub status_info: Hsla,
+    /// Part of the palette; nothing draws a success glyph at the moment
+    /// (Zen's confirmations are text only).
+    #[allow(dead_code)]
     pub status_success: Hsla,
     pub status_warning: Hsla,
     /// The active space's gradient theme (empty = plain chrome).
@@ -268,10 +271,12 @@ impl Tokens {
 
     /// Outline of menus, the launcher and other floating surfaces.
     pub fn popover_border(&self) -> Hsla {
+        // Zen: #414141-#454545 on its dark menus, #c5c5c6 on light ones, so
+        // a light menu stays visible over a white page.
         if self.dark {
-            white().opacity(0.16)
+            white().opacity(0.20)
         } else {
-            black().opacity(0.10)
+            black().opacity(0.22)
         }
     }
 
@@ -302,7 +307,7 @@ impl Tokens {
 
     pub fn popover_shadow(&self) -> Vec<BoxShadow> {
         vec![BoxShadow {
-            color: black().opacity(self.shadow_alpha(0.18, 0.50)),
+            color: black().opacity(self.shadow_alpha(0.12, 0.30)),
             offset: point(px(0.), px(5.)),
             blur_radius: px(14.),
             spread_radius: px(0.),

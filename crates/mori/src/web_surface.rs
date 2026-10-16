@@ -662,12 +662,18 @@ impl Render for WebSurface {
                         });
 
                         let corners = Corners::all(radius);
-                        window.paint_quad(fill(bounds, gpui_kit::white()).corner_radii(corners));
+                        let natural = size(px(image_size.0 as f32 / scale), px(image_size.1 as f32 / scale));
+                        // White under the page only where no frame covers it
+                        // (before the first frame, or while a resize waits
+                        // for one): under a covering frame its anti-aliased
+                        // corners would show as light arcs on dark pages.
+                        let covered = image.is_some()
+                            && natural.width + px(0.5) >= bounds.size.width
+                            && natural.height + px(0.5) >= bounds.size.height;
+                        if !covered {
+                            window.paint_quad(fill(bounds, gpui_kit::white()).corner_radii(corners));
+                        }
                         if let Some(image) = image {
-                            let natural = size(
-                                px(image_size.0 as f32 / scale),
-                                px(image_size.1 as f32 / scale),
-                            );
                             let image_bounds = Bounds::new(bounds.origin, natural);
                             let _ = window.paint_image(bounds, image_bounds, corners, image, 0, inert);
                         }

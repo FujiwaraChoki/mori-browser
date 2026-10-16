@@ -166,7 +166,8 @@ impl Browser {
                     .child(self.render_space_header(cx))
                     .child(self.render_folders(window, cx))
                     // Zen's divider between the pinned section and the tabs.
-                    .child(div().flex_none().mt(px(10.)).mb(px(12.)).h(px(1.)).bg(t.sidebar_separator()))
+                    // 37px from the label's cap-top to the divider, as in Zen.
+                    .child(div().flex_none().mt(px(19.)).mb(px(12.)).h(px(1.)).bg(t.sidebar_separator()))
                     .child(self.render_loose(window, cx)),
             )
             .children(self.render_media_strip(cx))
@@ -192,7 +193,10 @@ impl Browser {
             .ml(px(-4.))
             .mr(px(-3.))
             .child(
-                icon_button("app-menu", "ellipsis", button, true, cx).on_click(cx.listener(
+                icon_button("app-menu", "ellipsis", button, true, cx)
+                    .relative()
+                    .child(crate::ui::menus::anchor_probe(crate::ui::menus::APP_MENU_ANCHOR))
+                    .on_click(cx.listener(
                     |this, ev: &ClickEvent, _, cx| {
                         this.menu = Some(OpenMenu {
                             kind: MenuKind::Sidebar,
@@ -278,10 +282,23 @@ impl Browser {
             .child(self.render_omnibox(cx))
     }
 
+    /// Ctrl+T's bar is open: the sidebar shows the tab being created as
+    /// the selected one, and no other.
+    fn creating_tab(&self, cx: &App) -> bool {
+        self.launcher
+            .as_ref()
+            .is_some_and(|l| l.read(cx).mode() == LauncherMode::NewTab)
+    }
+
     fn render_omnibox(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.tokens().clone();
         let font = crate::theme::ui_font();
-        let record = self.active_tab().and_then(|id| self.ws.tab(id)).cloned();
+        // Ctrl+T's bar stands for a tab that has no address yet.
+        let record = self
+            .active_tab()
+            .filter(|_| !self.creating_tab(cx))
+            .and_then(|id| self.ws.tab(id))
+            .cloned();
         let url = record.as_ref().map(|r| r.url.clone()).unwrap_or_default();
         let host = omnibox::display_host(&url);
         let is_web = url.starts_with("http://") || url.starts_with("https://");
@@ -354,6 +371,7 @@ impl Browser {
                 }))
         };
         let reader_color = if reader { t.primary } else { muted };
+        let pill_backing = t.opaque_on_sidebar(t.tile_rest());
         let star_color = if bookmarked { t.status_warning } else { muted };
 
         let mut pill = h_flex()
@@ -402,13 +420,22 @@ impl Browser {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .truncate()
+                    // A long address fades out (as Zen's does, and as tab
+                    // titles do here) where the pill has a single colour.
+                    .map(|s| match pill_backing {
+                        Some(_) => s.relative().overflow_hidden().whitespace_nowrap(),
+                        None => s.truncate(),
+                    })
                     .text_size(font.url_size())
                     .font_weight(FontWeight::MEDIUM)
                     .when(host.is_empty(), |s| s.text_color(muted).child("Search..."))
                     .when(!host.is_empty(), |s| {
                         s.text_color(t.sidebar_foreground.opacity(if t.dark { 0.75 } else { 0.68 }))
                             .child(host)
+                    })
+                    // Drawn after the text so it covers its end.
+                    .when_some(pill_backing, |s, backing| {
+                        s.child(div().absolute().top_0().bottom_0().right_0().w(px(18.)).bg(fade_to(backing)))
                     }),
             );
         if !is_web {
@@ -487,7 +514,9 @@ impl Browser {
             .id("space-header")
             .flex_none()
             .h(px(24.))
-            .mt(px(8.))
+            // Zen: the label's cap-top sits 22px under the pill, or 24px
+            // under the essentials grid.
+            .mt(px(if space.pinned.is_empty() { 5. } else { 11. }))
             .pl(px(7.))
             .gap(px(6.))
             .children(custom_symbol.map(|symbol| icon(&symbol, px(13.), t.muted_foreground)))
@@ -529,9 +558,12 @@ impl Browser {
         let pins = space.pinned.clone();
         if pins.is_empty() {
             // A slim drop zone so tabs can be pinned by dragging.
+            // It takes no room at rest (the space label sits where Zen's
+            // does); it opens up while a tab is dragged over it.
             return div()
                 .id("pin-zone")
                 .h(px(6.))
+                .mb(px(-6.))
                 .rounded(metrics::RADIUS)
                 .drag_over::<DraggedTab>(move |s, _, _, _| {
                     s.h(px(40.))
@@ -545,9 +577,10 @@ impl Browser {
                 }))
                 .into_any_element();
         }
-        let selected = self.active_tab();
+        let selected = self.active_tab().filter(|_| !self.creating_tab(cx));
+        // Zen's selected essential: #585858 fill, #bcbcbc ring.
         let (selected_bg, selected_ring) = if t.dark {
-            (white().opacity(0.20), white().opacity(0.45))
+            (white().opacity(0.29), white().opacity(0.70))
         } else {
             (white().opacity(0.80), black().opacity(0.15))
         };
@@ -846,10 +879,7 @@ impl Browser {
         let space = self.ws.active().clone();
         let space_id = space.id;
         // While Ctrl+T's bar is open the row reads as the tab being created.
-        let creating = self
-            .launcher
-            .as_ref()
-            .is_some_and(|l| l.read(cx).mode() == LauncherMode::NewTab);
+        let creating = self.creating_tab(cx);
         let new_tab_fg = if creating { t.sidebar_foreground } else { t.muted_foreground };
         let new_tab = h_flex()
             .id("new-tab-row")
@@ -912,7 +942,8 @@ impl Browser {
             return div().into_any_element();
         };
         let fav = self.favicon_for(id);
-        let selected = self.active_tab() == Some(id);
+        // Ctrl+T moves the selection to the "New Tab" row, as in Zen.
+        let selected = self.active_tab() == Some(id) && !self.creating_tab(cx);
         let multi = self.multi_select.contains(&id);
         let in_split = self.visible_split_member(id);
         let live = self.live.get(&id);
@@ -1295,7 +1326,12 @@ impl Browser {
                     .cursor_pointer()
                     .hover(|s| s.bg(t.ghost_hover()))
                     .active(|s| s.bg(t.ghost_pressed()))
-                    .child(icon("plus", px(14.), t.sidebar_foreground.opacity(if t.dark { 0.65 } else { 0.6 })))
+                    // Zen turns its "+" into an "x" while the menu is open.
+                    .child(icon(
+                        if self.menu.as_ref().is_some_and(|m| matches!(m.kind, MenuKind::NewMenu)) { "x" } else { "plus" },
+                        px(14.),
+                        t.sidebar_foreground.opacity(if t.dark { 0.65 } else { 0.6 }),
+                    ))
                     .on_click(cx.listener(|this, ev: &ClickEvent, _, cx| {
                         this.menu = Some(OpenMenu {
                             kind: MenuKind::NewMenu,

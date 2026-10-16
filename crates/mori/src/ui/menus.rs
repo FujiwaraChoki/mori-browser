@@ -43,6 +43,8 @@ const MENU_GAP: f32 = 4.;
 
 /// Anchor key of the sidebar's "+" button (see [`anchor_probe`]).
 pub const NEW_MENU_ANCHOR: &str = "new-menu";
+/// Anchor key of the toolbar's "…" app-menu button.
+pub const APP_MENU_ANCHOR: &str = "app-menu";
 
 pub enum Entry {
     Item {
@@ -248,8 +250,9 @@ fn entries(b: &Browser, kind: &MenuKind) -> Vec<Entry> {
         ],
         MenuKind::SiteInfo => crate::ui::site_info::site_info_entries(b),
         MenuKind::NewMenu => vec![
-            cmd("New Space", "layers", Command::NewSpace),
-            item("New Folder", "folder-plus", |b, w, cx| b.new_folder(Vec::new(), w, cx)),
+            cmd("Create Space", "layers", Command::NewSpace),
+            item("Create Folder", "folder-plus", |b, w, cx| b.new_folder(Vec::new(), w, cx)),
+            Entry::Separator,
             item("New Split", "columns-2", |b, w, cx| {
                 // Pair the current tab with the most recently used other one.
                 let current = b.selected();
@@ -269,9 +272,7 @@ fn entries(b: &Browser, kind: &MenuKind) -> Vec<Entry> {
                 }
             })
             .enabled(b.split.is_none()),
-            Entry::Separator,
-            item("New Tab", "plus", |b, w, cx| b.open_launcher(LauncherMode::NewTab, w, cx))
-                .shortcut("secondary-t"),
+            item("New Tab", "plus", |b, w, cx| b.open_launcher(LauncherMode::NewTab, w, cx)),
         ],
     }
 }
@@ -750,6 +751,9 @@ impl Browser {
             MenuKind::NewMenu => anchor_bounds(NEW_MENU_ANCHOR, window),
             MenuKind::SiteInfo => anchor_bounds(crate::ui::site_info::OMNIBOX_ANCHOR, window),
             MenuKind::Space(sid) => anchor_bounds(space_chip_anchor(*sid), window),
+            // Right-clicks elsewhere in the sidebar miss the button and keep
+            // the menu at the cursor.
+            MenuKind::Sidebar => anchor_bounds(APP_MENU_ANCHOR, window),
             _ => None,
         }
         .filter(|b| b.contains(&menu.position))
@@ -870,7 +874,7 @@ impl Browser {
             })
             .collect();
 
-        let border = if t.dark { white().opacity(0.12) } else { black().opacity(0.10) };
+        let border = t.popover_border();
         Some(
             div()
                 .absolute()
@@ -888,12 +892,13 @@ impl Browser {
                         .max_h(viewport.height - px(16.))
                         .overflow_y_scroll()
                         .p(px(MENU_PADDING))
-                        .bg(t.popover)
+                        // Zen's menu surface: #1f1f1f dark, #f4f4f4 light.
+                        .bg(if t.dark { Hsla::from(rgb(0x1f1f1f)) } else { Hsla::from(rgb(0xf4f4f4)) })
                         .rounded(px(8.))
                         .border_1()
                         .border_color(border)
                         .shadow(vec![BoxShadow {
-                            color: black().opacity(t.shadow_alpha(0.18, 0.45)),
+                            color: black().opacity(t.shadow_alpha(0.12, 0.30)),
                             offset: point(px(0.), px(8.)),
                             blur_radius: px(24.),
                             spread_radius: px(0.),

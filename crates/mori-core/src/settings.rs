@@ -17,20 +17,21 @@ pub const SIDEBAR_MIN_WIDTH: f32 = 160.0;
 /// Widest the sidebar may be dragged.
 pub const SIDEBAR_MAX_WIDTH: f32 = 420.0;
 
-/// "Sleep idle tabs" choices: (minutes, label). 0 = never.
+/// "Sleep idle tabs" choices: (minutes, label). 0 = never. Labels are short
+/// so all six chips fit on one line of the settings card.
 pub const SLEEP_OPTIONS: [(u32, &str); 6] = [
     (0, "Never"),
-    (15, "15 minutes"),
-    (30, "30 minutes"),
-    (60, "1 hour"),
-    (180, "3 hours"),
-    (360, "6 hours"),
+    (15, "15 min"),
+    (30, "30 min"),
+    (60, "1 hr"),
+    (180, "3 hr"),
+    (360, "6 hr"),
 ];
 
 /// "Archive idle tabs" choices: (hours, label). 0 = never.
 pub const ARCHIVE_OPTIONS: [(u32, &str); 6] = [
     (0, "Never"),
-    (12, "12 hours"),
+    (12, "12 hr"),
     (24, "1 day"),
     (72, "3 days"),
     (168, "1 week"),

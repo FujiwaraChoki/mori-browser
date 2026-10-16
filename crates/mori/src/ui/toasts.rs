@@ -34,11 +34,18 @@ impl Browser {
             .map(|toast| {
                 let id = toast.id;
                 let action = toast.action.clone();
+                // Zen's toasts carry text only; a glyph marks trouble.
                 let glyph = match toast.style {
-                    ToastStyle::Success => Some(("circle-check", t.status_success)),
                     ToastStyle::Warning => Some(("triangle-alert", t.status_warning)),
                     ToastStyle::Error => Some(("circle-x", t.destructive)),
-                    ToastStyle::Info => None,
+                    ToastStyle::Success | ToastStyle::Info => None,
+                };
+                // Zen's pill: a vertical navy gradient with a light outline
+                // in dark mode, a saturated blue one in light mode, white text.
+                let (top_color, bottom_color, outline): (Hsla, Hsla, Hsla) = if t.dark {
+                    (rgb(0x132a47).into(), rgb(0x122640).into(), white().opacity(0.65))
+                } else {
+                    (rgb(0x1a78f0).into(), rgb(0x1969d0).into(), white().opacity(0.35))
                 };
                 let pill = h_flex()
                     .id(("toast", id as usize))
@@ -46,12 +53,16 @@ impl Browser {
                     .px(px(14.))
                     .gap(px(10.))
                     .rounded(metrics::RADIUS)
-                    // Accent tint over the popover colour: a dark blue-ish
-                    // pill in dark mode, a light tint in light mode.
-                    .bg(t.primary.opacity(if t.dark { 0.28 } else { 0.14 }))
+                    .bg(linear_gradient(
+                        180.,
+                        linear_color_stop(top_color, 0.),
+                        linear_color_stop(bottom_color, 1.),
+                    ))
+                    .border_1()
+                    .border_color(outline)
                     .text_size(px(14.))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(t.foreground)
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(white())
                     .cursor_pointer()
                     .when_some(glyph, |s, (glyph, color)| s.child(icon(glyph, px(15.), color)))
                     .child(toast.text.clone())
@@ -62,8 +73,8 @@ impl Browser {
                                 .px_2()
                                 .py_0p5()
                                 .rounded(metrics::RADIUS_MD)
-                                .bg(t.foreground.opacity(0.12))
-                                .hover(|s| s.bg(t.foreground.opacity(0.2)))
+                                .bg(white().opacity(0.14))
+                                .hover(|s| s.bg(white().opacity(0.24)))
                                 .child(label)
                                 .on_click(cx.listener(move |this, _, window, cx| {
                                     cx.stop_propagation();
