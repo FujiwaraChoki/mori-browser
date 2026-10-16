@@ -411,8 +411,12 @@ pub fn inject_css_script(slot: &str, css: &str) -> String {
     )
 }
 
+/// Most class names (and ids) [`COLLECT_CLASSES_SCRIPT`] reports.
+pub const MAX_COLLECTED_NAMES: usize = 6000;
+
 /// Evaluates to `{classes, ids}`: the distinct class names and ids on the
-/// page (capped), for [`Blocker::generic_css`].
+/// page (at most [`MAX_COLLECTED_NAMES`] each), for
+/// [`Blocker::generic_css`].
 pub const COLLECT_CLASSES_SCRIPT: &str = r#"(() => {
   const classes = new Set(), ids = new Set(), max = 6000;
   for (const el of document.querySelectorAll('[id],[class]')) {
@@ -454,6 +458,11 @@ mod tests {
         assert!(b.blocks("https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js", page, "script"));
         assert!(!b.blocks("https://www.google.com/", page, "subdocument"));
         assert!(!b.blocks("https://fonts.gstatic.com/s/inter.woff2", page, "font"));
+    }
+
+    #[test]
+    fn collect_script_cap_matches() {
+        assert!(COLLECT_CLASSES_SCRIPT.contains(&format!("max = {MAX_COLLECTED_NAMES};")));
     }
 
     #[test]

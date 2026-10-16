@@ -282,7 +282,11 @@ impl Browser {
                 classes: Vec<String>,
                 ids: Vec<String>,
             }
-            let found: Found = result.ok().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+            let mut found: Found = result.ok().and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default();
+            // The list comes from page script, which can return anything:
+            // keep to the script's own cap.
+            found.classes.truncate(content_blocker::MAX_COLLECTED_NAMES);
+            found.ids.truncate(content_blocker::MAX_COLLECTED_NAMES);
             let Some(engine) = blocker.blocker() else { return };
             let css = engine.generic_css(&found.classes, &found.ids, &cosmetics.exceptions);
             if !css.is_empty() {

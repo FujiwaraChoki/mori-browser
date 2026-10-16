@@ -1407,7 +1407,8 @@ impl Browser {
             self.split_focused = false;
             self.split_drag = None;
             if let Some(live) = self.live.get(&tab) {
-                live.view.set_hidden(true);
+                // Picture-in-Picture keeps showing its frames.
+                live.view.set_hidden(self.pip_tab() != Some(tab));
                 live.surface.update(cx, |s, _| s.blur());
             }
             self.focus_page_later(cx);
