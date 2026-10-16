@@ -1,5 +1,11 @@
 //! Downloads: saved straight into the downloads directory, reported to the
-//! chrome as [`DownloadUpdate`]s, and controllable by id.
+//! chrome as [`DownloadUpdate`]s through one global queue (see
+//! [`take_download_updates`]), and controllable by id.
+//!
+//! Updates do not travel with the originating view: its tab may close,
+//! sleep or be a Peek while the download runs. That view is also parked
+//! until its downloads settle (see `WebView::close`), because Chromium
+//! cancels the downloads of a destroyed browser.
 
 use std::{
     cell::RefCell,
@@ -10,7 +16,7 @@ use std::{
 
 use cef::*;
 
-use crate::view::{ViewEvent, ViewInner};
+use crate::view::{ViewId, ViewInner, note_download};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct DownloadId(pub u32);
@@ -22,6 +28,13 @@ pub enum DownloadState {
     Complete,
     Canceled,
     Interrupted,
+}
+
+impl DownloadState {
+    /// Running or paused: more updates will come.
+    pub fn is_active(self) -> bool {
+        matches!(self, DownloadState::InProgress | DownloadState::Paused)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -37,15 +50,27 @@ pub struct DownloadUpdate {
     /// Bytes per second.
     pub speed: i64,
     pub state: DownloadState,
+    /// The view that started the download.
+    pub source: Option<ViewId>,
 }
 
 thread_local! {
     static DOWNLOADS_DIR: RefCell<PathBuf> = RefCell::new(PathBuf::from("."));
     static CONTROLS: RefCell<HashMap<DownloadId, DownloadItemCallback>> = RefCell::new(HashMap::new());
+    static UPDATES: RefCell<Vec<DownloadUpdate>> = const { RefCell::new(Vec::new()) };
 }
 
 pub(crate) fn set_downloads_dir(dir: PathBuf) {
     DOWNLOADS_DIR.with(|d| *d.borrow_mut() = dir);
+}
+
+/// Download updates since the last call, oldest first.
+pub fn take_download_updates() -> Vec<DownloadUpdate> {
+    UPDATES.with(|u| std::mem::take(&mut *u.borrow_mut()))
+}
+
+fn publish(update: DownloadUpdate) {
+    UPDATES.with(|u| u.borrow_mut().push(update));
 }
 
 /// Cancel a running download.
@@ -65,6 +90,11 @@ pub fn resume_download(id: DownloadId) {
     if let Some(cb) = CONTROLS.with(|c| c.borrow().get(&id).cloned()) {
         cb.resume();
     }
+}
+
+/// Whether this session can still pause, resume or cancel the download.
+pub fn is_controllable(id: DownloadId) -> bool {
+    CONTROLS.with(|c| c.borrow().contains_key(&id))
 }
 
 /// Pick `dir/name`, or `dir/name (n).ext` if that already exists.
@@ -97,7 +127,7 @@ fn sanitize(name: &str) -> String {
     }
 }
 
-fn update_from(item: &DownloadItem, path_hint: Option<PathBuf>) -> DownloadUpdate {
+fn update_from(item: &DownloadItem, path_hint: Option<PathBuf>, source: Option<ViewId>) -> DownloadUpdate {
     let s = |u: &CefStringUserfree| CefString::from(u).to_string();
     let path = path_hint.unwrap_or_else(|| PathBuf::from(s(&item.full_path())));
     let filename = path
@@ -126,6 +156,7 @@ fn update_from(item: &DownloadItem, path_hint: Option<PathBuf>) -> DownloadUpdat
         percent: item.percent_complete(),
         speed: item.current_speed(),
         state,
+        source,
     }
 }
 
@@ -160,9 +191,11 @@ wrap_download_handler! {
             let dir = DOWNLOADS_DIR.with(|d| d.borrow().clone());
             let path = unique_path(&dir, &name);
             callback.cont(Some(&CefString::from(path.to_string_lossy().as_ref())), 0);
-            if let Some(view) = self.view.upgrade() {
-                view.push(ViewEvent::Download(update_from(item, Some(path))));
+            let view = self.view.upgrade();
+            if let Some(view) = &view {
+                note_download(view, DownloadId(item.id()), true);
             }
+            publish(update_from(item, Some(path), view.map(|v| v.id)));
             1
         }
 
@@ -173,24 +206,25 @@ wrap_download_handler! {
             callback: Option<&mut DownloadItemCallback>,
         ) {
             let Some(item) = download_item else { return };
-            let update = update_from(item, None);
+            let view = self.view.upgrade();
+            let update = update_from(item, None, view.as_ref().map(|v| v.id));
             let id = update.id;
-            match update.state {
-                DownloadState::InProgress | DownloadState::Paused => {
-                    if let Some(cb) = callback {
-                        CONTROLS.with(|c| c.borrow_mut().insert(id, cb.clone()));
-                    }
+            let active = update.state.is_active();
+            if active {
+                if let Some(cb) = callback {
+                    CONTROLS.with(|c| c.borrow_mut().insert(id, cb.clone()));
                 }
-                _ => {
-                    CONTROLS.with(|c| c.borrow_mut().remove(&id));
-                }
+            } else {
+                CONTROLS.with(|c| c.borrow_mut().remove(&id));
             }
             // A download whose path is still empty has not been accepted yet.
             if update.path.as_os_str().is_empty() {
                 return;
             }
-            if let Some(view) = self.view.upgrade() {
-                view.push(ViewEvent::Download(update));
+            publish(update);
+            // Last: settling a parked view's final download closes it.
+            if let Some(view) = view {
+                note_download(&view, id, active);
             }
         }
     }
@@ -214,5 +248,13 @@ mod tests {
         std::fs::write(dir.join("a.txt"), "x").unwrap();
         assert_eq!(unique_path(&dir, "a.txt"), dir.join("a (1).txt"));
         assert_eq!(unique_path(&dir, "b.txt"), dir.join("b.txt"));
+    }
+
+    #[test]
+    fn active_states() {
+        assert!(DownloadState::InProgress.is_active());
+        assert!(DownloadState::Paused.is_active());
+        assert!(!DownloadState::Complete.is_active());
+        assert!(!DownloadState::Interrupted.is_active());
     }
 }

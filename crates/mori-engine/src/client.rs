@@ -15,22 +15,42 @@ use cef::*;
 
 use crate::view::{
     ContextMenuInfo, CursorKind, DialogId, DialogKind, Disposition, Frame, JsDialog,
-    PendingPermission, PermissionId, PermissionKind, PermissionRequest, PopupFrame, ViewEvent,
-    ViewInner, WebView, next_token,
+    PendingPermission, PermissionId, PermissionKind, PermissionRequest, PopupFeatures,
+    PopupFrame, ViewEvent, ViewInner, WebView, next_token,
 };
 
 thread_local! {
-    /// Views Chromium is creating for us (popups, DevTools). Holds the strong
+    /// Views Chromium is creating for us (popups). Holds the strong
     /// reference until the browser exists and the opener has been told.
     static PENDING: RefCell<Vec<Rc<ViewInner>>> = const { RefCell::new(Vec::new()) };
 }
 
-/// How a pending view should be announced once its browser exists.
+/// How a pending popup should be announced once its browser exists.
 struct Announce {
     opener: Weak<ViewInner>,
+    /// Chromium's id for the popup, to match `on_before_popup_aborted`.
+    popup_id: i32,
     url: String,
     disposition: Disposition,
     user_gesture: bool,
+    features: PopupFeatures,
+}
+
+/// Forget a pending view Chromium will not create after all.
+fn abandon_pending(id: crate::ViewId) {
+    ANNOUNCE.with(|a| a.borrow_mut().retain(|(v, _)| *v != id));
+    let dropped = PENDING.with(|p| {
+        let mut p = p.borrow_mut();
+        p.iter().position(|v| v.id == id).map(|i| p.remove(i))
+    });
+    if let Some(view) = &dropped
+        && view.browser.borrow().is_none()
+    {
+        // It will never be created: nothing to wait for when closing.
+        view.creating.set(false);
+        crate::view::release_closed(id);
+    }
+    drop(dropped);
 }
 
 thread_local! {
@@ -69,42 +89,20 @@ pub(crate) fn build_client(inner: &Rc<ViewInner>) -> Client {
         PermissionHandlerImpl::new(weak.clone()),
         ContextMenuHandlerImpl::new(weak.clone()),
         FindHandlerImpl::new(weak.clone()),
-        crate::downloads::build_handler(weak),
+        crate::downloads::build_handler(weak.clone()),
+        crate::file_dialog::build_handler(weak.clone()),
+        crate::print::build_handler(weak),
     )
 }
 
 /// Create a view whose browser Chromium (not us) will create, e.g. a popup.
 fn pending_view(opener: &Rc<ViewInner>, announce: Announce) -> (Rc<ViewInner>, Client) {
     let inner = ViewInner::new(opener.size.get(), opener.scale.get());
+    inner.creating.set(true);
     let client = build_client(&inner);
     ANNOUNCE.with(|a| a.borrow_mut().push((inner.id, announce)));
     PENDING.with(|p| p.borrow_mut().push(inner.clone()));
     (inner, client)
-}
-
-pub(crate) fn show_devtools(inspected: &Rc<ViewInner>, inspect_at: Option<(i32, i32)>) {
-    let Some(host) = inspected.host() else { return };
-    let (_, mut client) = pending_view(
-        inspected,
-        Announce {
-            opener: Rc::downgrade(inspected),
-            url: "devtools://devtools".into(),
-            disposition: Disposition::ForegroundTab,
-            user_gesture: true,
-        },
-    );
-    let window_info = WindowInfo {
-        windowless_rendering_enabled: true as _,
-        ..Default::default()
-    };
-    let settings = browser_settings();
-    let point = inspect_at.map(|(x, y)| Point { x, y });
-    host.show_dev_tools(
-        Some(&window_info),
-        Some(&mut client),
-        Some(&settings),
-        point.as_ref(),
-    );
 }
 
 wrap_client! {
@@ -119,6 +117,8 @@ wrap_client! {
         context_menu: ContextMenuHandler,
         find: FindHandler,
         download: DownloadHandler,
+        dialog: DialogHandler,
+        print: PrintHandler,
     }
 
     impl Client {
@@ -132,6 +132,8 @@ wrap_client! {
         fn context_menu_handler(&self) -> Option<ContextMenuHandler> { Some(self.context_menu.clone()) }
         fn find_handler(&self) -> Option<FindHandler> { Some(self.find.clone()) }
         fn download_handler(&self) -> Option<DownloadHandler> { Some(self.download.clone()) }
+        fn dialog_handler(&self) -> Option<DialogHandler> { Some(self.dialog.clone()) }
+        fn print_handler(&self) -> Option<PrintHandler> { Some(self.print.clone()) }
     }
 }
 
@@ -206,7 +208,7 @@ wrap_render_handler! {
             &self,
             _browser: Option<&mut Browser>,
             type_: PaintElementType,
-            _dirty_rects: Option<&[Rect]>,
+            dirty_rects: Option<&[Rect]>,
             buffer: *const u8,
             width: ::std::os::raw::c_int,
             height: ::std::os::raw::c_int,
@@ -218,18 +220,30 @@ wrap_render_handler! {
             let len = width as usize * height as usize * 4;
             // SAFETY: CEF guarantees `buffer` holds width*height BGRA pixels
             // for the duration of this callback.
-            let bytes = unsafe { std::slice::from_raw_parts(buffer, len) }.to_vec();
-            let frame = Frame { width: width as u32, height: height as u32, bgra: bytes };
+            let src = unsafe { std::slice::from_raw_parts(buffer, len) };
+            let (w, h) = (width as u32, height as u32);
             if type_ == PaintElementType::POPUP {
+                let frame = Frame { width: w, height: h, bgra: src.to_vec() };
                 let mut popup = view.popup.borrow_mut();
                 popup.get_or_insert_with(PopupFrame::default).frame = frame;
                 drop(popup);
                 view.push(ViewEvent::PopupWidgetChanged);
-            } else {
-                *view.frame.borrow_mut() = Some(frame);
-                view.frame_generation.set(view.frame_generation.get() + 1);
-                view.mark_dirty();
+                return;
             }
+            // The UI takes at most one frame per redraw. While the last one
+            // is still waiting (the UI is busy, or not drawing this view at
+            // all), patch it in place: only the dirty rects changed, and no
+            // new buffer is allocated per paint.
+            let mut slot = view.frame.borrow_mut();
+            match slot.as_mut() {
+                Some(frame) if frame.width == w && frame.height == h => {
+                    crate::view::copy_dirty_rects(&mut frame.bgra, src, w, h, dirty_rects.unwrap_or_default());
+                }
+                _ => *slot = Some(Frame { width: w, height: h, bgra: src.to_vec() }),
+            }
+            drop(slot);
+            view.frame_generation.set(view.frame_generation.get() + 1);
+            view.mark_dirty();
         }
 
         fn on_ime_composition_range_changed(
@@ -260,17 +274,27 @@ wrap_render_handler! {
         fn start_dragging(
             &self,
             browser: Option<&mut Browser>,
-            _drag_data: Option<&mut DragData>,
-            _allowed_ops: DragOperationsMask,
-            _x: ::std::os::raw::c_int,
-            _y: ::std::os::raw::c_int,
+            drag_data: Option<&mut DragData>,
+            allowed_ops: DragOperationsMask,
+            x: ::std::os::raw::c_int,
+            y: ::std::os::raw::c_int,
         ) -> ::std::os::raw::c_int {
-            // Native drag sessions out of an offscreen view are not supported
-            // yet; tell Chromium the drag ended so the page is not stuck.
+            // The drag stays inside the view: it becomes its own drop target.
+            if let (Some(view), Some(data)) = (self.view.upgrade(), drag_data)
+                && crate::drag::start(&view, data, allowed_ops, x, y)
+            {
+                return 1;
+            }
             if let Some(host) = browser.and_then(|b| b.host()) {
                 host.drag_source_system_drag_ended();
             }
             0
+        }
+
+        fn update_drag_cursor(&self, _browser: Option<&mut Browser>, operation: DragOperationsMask) {
+            if let Some(view) = self.view.upgrade() {
+                crate::drag::update_cursor(&view, operation);
+            }
         }
     }
 }
@@ -537,27 +561,35 @@ wrap_life_span_handler! {
             &self,
             _browser: Option<&mut Browser>,
             _frame: Option<&mut cef::Frame>,
-            _popup_id: ::std::os::raw::c_int,
+            popup_id: ::std::os::raw::c_int,
             target_url: Option<&CefString>,
             _target_frame_name: Option<&CefString>,
             target_disposition: WindowOpenDisposition,
             user_gesture: ::std::os::raw::c_int,
-            _popup_features: Option<&PopupFeatures>,
+            popup_features: Option<&cef::PopupFeatures>,
             window_info: Option<&mut WindowInfo>,
             client: Option<&mut Option<Client>>,
             settings: Option<&mut BrowserSettings>,
             _extra_info: Option<&mut Option<DictionaryValue>>,
             _no_javascript_access: Option<&mut ::std::os::raw::c_int>,
         ) -> ::std::os::raw::c_int {
-            let Some(opener) = self.view.upgrade() else { return 1 };
+            let Some(opener) = self.view.upgrade().filter(|v| !v.closing.get()) else { return 1 };
+            let features = popup_features
+                .map(|f| PopupFeatures {
+                    width: (f.width_set == 1 && f.width > 0).then_some(f.width),
+                    height: (f.height_set == 1 && f.height > 0).then_some(f.height),
+                })
+                .unwrap_or_default();
             // Let Chromium create the popup (so window.opener and postMessage
             // keep working for sign-in flows), but render it offscreen through
             // a Mori client. The chrome decides whether it becomes a tab.
             let (_, new_client) = pending_view(&opener, Announce {
                 opener: Rc::downgrade(&opener),
+                popup_id,
                 url: cef_str(target_url),
                 disposition: target_disposition.into(),
                 user_gesture: user_gesture == 1,
+                features,
             });
             if let Some(info) = window_info {
                 info.windowless_rendering_enabled = true as _;
@@ -572,16 +604,39 @@ wrap_life_span_handler! {
             0
         }
 
-        fn on_before_popup_aborted(&self, _browser: Option<&mut Browser>, _popup_id: ::std::os::raw::c_int) {
-            // The most recent pending popup was abandoned by Chromium.
-            if let Some(inner) = PENDING.with(|p| p.borrow_mut().pop()) {
-                ANNOUNCE.with(|a| a.borrow_mut().retain(|(id, _)| *id != inner.id));
+        fn on_before_popup_aborted(&self, _browser: Option<&mut Browser>, popup_id: ::std::os::raw::c_int) {
+            let opener = self.view.as_ptr();
+            let abandoned = ANNOUNCE.with(|a| {
+                a.borrow()
+                    .iter()
+                    .find(|(_, announce)| announce.popup_id == popup_id && announce.opener.as_ptr() == opener)
+                    .map(|(id, _)| *id)
+            });
+            if let Some(id) = abandoned {
+                abandon_pending(id);
             }
         }
 
         fn on_after_created(&self, browser: Option<&mut Browser>) {
-            let (Some(view), Some(browser)) = (self.view.upgrade(), browser) else { return };
+            let Some(browser) = browser else { return };
+            let Some(view) = self.view.upgrade() else {
+                // Every handle to the view went away while Chromium was still
+                // creating it; nothing would ever show or close this browser.
+                if let Some(host) = browser.host() {
+                    host.close_browser(true as _);
+                }
+                return;
+            };
             *view.browser.borrow_mut() = Some(browser.clone());
+            view.creating.set(false);
+            if view.closing.get() {
+                // Closed before it existed: finish closing now.
+                abandon_pending(view.id);
+                if let Some(host) = browser.host() {
+                    host.close_browser(true as _);
+                }
+                return;
+            }
             crate::devtools::attach(&view);
             if let Some(url) = view.pending_url.borrow_mut().take()
                 && let Some(frame) = browser.main_frame()
@@ -606,14 +661,16 @@ wrap_life_span_handler! {
                 p.iter().position(|v| v.id == view.id).map(|i| p.remove(i))
             });
             if let (Some(announce), Some(strong)) = (announce, strong) {
-                match announce.opener.upgrade() {
+                let view = WebView::from_inner(strong);
+                match announce.opener.upgrade().filter(|o| !o.closing.get()) {
                     Some(opener) => opener.push(ViewEvent::NewView {
-                        view: WebView::from_inner(strong),
+                        view,
                         url: announce.url,
                         disposition: announce.disposition,
                         user_gesture: announce.user_gesture,
+                        features: announce.features,
                     }),
-                    None => WebView::from_inner(strong).close(),
+                    None => view.close(),
                 }
             }
         }
@@ -631,9 +688,13 @@ wrap_life_span_handler! {
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
             let Some(view) = self.view.upgrade() else { return };
             view.closed.set(true);
+            view.creating.set(false);
+            view.fail_pending("view closed");
+            *view.drag.borrow_mut() = None;
             *view.devtools_registration.borrow_mut() = None;
             *view.browser.borrow_mut() = None;
             view.push(ViewEvent::Closed);
+            crate::view::release_closed(view.id);
         }
     }
 }
@@ -671,6 +732,7 @@ wrap_request_handler! {
                 url,
                 disposition,
                 user_gesture: user_gesture == 1,
+                features: PopupFeatures::default(),
             });
             1
         }

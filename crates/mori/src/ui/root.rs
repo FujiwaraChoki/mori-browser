@@ -416,6 +416,7 @@ fn loading_bar(cx: &App) -> impl IntoElement {
 
 impl Render for Browser {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.sync_view_visibility(cx);
         let t = cx.tokens().clone();
         let fullscreen = self.selected_live().is_some_and(|l| l.fullscreen);
         let show_sidebar = self.settings.sidebar_visible && !fullscreen;
@@ -444,7 +445,8 @@ impl Render for Browser {
             .flex()
             .gap(metrics::CARD_INSET)
             .child(div().flex_1().min_w_0().h_full().child(card))
-            .children(split_card);
+            .children(split_card)
+            .children(self.render_devtools_card(cx));
 
         let mut row = h_flex().size_full().items_stretch();
         if left {
@@ -506,6 +508,7 @@ impl Render for Browser {
         let menu = self.render_menu(window, cx);
         let panel = self.render_panel(window, cx);
         let peek = self.render_peek(cx);
+        let popup = self.render_popup_window(cx);
         let boost = self.boost_editor.clone();
         let toasts = self.render_toasts(cx);
 
@@ -584,7 +587,7 @@ impl Render for Browser {
             }))
             .on_action(cx.listener(|this, _: &ToggleBookmark, _, cx| this.toggle_bookmark(cx)))
             .on_action(cx.listener(|this, _: &Print, window, cx| commands::run(this, Command::Print, window, cx)))
-            .on_action(cx.listener(|this, _: &ToggleDevTools, _, _| this.toggle_devtools()))
+            .on_action(cx.listener(|this, _: &ToggleDevTools, window, cx| this.toggle_devtools(window, cx)))
             .on_action(cx.listener(|this, _: &PeekClipboard, window, cx| commands::peek_clipboard(this, window, cx)))
             .on_action(cx.listener(|this, _: &BoostSite, window, cx| this.open_boost_editor(window, cx)))
             .on_action(cx.listener(|this, _: &ZapElement, _, cx| this.start_zap(cx)))
@@ -630,6 +633,7 @@ impl Render for Browser {
             .children(floating)
             .children(panel)
             .children(peek)
+            .children(popup)
             .children(boost.map(|b| b.into_any_element()))
             .children(launcher.map(|l| l.into_any_element()))
             .children(menu)

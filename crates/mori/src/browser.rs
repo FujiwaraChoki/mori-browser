@@ -16,17 +16,17 @@ use mori_core::{
     archive::ArchiveStore,
     bookmarks::BookmarkStore,
     boosts::{self, BoostStore},
+    downloads::DownloadStore,
     history::HistoryStore,
     omnibox::{self, Resolved},
+    persist::Saver,
     routes::RouteStore,
     settings::Settings,
     util::host_of,
     workspace::{ClosedTab, FolderId, Slot, SpaceId, TabId, TabRecord, Workspace},
+    zoom::ZoomStore,
 };
-use mori_engine::{
-    ContextMenuInfo, DownloadState, DownloadUpdate, JsDialog, PermissionRequest, ViewEvent,
-    WebView,
-};
+use mori_engine::{ContextMenuInfo, JsDialog, PermissionRequest, ViewEvent, WebView};
 
 use crate::{
     engine_hub::EngineHub,
@@ -37,6 +37,14 @@ use crate::{
     },
     web_surface::WebSurface,
 };
+
+mod devtools;
+mod downloads;
+mod page_tools;
+mod popups;
+
+pub use devtools::DevToolsPane;
+pub use popups::PopupWindow;
 
 pub const NEW_TAB_URL: &str = "mori://newtab";
 
@@ -51,11 +59,16 @@ pub struct LiveTab {
     pub error: Option<PageError>,
     pub find_count: i32,
     pub find_active: i32,
-    pub zoom_level: f64,
     pub reader: bool,
     pub fullscreen: bool,
     pub status: Option<String>,
     pub muted: bool,
+    /// The tab whose page opened this one (target=_blank, window.open).
+    pub opener: Option<TabId>,
+    /// Opened by a page and has not shown a page yet: if its first
+    /// navigation turns into a download, the tab is just dropped.
+    pub blank_popup: bool,
+    _surface_events: Subscription,
 }
 
 #[derive(Clone, Debug)]
@@ -78,6 +91,9 @@ pub enum ToastAction {
     UndoClose(Box<ClosedTab>),
     Unpin(TabId),
     OpenDownloads,
+    /// Show a file in the file manager.
+    Reveal(PathBuf),
+    ResetZoom,
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +141,7 @@ pub struct Peek {
     pub view: WebView,
     pub title: String,
     pub url: String,
+    _surface_events: Subscription,
 }
 
 pub struct Browser {
@@ -136,16 +153,28 @@ pub struct Browser {
     pub routes: RouteStore,
     pub boosts: BoostStore,
     pub favicons: Favicons,
-    pub data_dir: PathBuf,
 
     pub live: HashMap<TabId, LiveTab>,
     pub closed_stack: Vec<ClosedTab>,
-    pub downloads: Vec<DownloadUpdate>,
+    pub downloads: DownloadStore,
+    pub downloads_dir: PathBuf,
+    pub zoom: ZoomStore,
+    /// DevTools docked next to the page of these tabs.
+    pub devtools: HashMap<TabId, DevToolsPane>,
+    /// A `window.open` popup that asked for a size, floating over its opener.
+    pub popup: Option<PopupWindow>,
     pub toasts: Vec<Toast>,
     next_toast: u64,
+    /// Toasts that update in place (zoom level, download progress).
+    keyed_toasts: HashMap<&'static str, u64>,
+    /// The window is being presented (not minimized, not on another
+    /// workspace); pages are hidden from Chromium while it is not.
+    window_visible: bool,
 
     pub launcher: Option<Entity<Launcher>>,
+    launcher_events: Option<Subscription>,
     pub find_bar: Option<Entity<FindBar>>,
+    find_events: Option<Subscription>,
     pub menu: Option<OpenMenu>,
     pub panel: Option<Panel>,
     pub settings_open: bool,
@@ -154,7 +183,9 @@ pub struct Browser {
     pub dialog_input: Option<Entity<gpui_kit::component::input::InputState>>,
     pub permissions: Vec<(TabId, PermissionRequest)>,
     pub rename: Option<(RenameTarget, Entity<gpui_kit::component::input::InputState>)>,
+    rename_events: Option<Subscription>,
     pub boost_editor: Option<Entity<crate::ui::boost_editor::BoostEditor>>,
+    boost_events: Option<Subscription>,
     pub zapping: Option<TabId>,
     pub sidebar_peek: bool,
     pub sidebar_drag: Option<f32>,
@@ -176,6 +207,7 @@ pub struct Browser {
 
     pub focus_handle: FocusHandle,
     window_handle: AnyWindowHandle,
+    saver: Saver,
     save_scheduled: bool,
     last_maintenance: Instant,
     _subscriptions: Vec<Subscription>,
@@ -191,6 +223,9 @@ impl Browser {
             ws.add_tab(TabRecord::new(url), None, Slot::Loose(0));
         }
 
+        let downloads = DownloadStore::load(&data_dir);
+        let zoom = ZoomStore::load(&data_dir);
+        let saver = Saver::new(&data_dir);
         let mut this = Browser {
             history: HistoryStore::load(&data_dir),
             bookmarks: BookmarkStore::load(&data_dir),
@@ -200,14 +235,21 @@ impl Browser {
             favicons: Favicons::new(data_dir.join("favicons")),
             ws,
             settings,
-            data_dir,
             live: HashMap::new(),
             closed_stack: Vec::new(),
-            downloads: Vec::new(),
+            downloads,
+            downloads_dir: mori_core::paths::downloads_dir(),
+            zoom,
+            devtools: HashMap::new(),
+            popup: None,
             toasts: Vec::new(),
             next_toast: 1,
+            keyed_toasts: HashMap::new(),
+            window_visible: true,
             launcher: None,
+            launcher_events: None,
             find_bar: None,
+            find_events: None,
             menu: None,
             panel: None,
             settings_open: false,
@@ -216,7 +258,9 @@ impl Browser {
             dialog_input: None,
             permissions: Vec::new(),
             rename: None,
+            rename_events: None,
             boost_editor: None,
+            boost_events: None,
             zapping: None,
             sidebar_peek: false,
             sidebar_drag: None,
@@ -232,6 +276,7 @@ impl Browser {
             settings_inputs: None,
             focus_handle: cx.focus_handle(),
             window_handle: window.window_handle(),
+            saver,
             save_scheduled: false,
             last_maintenance: Instant::now(),
             _subscriptions: Vec::new(),
@@ -242,12 +287,19 @@ impl Browser {
             this.apply_theme(Some(window), cx);
         });
         this._subscriptions.push(appearance);
+        this.window_visible = window.is_visible();
+        let visibility = cx.observe_window_visibility(window, |this, visibility, _, cx| {
+            this.window_visible = visibility.is_visible();
+            this.sync_view_visibility(cx);
+        });
+        this._subscriptions.push(visibility);
+        this.watch_downloads(cx);
         // Persist on quit and when the window goes away.
         this._subscriptions.push(cx.on_app_quit(|this, _| {
-            this.save_now();
+            this.save_and_flush();
             async {}
         }));
-        this._subscriptions.push(cx.on_release(|this, _| this.save_now()));
+        this._subscriptions.push(cx.on_release(|this, _| this.save_and_flush()));
         this.apply_theme(Some(window), cx);
 
         if this.ws.tabs.is_empty() {
@@ -287,22 +339,33 @@ impl Browser {
         .detach();
     }
 
+    /// Queue every store that changed since its last save. Serializing
+    /// happens here; the atomic writes run on the saver's own thread.
     pub fn save_now(&mut self) {
-        let dir = &self.data_dir;
+        use mori_core::{archive, bookmarks, boosts, downloads, history, routes, settings, workspace, zoom};
+        let saver = &mut self.saver;
         let results = [
-            ("session", self.ws.save(dir)),
-            ("settings", self.settings.save(dir)),
-            ("history", self.history.save(dir)),
-            ("bookmarks", self.bookmarks.save(dir)),
-            ("archive", self.archive.save(dir)),
-            ("routes", self.routes.save(dir)),
-            ("boosts", self.boosts.save(dir)),
+            ("session", saver.stage(workspace::SESSION_FILE, &self.ws)),
+            ("settings", saver.stage(settings::SETTINGS_FILE, &self.settings)),
+            ("history", saver.stage(history::HISTORY_FILE, &self.history)),
+            ("bookmarks", saver.stage(bookmarks::BOOKMARKS_FILE, &self.bookmarks)),
+            ("archive", saver.stage(archive::ARCHIVE_FILE, &self.archive)),
+            ("routes", saver.stage(routes::ROUTES_FILE, &self.routes)),
+            ("boosts", saver.stage(boosts::BOOSTS_FILE, &self.boosts)),
+            ("downloads", saver.stage(downloads::DOWNLOADS_FILE, &self.downloads)),
+            ("zoom", saver.stage(zoom::ZOOM_FILE, &self.zoom)),
         ];
         for (what, result) in results {
             if let Err(e) = result {
                 log::error!("saving {what}: {e:#}");
             }
         }
+    }
+
+    /// Save and wait until everything is on disk (quit, window closed).
+    pub fn save_and_flush(&mut self) {
+        self.save_now();
+        self.saver.flush();
     }
 
     /// Keep a subscription alive for the lifetime of the browser.
@@ -376,6 +439,8 @@ impl Browser {
                 self.schedule_save(cx);
             }
             ToastAction::OpenDownloads => self.panel = Some(Panel::Downloads),
+            ToastAction::Reveal(path) => crate::ui::panels::reveal(&path),
+            ToastAction::ResetZoom => self.zoom(0.0, cx),
         }
         cx.notify();
     }
@@ -428,7 +493,7 @@ impl Browser {
 
     fn adopt_view(&mut self, id: TabId, view: WebView, window: &mut Window, cx: &mut Context<Self>) {
         let surface = cx.new(|cx| WebSurface::new(view.clone(), cx));
-        self.watch_surface(&surface, cx);
+        let surface_events = self.watch_surface(&surface, cx);
         let weak = cx.entity().downgrade();
         let handle = self.window_handle;
         EngineHub::register(cx, &surface, move |_, events, cx| {
@@ -454,11 +519,13 @@ impl Browser {
                 error: None,
                 find_count: 0,
                 find_active: 0,
-                zoom_level: 0.0,
                 reader: false,
                 fullscreen: false,
                 status: None,
                 muted: false,
+                opener: None,
+                blank_popup: false,
+                _surface_events: surface_events,
             },
         );
         if selected {
@@ -475,6 +542,7 @@ impl Browser {
             EngineHub::unregister(cx, live.view.id());
             live.view.close();
         }
+        self.drop_devtools(id, cx);
         self.dialogs.retain(|(t, _)| *t != id);
         self.permissions.retain(|(t, _)| *t != id);
         cx.notify();
@@ -854,7 +922,7 @@ impl Browser {
                 _ => {}
             }
         });
-        self._subscriptions.push(sub);
+        self.rename_events = Some(sub);
         self.rename = Some((target, input));
         cx.notify();
     }
@@ -919,7 +987,7 @@ impl Browser {
         let sub = cx.subscribe_in(&launcher, window, |this, _, ev: &LauncherEvent, window, cx| {
             this.on_launcher_event(ev, window, cx);
         });
-        self._subscriptions.push(sub);
+        self.launcher_events = Some(sub);
         launcher.update(cx, |l, cx| l.focus(window, cx));
         self.launcher = Some(launcher);
         cx.notify();
@@ -1013,24 +1081,29 @@ impl Browser {
         if self.selected_view().is_none() {
             return;
         }
-        let bar = self
-            .find_bar
-            .get_or_insert_with(|| cx.new(|cx| FindBar::new(window, cx)))
-            .clone();
-        let sub = cx.subscribe_in(&bar, window, |this, _, ev: &FindBarEvent, window, cx| {
-            let Some(view) = this.selected_view() else { return };
-            match ev {
-                FindBarEvent::Search { text, forward, next } => {
-                    if text.is_empty() {
-                        view.stop_finding(true);
-                    } else {
-                        view.find(text, *forward, false, *next);
+        let bar = match &self.find_bar {
+            Some(bar) => bar.clone(),
+            None => {
+                let bar = cx.new(|cx| FindBar::new(window, cx));
+                // One subscription per bar: re-opening must not add another.
+                let sub = cx.subscribe_in(&bar, window, |this, _, ev: &FindBarEvent, window, cx| {
+                    let Some(view) = this.selected_view() else { return };
+                    match ev {
+                        FindBarEvent::Search { text, forward, next } => {
+                            if text.is_empty() {
+                                view.stop_finding(true);
+                            } else {
+                                view.find(text, *forward, false, *next);
+                            }
+                        }
+                        FindBarEvent::Close => this.close_find(window, cx),
                     }
-                }
-                FindBarEvent::Close => this.close_find(window, cx),
+                });
+                self.find_events = Some(sub);
+                self.find_bar = Some(bar.clone());
+                bar
             }
-        });
-        self._subscriptions.push(sub);
+        };
         bar.update(cx, |b, cx| b.focus(window, cx));
         cx.notify();
     }
@@ -1054,16 +1127,17 @@ impl Browser {
 
     // ---- Clipboard bridge -----------------------------------------------------------
 
-    fn watch_surface(&mut self, surface: &Entity<WebSurface>, cx: &mut Context<Self>) {
+    /// Listen to a page surface; the subscription lives as long as the
+    /// tab, Peek or popup holding it.
+    fn watch_surface(&mut self, surface: &Entity<WebSurface>, cx: &mut Context<Self>) -> Subscription {
         use crate::web_surface::SurfaceEvent;
-        let sub = cx.subscribe(surface, |this, surface, ev: &SurfaceEvent, cx| {
+        cx.subscribe(surface, |this, surface, ev: &SurfaceEvent, cx| {
             let view = surface.read(cx).view().clone();
             match ev {
                 SurfaceEvent::Interacted => this.poll_page_clipboard(view, cx),
                 SurfaceEvent::PasteRequested { plain } => this.paste_into(view, *plain, cx),
             }
-        });
-        self._subscriptions.push(sub);
+        })
     }
 
     /// After a user gesture in a page, copy whatever it just copied to the
@@ -1118,20 +1192,6 @@ impl Browser {
 
     // ---- Page commands -----------------------------------------------------------
 
-    pub fn zoom(&mut self, step: f64, cx: &mut Context<Self>) {
-        let Some(id) = self.selected() else { return };
-        if let Some(live) = self.live.get_mut(&id) {
-            live.zoom_level = if step == 0.0 {
-                0.0
-            } else {
-                (live.zoom_level + step).clamp(-7.6, 8.8)
-            };
-            live.view.set_zoom_level(live.zoom_level);
-            let pct = (1.2f64.powf(live.zoom_level) * 100.0).round();
-            self.toast(format!("Zoom {pct}%"), ToastStyle::Info, None, cx);
-        }
-    }
-
     pub fn copy_url(&mut self, cx: &mut Context<Self>) {
         if let Some(t) = self.selected().and_then(|id| self.ws.tab(id))
             && !Self::is_internal(&t.url)
@@ -1183,12 +1243,6 @@ impl Browser {
         });
     }
 
-    pub fn toggle_devtools(&mut self) {
-        if let Some(view) = self.selected_view() {
-            view.show_devtools(None);
-        }
-    }
-
     pub fn go_home(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let home = self.settings.homepage_url.clone();
         if let Some(id) = self.selected() {
@@ -1205,7 +1259,7 @@ impl Browser {
         let size = ((w as f32 * 0.74).min(1000.) as i32, (h as f32 * 0.82).min(820.) as i32 - 46);
         let view = WebView::new(url, size, window.scale_factor());
         let surface = cx.new(|cx| WebSurface::new(view.clone(), cx));
-        self.watch_surface(&surface, cx);
+        let surface_events = self.watch_surface(&surface, cx);
         let weak = cx.entity().downgrade();
         let handle = self.window_handle;
         EngineHub::register(cx, &surface, move |_, events, cx| {
@@ -1223,6 +1277,7 @@ impl Browser {
             view,
             title: String::new(),
             url: url.to_string(),
+            _surface_events: surface_events,
         });
         cx.notify();
     }
@@ -1262,6 +1317,15 @@ impl Browser {
                     self.open_url(&url, true, window, cx);
                 }
                 ViewEvent::CloseRequested => self.close_peek(window, cx),
+                ViewEvent::FileDialog(request) => {
+                    let view = peek.view.clone();
+                    self.open_file_dialog(view, request, window, cx);
+                }
+                ViewEvent::PrintRequested => {
+                    let view = peek.view.clone();
+                    let title = peek.title.clone();
+                    self.print_view(view, title, cx);
+                }
                 _ => {}
             }
         }
@@ -1371,42 +1435,8 @@ impl Browser {
                 cx.notify();
             },
         );
-        self._subscriptions.push(sub);
+        self.boost_events = Some(sub);
         self.boost_editor = Some(editor);
-        cx.notify();
-    }
-
-    // ---- Downloads -------------------------------------------------------------------
-
-    fn on_download(&mut self, update: DownloadUpdate, cx: &mut Context<Self>) {
-        let finished_now = update.state == DownloadState::Complete
-            && self
-                .downloads
-                .iter()
-                .find(|d| d.id == update.id)
-                .is_some_and(|d| d.state != DownloadState::Complete);
-        match self.downloads.iter_mut().find(|d| d.id == update.id) {
-            Some(existing) => *existing = update.clone(),
-            None => {
-                self.downloads.insert(0, update.clone());
-                self.toast(
-                    format!("Downloading {}", update.filename),
-                    ToastStyle::Info,
-                    Some(("Show".into(), ToastAction::OpenDownloads)),
-                    cx,
-                );
-            }
-        }
-        if finished_now {
-            self.panel = Some(Panel::Downloads);
-        }
-        cx.notify();
-    }
-
-    pub fn clear_finished_downloads(&mut self, cx: &mut Context<Self>) {
-        self.downloads.retain(|d| {
-            matches!(d.state, DownloadState::InProgress | DownloadState::Paused)
-        });
         cx.notify();
     }
 
@@ -1420,7 +1450,23 @@ impl Browser {
         cx: &mut Context<Self>,
     ) {
         let mut save = false;
+        // Only events that change what the chrome shows redraw the window.
+        let mut changed = false;
         for ev in events {
+            changed |= !matches!(
+                ev,
+                ViewEvent::ConsoleMessage { .. }
+                    | ViewEvent::Created
+                    | ViewEvent::Painted
+                    | ViewEvent::PopupWidgetChanged
+                    | ViewEvent::CursorChanged(_)
+                    | ViewEvent::Tooltip(_)
+                    | ViewEvent::TextSelectionChanged(_)
+                    | ViewEvent::ImeCompositionBounds(_)
+                    | ViewEvent::LoadProgress(_)
+                    | ViewEvent::AudioStateChanged { .. }
+                    | ViewEvent::MediaAccessChanged { .. }
+            );
             match ev {
                 ViewEvent::AddressChanged(url) => {
                     if let Some(t) = self.ws.tab_mut(id) {
@@ -1431,6 +1477,7 @@ impl Browser {
                         live.error = None;
                         live.reader = false;
                     }
+                    self.apply_site_zoom(id);
                     self.route_tab(id, &url, window, cx);
                 }
                 ViewEvent::TitleChanged(title) => {
@@ -1481,14 +1528,11 @@ impl Browser {
                         save = true;
                     }
                     self.apply_boost(id);
-                    if let Some(live) = self.live.get(&id) {
+                    if let Some(live) = self.live.get_mut(&id) {
+                        live.blank_popup = false;
                         live.view.execute_js(mori_core::scripts::CLIPBOARD_BRIDGE_SCRIPT);
                     }
-                    if let Some(live) = self.live.get(&id)
-                        && live.zoom_level != 0.0
-                    {
-                        live.view.set_zoom_level(live.zoom_level);
-                    }
+                    self.apply_site_zoom(id);
                 }
                 ViewEvent::LoadError { code, text, url } => {
                     if let Some(live) = self.live.get_mut(&id) {
@@ -1508,14 +1552,23 @@ impl Browser {
                     view,
                     url,
                     disposition,
+                    features,
                     ..
                 } => {
                     use mori_engine::Disposition as D;
+                    if popups::wants_window(disposition, features) {
+                        self.open_popup_window(id, view, url, features, window, cx);
+                        continue;
+                    }
                     let background = disposition == D::BackgroundTab;
                     let mut record = TabRecord::new(url.clone());
                     record.title = url;
                     let new_id = self.ws.add_tab_after(record, Some(id));
                     self.adopt_view(new_id, view, window, cx);
+                    if let Some(live) = self.live.get_mut(&new_id) {
+                        live.opener = Some(id);
+                        live.blank_popup = true;
+                    }
                     if background {
                         if let Some(live) = self.live.get(&new_id) {
                             live.view.set_hidden(true);
@@ -1525,7 +1578,19 @@ impl Browser {
                     }
                     save = true;
                 }
-                ViewEvent::CloseRequested => self.close_tab(id, true, window, cx),
+                ViewEvent::CloseRequested => {
+                    // A page that closes itself (OAuth popups) returns to its opener.
+                    match self.live.get(&id).and_then(|l| l.opener) {
+                        Some(opener) => self.close_tab_quietly(id, Some(opener), window, cx),
+                        None => self.close_tab(id, true, window, cx),
+                    }
+                }
+                ViewEvent::FileDialog(request) => {
+                    if let Some(view) = self.live.get(&id).map(|l| l.view.clone()) {
+                        self.open_file_dialog(view, request, window, cx);
+                    }
+                }
+                ViewEvent::PrintRequested => self.print_tab(id, cx),
                 ViewEvent::FindResult { count, active, .. } => {
                     // Intermediate updates report ordinal 0; keep the last real one.
                     if let Some(live) = self.live.get_mut(&id) {
@@ -1563,7 +1628,6 @@ impl Browser {
                 ViewEvent::PermissionDismissed(pid) => {
                     self.permissions.retain(|(_, r)| r.id != pid);
                 }
-                ViewEvent::Download(update) => self.on_download(update, cx),
                 ViewEvent::FullscreenChanged(on) => {
                     if let Some(live) = self.live.get_mut(&id) {
                         live.fullscreen = on;
@@ -1597,7 +1661,9 @@ impl Browser {
         if save {
             self.schedule_save(cx);
         }
-        cx.notify();
+        if changed {
+            cx.notify();
+        }
     }
 
     /// Air Traffic Control: move a tab into the space a routing rule names.
@@ -1743,7 +1809,7 @@ impl Browser {
     }
 
     pub fn quit(&mut self, cx: &mut Context<Self>) {
-        self.save_now();
+        self.save_and_flush();
         cx.quit();
     }
 }

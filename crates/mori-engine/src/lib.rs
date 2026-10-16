@@ -13,7 +13,10 @@ mod app;
 mod client;
 mod devtools;
 mod downloads;
+mod drag;
+mod file_dialog;
 pub mod keys;
+mod print;
 mod view;
 
 use std::{
@@ -24,14 +27,15 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use cef::{args::Args, *};
 
+pub use devtools::Sink as DevToolsSink;
 pub use downloads::{
-    DownloadId, DownloadState, DownloadUpdate, cancel_download, pause_download, resume_download,
-    unique_path,
+    DownloadId, DownloadState, DownloadUpdate, cancel_download, is_controllable, pause_download,
+    resume_download, take_download_updates, unique_path,
 };
 pub use view::{
-    ContextMenuInfo, CursorKind, DialogId, DialogKind, Disposition, Frame, JsDialog, MouseButton,
-    PermissionId, PermissionKind, PermissionRequest, PopupFrame, ViewEvent, ViewId, WebView,
-    take_dirty_views,
+    ContextMenuInfo, CursorKind, DialogId, DialogKind, Disposition, FileDialogId, FileDialogMode,
+    FileDialogRequest, Frame, JsDialog, MouseButton, PermissionId, PermissionKind,
+    PermissionRequest, PopupFeatures, PopupFrame, ViewEvent, ViewId, WebView, take_dirty_views,
 };
 
 /// Configuration for [`initialize`].

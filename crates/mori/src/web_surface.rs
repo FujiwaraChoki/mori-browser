@@ -1,9 +1,12 @@
 //! GPUI view that shows one offscreen Chromium browser and feeds it input.
 //!
-//! Chromium paints BGRA frames (see `mori_engine::Frame`); each new frame
-//! becomes a GPUI `RenderImage` drawn into this view's bounds with the card's
-//! rounded corners. Mouse, wheel, keyboard and IME input are translated back
-//! into Chromium events.
+//! Chromium paints BGRA frames (see `mori_engine::Frame`). The newest frame
+//! is pulled only when this view actually renders, becomes a GPUI
+//! `RenderImage` drawn into the view's bounds with the card's rounded
+//! corners, and the image it replaces leaves the GPU atlas during that same
+//! paint. A view that is not on screen therefore holds at most one pending
+//! frame (in the engine) and uploads nothing. Mouse, wheel, keyboard, IME
+//! and file drops are translated back into Chromium events.
 
 use std::{ops::Range, sync::Arc};
 
@@ -33,10 +36,16 @@ pub struct WebSurface {
     image: Option<Arc<RenderImage>>,
     /// Size of `image` in device pixels.
     image_size: (u32, u32),
+    /// Engine frame generation `image` was made from.
     generation: u64,
-    /// Replaced images whose atlas tiles must be released during paint.
+    /// Replaced images whose atlas tiles are released in the next paint
+    /// (the frame on screen may still be drawing them until then).
     stale: Vec<Arc<RenderImage>>,
     popup: Option<(Arc<RenderImage>, Bounds<Pixels>)>,
+    /// The `<select>` popup changed since it was last turned into an image.
+    popup_dirty: bool,
+    /// Files from outside are being dragged over the page.
+    file_drag: bool,
     cursor: CursorKind,
     corner_radius: Pixels,
     /// Last laid-out bounds, window coordinates.
@@ -52,6 +61,20 @@ pub struct WebSurface {
 
 impl WebSurface {
     pub fn new(view: WebView, cx: &mut Context<Self>) -> Self {
+        // Release this surface's GPU textures with it: the atlas only frees
+        // images explicitly dropped.
+        cx.on_release(|this: &mut Self, cx| {
+            let images = this
+                .image
+                .take()
+                .into_iter()
+                .chain(this.popup.take().map(|(image, _)| image))
+                .chain(this.stale.drain(..));
+            for image in images {
+                cx.drop_image(image, None);
+            }
+        })
+        .detach();
         Self {
             view,
             focus_handle: cx.focus_handle(),
@@ -60,6 +83,8 @@ impl WebSurface {
             generation: 0,
             stale: Vec::new(),
             popup: None,
+            popup_dirty: false,
+            file_drag: false,
             cursor: CursorKind::Arrow,
             corner_radius: px(10.),
             bounds: Bounds::default(),
@@ -112,8 +137,23 @@ impl WebSurface {
             .collect();
     }
 
-    /// Pull a new paint from the engine, if any. Call when the view is dirty.
+    /// Chromium painted: redraw if the frame is newer than the one shown.
+    /// The frame itself is pulled in `render`, so frames painted while this
+    /// view is not drawn are never copied or uploaded.
     pub fn sync_frame(&mut self, cx: &mut Context<Self>) {
+        if self.view.frame_generation() != self.generation {
+            cx.notify();
+        }
+    }
+
+    pub fn sync_popup(&mut self, cx: &mut Context<Self>) {
+        self.popup_dirty = true;
+        cx.notify();
+    }
+
+    /// Turn the newest engine frame (and popup) into images; replaced
+    /// images are queued for release in the coming paint.
+    fn pull_frames(&mut self) {
         let generation = self.view.frame_generation();
         if generation != self.generation {
             self.generation = generation;
@@ -122,26 +162,49 @@ impl WebSurface {
                 if let Some(old) = self.image.replace(frame_to_image(frame)) {
                     self.stale.push(old);
                 }
-                cx.notify();
+            }
+        }
+        if std::mem::take(&mut self.popup_dirty) {
+            if let Some((old, _)) = self.popup.take() {
+                self.stale.push(old);
+            }
+            if let Some(p) = self.view.popup()
+                && p.frame.width > 0
+            {
+                let bounds = Bounds::new(
+                    point(px(p.x as f32), px(p.y as f32)),
+                    size(px(p.width as f32), px(p.height as f32)),
+                );
+                self.popup = Some((frame_to_image(p.frame), bounds));
             }
         }
     }
 
-    pub fn sync_popup(&mut self, cx: &mut Context<Self>) {
-        let popup = self.view.popup();
-        if let Some((old, _)) = self.popup.take() {
-            self.stale.push(old);
+    /// Files dragged from outside moved over this surface.
+    fn on_file_drag_move(&mut self, ev: &DragMoveEvent<ExternalPaths>, cx: &mut App) {
+        if self.inert {
+            return;
         }
-        if let Some(p) = popup
-            && p.frame.width > 0
-        {
-            let bounds = Bounds::new(
-                point(px(p.x as f32), px(p.y as f32)),
-                size(px(p.width as f32), px(p.height as f32)),
-            );
-            self.popup = Some((frame_to_image(p.frame), bounds));
+        let position = ev.event.position;
+        if !self.bounds.contains(&position) {
+            if std::mem::take(&mut self.file_drag) {
+                self.view.drag_files_leave();
+            }
+            return;
         }
-        cx.notify();
+        self.file_drag = true;
+        let (x, y) = self.local(position);
+        let mods = modifier_flags(&ev.event.modifiers);
+        self.view.drag_files_over(ev.drag(cx).paths(), x, y, mods);
+    }
+
+    fn on_file_drop(&mut self, paths: &ExternalPaths, window: &mut Window) {
+        self.file_drag = false;
+        if self.inert {
+            return;
+        }
+        let (x, y) = self.local(window.mouse_position());
+        self.view.drop_files(paths.paths(), x, y, 0);
     }
 
     fn local(&self, position: Point<Pixels>) -> (i32, i32) {
@@ -257,6 +320,10 @@ impl WebSurface {
                 return;
             }
             let hovered = hb.is_hovered(window);
+            // A drag of files from outside drives the page through drag events.
+            if cx.has_active_drag() {
+                return;
+            }
             e.update(cx, |this, _cx| {
                 if this.inert {
                     return;
@@ -372,6 +439,7 @@ impl Render for WebSurface {
             }
         }
 
+        self.pull_frames();
         let entity = cx.entity();
         let image = self.image.clone();
         let image_size = self.image_size;
@@ -388,6 +456,15 @@ impl Render for WebSurface {
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
             .on_key_up(cx.listener(Self::on_key_up))
+            .on_drag_move({
+                let entity = entity.clone();
+                move |ev: &DragMoveEvent<ExternalPaths>, _, cx| {
+                    entity.update(cx, |this, cx| this.on_file_drag_move(ev, cx));
+                }
+            })
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, _| {
+                this.on_file_drop(paths, window)
+            }))
             .child(
                 canvas(
                     |bounds, window, _cx| window.insert_hitbox(bounds, HitboxBehavior::Normal),

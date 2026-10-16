@@ -12,7 +12,7 @@ use std::{
 
 use cef::*;
 
-use crate::{client, devtools::EvalCallback, keys::KeyInput};
+use crate::{DownloadId, client, devtools::EvalCallback, keys::KeyInput};
 
 /// Stable identifier for a view, unique for the life of the process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -116,6 +116,36 @@ pub struct JsDialog {
 pub struct PermissionId(pub u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct FileDialogId(pub u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileDialogMode {
+    Open,
+    OpenMultiple,
+    OpenFolder,
+    Save,
+}
+
+/// A page asked the user to pick files (`<input type=file>`,
+/// `showOpenFilePicker`, ...). Answer with [`WebView::resolve_file_dialog`].
+#[derive(Clone, Debug)]
+pub struct FileDialogRequest {
+    pub id: FileDialogId,
+    pub mode: FileDialogMode,
+    pub title: String,
+    pub default_path: String,
+    /// MIME types (`image/*`) and extensions (`.png`) the page accepts.
+    pub accept: Vec<String>,
+}
+
+/// Geometry a page asked for in `window.open(url, name, features)`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PopupFeatures {
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum PermissionKind {
     Camera,
     Microphone,
@@ -200,6 +230,8 @@ pub enum ViewEvent {
         url: String,
         disposition: Disposition,
         user_gesture: bool,
+        /// Requested window geometry for `window.open` popups.
+        features: PopupFeatures,
     },
     /// The page asked to be closed (`window.close()`), or the browser is gone.
     CloseRequested,
@@ -215,6 +247,7 @@ pub enum ViewEvent {
     DialogsReset,
     PermissionPrompt(PermissionRequest),
     PermissionDismissed(PermissionId),
+    FileDialog(FileDialogRequest),
     TextSelectionChanged(String),
     /// Composition character bounds in view coordinates, for IME placement.
     ImeCompositionBounds(Vec<(i32, i32, i32, i32)>),
@@ -226,7 +259,8 @@ pub enum ViewEvent {
         audio: bool,
     },
     RenderProcessGone,
-    Download(crate::DownloadUpdate),
+    /// The page called `window.print()`.
+    PrintRequested,
     ConsoleMessage {
         level: i32,
         message: String,
@@ -252,7 +286,21 @@ pub(crate) struct ViewInner {
     pub dialogs: RefCell<HashMap<DialogId, JsdialogCallback>>,
     pub permissions: RefCell<HashMap<PermissionId, PendingPermission>>,
     pub evals: RefCell<HashMap<i32, EvalCallback>>,
+    pub file_dialogs: RefCell<HashMap<FileDialogId, FileDialogCallback>>,
     pub devtools_registration: RefCell<Option<Registration>>,
+    /// Where protocol messages for an attached DevTools frontend go.
+    pub devtools_sink: RefCell<Option<crate::devtools::Sink>>,
+    /// An in-page drag Chromium started (see `drag.rs`).
+    pub drag: RefCell<Option<crate::drag::DragSession>>,
+    /// Downloads this view started that are still running. Chromium stops
+    /// reporting downloads whose browser is gone, so a view closed while it
+    /// has some is parked (hidden, blank) until they finish.
+    pub active_downloads: RefCell<HashSet<DownloadId>>,
+    pub parked: Cell<bool>,
+    /// A `print_to_pdf` is running (its print start is not the page's).
+    pub printing_pdf: Cell<bool>,
+    /// Between `browser_host_create_browser` and `on_after_created`.
+    pub creating: Cell<bool>,
     pub closing: Cell<bool>,
     pub closed: Cell<bool>,
     /// Screen origin of the view (logical px), reported to Chromium so popups
@@ -268,6 +316,10 @@ pub(crate) enum PendingPermission {
 thread_local! {
     static VIEWS: RefCell<HashMap<ViewId, Weak<ViewInner>>> = RefCell::new(HashMap::new());
     static DIRTY: RefCell<HashSet<ViewId>> = RefCell::new(HashSet::new());
+    /// Views asked to close (or parked for their downloads). They must
+    /// outlive their last `WebView` handle until Chromium has destroyed the
+    /// browser, or the browser would run on with nothing to close it.
+    static CLOSING: RefCell<Vec<Rc<ViewInner>>> = const { RefCell::new(Vec::new()) };
     static NEXT_ID: Cell<u64> = const { Cell::new(1) };
     static NEXT_TOKEN: Cell<u64> = const { Cell::new(1) };
 }
@@ -303,7 +355,14 @@ impl ViewInner {
             dialogs: RefCell::new(HashMap::new()),
             permissions: RefCell::new(HashMap::new()),
             evals: RefCell::new(HashMap::new()),
+            file_dialogs: RefCell::new(HashMap::new()),
             devtools_registration: RefCell::new(None),
+            devtools_sink: RefCell::new(None),
+            drag: RefCell::new(None),
+            active_downloads: RefCell::new(HashSet::new()),
+            parked: Cell::new(false),
+            printing_pdf: Cell::new(false),
+            creating: Cell::new(false),
             closing: Cell::new(false),
             closed: Cell::new(false),
             screen_origin: Cell::new((0, 0)),
@@ -335,11 +394,86 @@ impl ViewInner {
             .as_ref()
             .and_then(|b| b.focused_frame().or_else(|| b.main_frame()))
     }
+
+    /// Fail callbacks that can no longer be answered once the browser is
+    /// going away. They run outside the borrows: they may call back in.
+    pub(crate) fn fail_pending(&self, reason: &str) {
+        let evals: Vec<_> = self.evals.borrow_mut().drain().map(|(_, cb)| cb).collect();
+        for cb in evals {
+            cb(Err(reason.to_string()));
+        }
+        let dialogs: Vec<_> = self.file_dialogs.borrow_mut().drain().map(|(_, cb)| cb).collect();
+        for cb in dialogs {
+            cb.cancel();
+        }
+    }
+
+    /// Ask Chromium to destroy the browser. The view stays alive in
+    /// `CLOSING` until `on_before_close` (or `on_after_created`, for a
+    /// browser that did not exist yet) finishes the job.
+    pub(crate) fn close_browser_now(self: &Rc<Self>) {
+        self.closing.set(true);
+        self.keep_alive();
+        match self.host() {
+            Some(host) => host.close_browser(true as _),
+            None if self.creating.get() => {}
+            None => {
+                self.closed.set(true);
+                release_closed(self.id);
+            }
+        }
+    }
+
+    /// Hold a strong reference until [`release_closed`].
+    pub(crate) fn keep_alive(self: &Rc<Self>) {
+        CLOSING.with(|c| {
+            let mut c = c.borrow_mut();
+            if !c.iter().any(|v| Rc::ptr_eq(v, self)) {
+                c.push(self.clone());
+            }
+        });
+    }
+}
+
+/// Drop the keep-alive reference of a view whose browser is gone.
+pub(crate) fn release_closed(id: ViewId) {
+    let released: Vec<Rc<ViewInner>> = CLOSING.with(|c| {
+        let mut c = c.borrow_mut();
+        let (gone, keep) = std::mem::take(&mut *c).into_iter().partition(|v| v.id == id);
+        *c = keep;
+        gone
+    });
+    // Dropped outside the `CLOSING` borrow: dropping may re-enter.
+    drop(released);
+}
+
+/// Track a download a view started; once a parked view's last download
+/// settles, close it for real.
+pub(crate) fn note_download(view: &Rc<ViewInner>, id: DownloadId, running: bool) {
+    let idle = {
+        let mut active = view.active_downloads.borrow_mut();
+        if running {
+            active.insert(id);
+        } else {
+            active.remove(&id);
+        }
+        active.is_empty()
+    };
+    if idle && view.parked.replace(false) {
+        view.close_browser_now();
+    }
 }
 
 impl Drop for ViewInner {
     fn drop(&mut self) {
         VIEWS.with(|v| v.borrow_mut().remove(&self.id));
+        // Every handle is gone (e.g. a `NewView` nobody adopted): nothing
+        // could ever close this browser later, so close it now.
+        if !self.closed.get()
+            && let Some(host) = self.host()
+        {
+            host.close_browser(true as _);
+        }
     }
 }
 
@@ -352,7 +486,13 @@ pub(crate) fn close_all_views() {
     let views: Vec<Rc<ViewInner>> =
         VIEWS.with(|v| v.borrow().values().filter_map(Weak::upgrade).collect());
     for view in views {
-        WebView(view).close();
+        // Quitting cancels running downloads, as in Chrome.
+        view.active_downloads.borrow_mut().clear();
+        if view.parked.replace(false) {
+            view.close_browser_now();
+        } else {
+            WebView(view).close();
+        }
     }
 }
 
@@ -361,7 +501,7 @@ pub(crate) fn live_view_count() -> usize {
         v.borrow()
             .values()
             .filter_map(Weak::upgrade)
-            .filter(|v| !v.closed.get() && v.browser.borrow().is_some())
+            .filter(|v| !v.closed.get() && (v.browser.borrow().is_some() || v.creating.get()))
             .count()
     })
 }
@@ -394,6 +534,7 @@ impl WebView {
             ..Default::default()
         };
         let settings = client::browser_settings();
+        inner.creating.set(true);
         let created = browser_host_create_browser(
             Some(&window_info),
             Some(&mut client),
@@ -404,6 +545,7 @@ impl WebView {
         );
         if created != 1 {
             log::error!("failed to create browser for {url}");
+            inner.creating.set(false);
         }
         WebView(inner)
     }
@@ -431,8 +573,23 @@ impl WebView {
         self.0.closed.get()
     }
 
+    /// The view was asked to close; its remaining events are of no interest.
+    pub fn is_closing(&self) -> bool {
+        self.0.closing.get() || self.0.parked.get()
+    }
+
     pub fn take_events(&self) -> Vec<ViewEvent> {
         self.0.events.borrow_mut().drain(..).collect()
+    }
+
+    pub fn has_events(&self) -> bool {
+        !self.0.events.borrow().is_empty()
+    }
+
+    /// Report this view from the next [`take_dirty_views`], e.g. once the
+    /// chrome starts listening to it.
+    pub fn mark_dirty(&self) {
+        self.0.mark_dirty();
     }
 
     /// Monotonic counter bumped on each full-view paint.
@@ -570,6 +727,10 @@ impl WebView {
     // ---- Input -----------------------------------------------------------
 
     pub fn send_mouse_move(&self, x: i32, y: i32, modifiers: u32, leave: bool) {
+        // While the page drags something, the pointer drives the drag.
+        if crate::drag::drag_move(&self.0, x, y, modifiers) {
+            return;
+        }
         if let Some(host) = self.0.host() {
             let ev = cef::MouseEvent { x, y, modifiers };
             host.send_mouse_move_event(Some(&ev), leave as _);
@@ -585,6 +746,9 @@ impl WebView {
         click_count: i32,
         modifiers: u32,
     ) {
+        if up && button == MouseButton::Left && crate::drag::drag_drop(&self.0, x, y, modifiers) {
+            return;
+        }
         if let Some(host) = self.0.host() {
             let ev = cef::MouseEvent { x, y, modifiers };
             let ty = match button {
@@ -755,6 +919,17 @@ impl WebView {
         crate::devtools::evaluate(&self.0, expression, Box::new(callback));
     }
 
+    /// Call a DevTools protocol method on the page; `callback` receives its
+    /// `result` object or the error.
+    pub fn devtools_call(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        callback: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        crate::devtools::call(&self.0, method, params, Box::new(callback));
+    }
+
     pub fn find(&self, text: &str, forward: bool, match_case: bool, find_next: bool) {
         if let Some(host) = self.0.host() {
             host.find(
@@ -802,10 +977,27 @@ impl WebView {
         }
     }
 
-    pub fn print(&self) {
-        if let Some(host) = self.0.host() {
-            host.print();
-        }
+    /// Render the page to a PDF at `path` through Chromium's print pipeline
+    /// (the page's print CSS, with backgrounds). `done` gets whether it
+    /// worked.
+    pub fn print_to_pdf(&self, path: &std::path::Path, done: impl FnOnce(bool) + 'static) {
+        crate::print::print_to_pdf(&self.0, path, Box::new(done));
+    }
+
+    /// Files dragged in from outside entered or moved over the page, at
+    /// `(x, y)` in view coordinates.
+    pub fn drag_files_over(&self, paths: &[std::path::PathBuf], x: i32, y: i32, modifiers: u32) {
+        crate::drag::external_over(&self.0, paths, x, y, modifiers);
+    }
+
+    /// Dragged files left the page without being dropped.
+    pub fn drag_files_leave(&self) {
+        crate::drag::external_leave(&self.0);
+    }
+
+    /// Dragged files were dropped on the page at `(x, y)`.
+    pub fn drop_files(&self, paths: &[std::path::PathBuf], x: i32, y: i32, modifiers: u32) {
+        crate::drag::external_drop(&self.0, paths, x, y, modifiers);
     }
 
     pub fn start_download(&self, url: &str) {
@@ -821,16 +1013,16 @@ impl WebView {
         }
     }
 
-    /// Open Chromium DevTools for this page. DevTools renders offscreen too,
-    /// so it arrives as a [`ViewEvent::NewView`] on this view.
-    pub fn show_devtools(&self, inspect_at: Option<(i32, i32)>) {
-        client::show_devtools(&self.0, inspect_at);
+    /// Connect a DevTools frontend: every protocol message from this page's
+    /// session that Mori did not request itself (replies to the frontend,
+    /// events) goes to `sink`. `None` disconnects.
+    pub fn set_devtools_sink(&self, sink: Option<crate::DevToolsSink>) {
+        crate::devtools::set_sink(&self.0, sink);
     }
 
-    pub fn close_devtools(&self) {
-        if let Some(host) = self.0.host() {
-            host.close_dev_tools();
-        }
+    /// Send a raw DevTools protocol message (from the frontend) to the page.
+    pub fn send_devtools_message(&self, message: &[u8]) -> bool {
+        crate::devtools::send(&self.0, message)
     }
 
     // ---- Prompts ----------------------------------------------------------
@@ -857,11 +1049,35 @@ impl WebView {
         }
     }
 
+    /// Answer a [`ViewEvent::FileDialog`]; `None` (or no paths) cancels.
+    pub fn resolve_file_dialog(&self, id: FileDialogId, paths: Option<Vec<std::path::PathBuf>>) {
+        let Some(cb) = self.0.file_dialogs.borrow_mut().remove(&id) else { return };
+        match paths.filter(|p| !p.is_empty()) {
+            Some(paths) => {
+                let mut list = CefStringList::new();
+                for path in &paths {
+                    list.append(&path.to_string_lossy());
+                }
+                cb.cont(Some(&mut list));
+            }
+            None => cb.cancel(),
+        }
+    }
+
     // ---- Lifetime ---------------------------------------------------------
 
+    /// Downloads this view started that are still running.
+    pub fn active_download_count(&self) -> usize {
+        self.0.active_downloads.borrow().len()
+    }
+
     /// Close the browser. Emits [`ViewEvent::Closed`] once Chromium is done.
+    ///
+    /// A view with running downloads is parked instead (hidden, muted,
+    /// navigated to a blank page) and closed once they finish, because
+    /// Chromium cancels the downloads of a destroyed browser.
     pub fn close(&self) {
-        if self.0.closing.replace(true) {
+        if self.0.closing.get() || self.0.parked.get() {
             return;
         }
         // Deny anything still waiting on the user.
@@ -873,9 +1089,85 @@ impl WebView {
         for id in ids {
             self.resolve_permission(id, false);
         }
-        match self.0.host() {
-            Some(host) => host.close_browser(true as _),
-            None => self.0.closed.set(true),
+        self.0.fail_pending("view closed");
+        crate::drag::cancel(&self.0);
+        crate::devtools::set_sink(&self.0, None);
+        if !self.0.active_downloads.borrow().is_empty() {
+            self.0.parked.set(true);
+            self.0.keep_alive();
+            self.set_hidden(true);
+            self.set_audio_muted(true);
+            self.load_url("about:blank");
+            return;
         }
+        self.0.close_browser_now();
+    }
+}
+
+/// Copy the `dirty` rectangles (pixels) of a `width`x`height` BGRA frame
+/// from `src` into `dst`, clipped to the frame. No rectangles, or one
+/// covering the frame, copies everything.
+pub(crate) fn copy_dirty_rects(dst: &mut [u8], src: &[u8], width: u32, height: u32, dirty: &[Rect]) {
+    let (w, h) = (width as i32, height as i32);
+    let stride = width as usize * 4;
+    let covers = |r: &Rect| r.x <= 0 && r.y <= 0 && r.x + r.width >= w && r.y + r.height >= h;
+    if dirty.is_empty() || dirty.iter().any(covers) {
+        dst.copy_from_slice(src);
+        return;
+    }
+    for r in dirty {
+        let x0 = r.x.clamp(0, w) as usize;
+        let x1 = r.x.saturating_add(r.width).clamp(0, w) as usize;
+        let y0 = r.y.clamp(0, h) as usize;
+        let y1 = r.y.saturating_add(r.height).clamp(0, h) as usize;
+        if x0 >= x1 {
+            continue;
+        }
+        for row in y0..y1 {
+            let span = row * stride + x0 * 4..row * stride + x1 * 4;
+            dst[span.clone()].copy_from_slice(&src[span]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rect(x: i32, y: i32, width: i32, height: i32) -> Rect {
+        Rect { x, y, width, height }
+    }
+
+    #[test]
+    fn copies_only_dirty_pixels() {
+        let (w, h) = (4u32, 3u32);
+        let src: Vec<u8> = (0..w * h * 4).map(|i| i as u8).collect();
+        let mut dst = vec![0u8; src.len()];
+        copy_dirty_rects(&mut dst, &src, w, h, &[rect(1, 1, 2, 1)]);
+        for y in 0..h {
+            for x in 0..w {
+                let i = ((y * w + x) * 4) as usize;
+                let dirty = y == 1 && (1..3).contains(&x);
+                let expected = if dirty { &src[i..i + 4] } else { &[0u8; 4][..] };
+                assert_eq!(&dst[i..i + 4], expected, "pixel {x},{y}");
+            }
+        }
+    }
+
+    #[test]
+    fn clips_and_handles_full_frames() {
+        let (w, h) = (2u32, 2u32);
+        let src = vec![7u8; 16];
+        let mut dst = vec![0u8; 16];
+        // Off-frame and empty rects are ignored.
+        copy_dirty_rects(&mut dst, &src, w, h, &[rect(5, 5, 3, 3), rect(0, 0, 0, 2)]);
+        assert_eq!(dst, vec![0u8; 16]);
+        // Overhanging rect is clipped.
+        copy_dirty_rects(&mut dst, &src, w, h, &[rect(1, -3, 10, 4)]);
+        assert_eq!(&dst[4..8], &[7; 4]);
+        assert_eq!(&dst[0..4], &[0; 4]);
+        // A covering rect copies everything.
+        copy_dirty_rects(&mut dst, &src, w, h, &[rect(-1, -1, 9, 9)]);
+        assert_eq!(dst, src);
     }
 }
