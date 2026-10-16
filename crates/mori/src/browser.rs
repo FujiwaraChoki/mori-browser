@@ -43,6 +43,10 @@ type InputState = gpui_kit::component::input::InputState;
 
 pub const NEW_TAB_URL: &str = "mori://newtab";
 
+/// How long a page may take to answer a close request (run `beforeunload`)
+/// before another close request closes it without asking.
+const CLOSE_ANSWER_TIME: Duration = Duration::from_secs(1);
+
 /// Runtime state of a tab whose page is loaded in Chromium.
 pub struct LiveTab {
     pub surface: Entity<WebSurface>,
@@ -60,8 +64,8 @@ pub struct LiveTab {
     pub status: Option<String>,
     pub muted: bool,
     /// The user asked to close the tab and the page's `beforeunload` is
-    /// running; the tab goes once the page agrees.
-    pub close_requested: bool,
+    /// running (since when); the tab goes once the page agrees.
+    pub close_requested: Option<Instant>,
 }
 
 /// The page a prompt belongs to.
@@ -499,7 +503,7 @@ impl Browser {
                 fullscreen: false,
                 status: None,
                 muted: false,
-                close_requested: false,
+                close_requested: None,
             },
         );
         if selected {
@@ -653,19 +657,33 @@ impl Browser {
             return;
         }
         // Let the page run its beforeunload handler (it may ask "Leave
-        // site?"); the tab closes when Chromium reports the page agreed. A
-        // second request while the page is unresponsive closes it outright.
+        // site?"); the tab closes when Chromium reports the page agreed
+        // (`ViewEvent::CloseRequested`). Asking again while the page is still
+        // answering does nothing, so a quick second Ctrl+W can't skip the
+        // page's handler; asking again once it has stopped answering closes
+        // it outright.
         if let Some(live) = self.live.get_mut(&id)
-            && !live.close_requested
             && !live.view.is_closed()
         {
-            live.close_requested = true;
-            live.view.request_close();
-            return;
+            match live.close_requested {
+                None => {
+                    live.close_requested = Some(Instant::now());
+                    live.view.request_close();
+                    return;
+                }
+                Some(at) if at.elapsed() < CLOSE_ANSWER_TIME => return,
+                Some(_) => {}
+            }
         }
         if self.dialogs.front(PageOwner::Tab(id)).is_some_and(|d| d.dialog.kind == DialogKind::BeforeUnload) {
             return;
         }
+        self.remove_closed_tab(id, window, cx);
+    }
+
+    /// Take a tab out of the space for good (with Undo), once its page has
+    /// agreed to close or was forced to.
+    fn remove_closed_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
         let was_selected = self.selected() == Some(id);
         self.unload(id, cx);
         self.multi_select.retain(|t| *t != id);
@@ -813,6 +831,7 @@ impl Browser {
         if let Some(tab) = self.split.take() {
             if let Some(live) = self.live.get(&tab) {
                 live.view.set_hidden(true);
+                live.surface.update(cx, |s, _| s.blur());
             }
             cx.notify();
         }
@@ -1296,6 +1315,9 @@ impl Browser {
         if let Some(old) = self.peek.take() {
             EngineHub::unregister(cx, old.view.id());
             old.view.close();
+            // The old page's questions must not land on the new one.
+            self.forget_prompts(PageOwner::Peek);
+            self.sync_page_modals(cx);
         }
         let (w, h) = self.card_size(window);
         let size = ((w as f32 * 0.74).min(1000.) as i32, (h as f32 * 0.82).min(820.) as i32 - 46);
@@ -1351,7 +1373,20 @@ impl Browser {
     }
 
     fn on_peek_events(&mut self, events: Vec<ViewEvent>, window: &mut Window, cx: &mut Context<Self>) {
-        for ev in events {
+        let Some(peek_view) = self.peek.as_ref().map(|p| p.view.clone()) else { return };
+        let mut events = events.into_iter();
+        while let Some(ev) = events.next() {
+            if self.peek.as_ref().is_none_or(|p| p.view != peek_view) {
+                // The Peek became a tab partway through the batch (a popup
+                // promoted it): its remaining events, e.g. a dialog, belong
+                // to that tab now. A closed Peek's are moot.
+                let tab = self.live.iter().find(|(_, l)| l.view == peek_view).map(|(t, _)| *t);
+                if let Some(tab) = tab {
+                    let rest: Vec<ViewEvent> = std::iter::once(ev).chain(events).collect();
+                    self.on_view_events(tab, rest, window, cx);
+                }
+                return;
+            }
             let Some(ev) = self.on_page_event(PageOwner::Peek, ev, window, cx) else { continue };
             let Some(peek) = self.peek.as_mut() else { return };
             match ev {
@@ -1650,13 +1685,8 @@ impl Browser {
                     }
                     save = true;
                 }
-                ViewEvent::CloseRequested => {
-                    // The page agreed to close (or called window.close()).
-                    if let Some(live) = self.live.get_mut(&id) {
-                        live.close_requested = true;
-                    }
-                    self.close_tab(id, true, window, cx);
-                }
+                // The page agreed to close (or called window.close()).
+                ViewEvent::CloseRequested => self.remove_closed_tab(id, window, cx),
                 ViewEvent::FindResult { count, active, .. } => {
                     // Intermediate updates report ordinal 0; keep the last real one.
                     if let Some(live) = self.live.get_mut(&id) {
@@ -1781,9 +1811,13 @@ impl Browser {
         match ev {
             ViewEvent::JsDialog(dialog) => self.open_dialog(owner, dialog, window, cx),
             ViewEvent::DialogsReset => {
-                self.dialogs.take_owner(owner);
-                self.sync_page_modals(cx);
-                self.refocus_owner(owner, window, cx);
+                // Chromium also resets on navigations with no dialog open;
+                // only hand focus back when a dialog actually went away, so
+                // a navigating page doesn't take the keyboard from the chrome.
+                if !self.dialogs.take_owner(owner).is_empty() {
+                    self.sync_page_modals(cx);
+                    self.refocus_owner(owner, window, cx);
+                }
             }
             ViewEvent::PermissionPrompt(req) => self.on_permission_request(owner, req, cx),
             ViewEvent::PermissionDismissed(pid) => {
@@ -1927,7 +1961,7 @@ impl Browser {
             && let Some(live) = self.live.get_mut(&tab)
         {
             // "Stay": the tab keeps living and a later close asks again.
-            live.close_requested = false;
+            live.close_requested = None;
         }
         if let Some(view) = self.owner_view(owner) {
             view.resolve_dialog(id, accept, text.as_deref());

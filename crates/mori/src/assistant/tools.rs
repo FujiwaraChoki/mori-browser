@@ -1076,7 +1076,23 @@ async fn action(args: &Value, ctx: &ToolCtx, cx: &mut AsyncApp) -> Result<ToolOu
             let id = ctx.read(cx, |b, _| resolve_target(args, b))??;
             let title = ctx.read(cx, |b, _| tab_title(b, id))?;
             ctx.update_in_window(cx, |b, window, cx| b.close_tab(id, true, window, cx))?;
-            let closed = ctx.read(cx, |b, _| b.ws.tab(id).is_none())?;
+            // The page runs its beforeunload handler first, so the tab goes
+            // a moment later, or stays if the user chooses to.
+            let (mut closed, mut asking) = (false, false);
+            for _ in 0..20 {
+                closed = ctx.read(cx, |b, _| b.ws.tab(id).is_none())?;
+                asking = ctx.read(cx, |b, _| b.dialogs.has(crate::browser::PageOwner::Tab(id)))?;
+                if closed || asking {
+                    break;
+                }
+                sleep(cx, 50).await;
+            }
+            if asking {
+                return Ok(ToolOutcome::fail(
+                    "The page asked the user to confirm leaving; the tab stays open until they answer.",
+                    format!("{} asks to confirm leaving", quoted(&title, 60)),
+                ));
+            }
             if !closed {
                 return Ok(ToolOutcome::fail(
                     "Mori kept the tab open.",
