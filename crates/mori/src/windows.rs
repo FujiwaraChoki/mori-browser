@@ -266,10 +266,11 @@ pub fn init(cx: &mut App) {
     EngineHub::on_downloads(cx, route_downloads);
     cx.on_window_closed(on_window_closed).detach();
     cx.on_app_quit(|cx| {
-        with(|r| r.quitting = true);
         remember_sizes(cx);
         save_session();
         with(|r| {
+            // Windows closing from here on are not the user closing them.
+            r.quitting = true;
             if let Some(saver) = &r.saver {
                 saver.flush();
             }
@@ -566,10 +567,10 @@ fn open(seed: Seed, size: Option<(f32, f32)>, cx: &mut App) -> Option<Entity<Bro
 }
 
 fn register(handle: AnyWindowHandle, browser: &Entity<Browser>, kind: WindowKind, cx: &mut App) {
-    let mut subscriptions = vec![
-        cx.observe(browser, on_browser_changed),
-        cx.observe_release(browser, |b, cx| b.close_pages(cx)),
-    ];
+    // The window is gone before its browser is released: closing its pages
+    // must outlive the registry entry.
+    cx.observe_release(browser, |b, cx| b.close_pages(cx)).detach();
+    let mut subscriptions = vec![cx.observe(browser, on_browser_changed)];
     let activation = handle
         .update(cx, |_, window, cx| {
             browser.update(cx, |_, cx| {
@@ -644,7 +645,7 @@ fn elect_writer(cx: &mut App) {
 fn on_window_closed(cx: &mut App, id: WindowId) {
     let (removed, stale_images) = with(|r| {
         let Some(i) = r.entries.iter().position(|e| e.handle.window_id() == id) else {
-            return (None, Vec::new());
+            return (Vec::new(), Vec::new());
         };
         let entry = r.entries.remove(i);
         if entry.kind == WindowKind::Normal
@@ -663,7 +664,7 @@ fn on_window_closed(cx: &mut App, id: WindowId) {
             .map(|t| [t.tokens.wash, t.tokens.grain].into_iter().flatten().collect::<Vec<_>>())
             .unwrap_or_default();
         r.downloads.retain(|_, w| *w != id);
-        (Some((entry.kind, entry._subscriptions)), images)
+        (entry._subscriptions, images)
     });
     for image in stale_images {
         let current = cx.try_global::<Tokens>().is_some_and(|t| uses_image(t, &image));
@@ -698,6 +699,9 @@ fn remember_sizes(cx: &mut App) {
 /// Queue `windows.json` (and `profiles.json`) for writing if they changed.
 fn save_session() {
     with(|r| {
+        if r.quitting {
+            return;
+        }
         let mut windows: Vec<SavedWindow> = r
             .entries
             .iter()
@@ -755,7 +759,6 @@ impl Shared {
 
     /// What `to` lacks of `from`'s state.
     fn between(from: &Browser, to: &Browser) -> Shared {
-
         let mut out = Shared::default();
         let (a, b) = (from.kind, to.kind);
         if a == WindowKind::Normal && b == WindowKind::Normal && !same_content(&from.ws, &to.ws) {

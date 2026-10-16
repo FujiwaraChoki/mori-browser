@@ -19,6 +19,8 @@ packaging/linux/            desktop entry
   external message pump (`pump`, `next_pump_delay_ms`), shutdown, relaunch
   queue, resource discovery.
 - `app.rs` - CEF `App`: command-line policy and the browser process handler.
+- `context.rs` - browsing contexts: the global one, persistent profiles and
+  in-memory private contexts.
 - `view.rs` - `WebView` (one offscreen browser), `ViewEvent`, frames, and every
   page operation (navigation, input, editing, find, zoom, dialogs, permissions).
 - `client.rs` - all CEF handlers (render, display, load, life span/popups,
@@ -38,10 +40,15 @@ packaging/linux/            desktop entry
 - `theme.rs` - palettes, OKLCH/HSL maths, gradient themes and presets.
 - `scripts.rs` - page scripts (reader, media, page text).
 - `paths.rs`, `util.rs` - data directory, atomic JSON I/O, host helpers.
+- `windows.rs` - per-window selection over the shared workspace and the saved
+  windows; `profiles.rs` - profiles and which space uses which.
 
 ### `crates/mori`
 
-- `main.rs` - startup: subprocess check, engine init, window, URL arguments.
+- `main.rs` - startup: subprocess check, engine init, URL arguments.
+- `windows.rs` - normal, private and Little Mori windows: opening, session
+  restore, keeping stores in step, relaunches, per-window themes, profiles.
+- `default_browser.rs` - checking and setting the default browser.
 - `browser.rs` - the `Browser` root entity: model, live tabs, engine events,
   and commands.
 - `engine_hub.rs` - pumps CEF from GPUI and routes view events.
@@ -54,7 +61,8 @@ packaging/linux/            desktop entry
 - `ui/` - `root.rs` (layout and action routing), `sidebar.rs`, `launcher.rs`,
   `find_bar.rs`, `menus.rs`, `overlays.rs` (dialogs, permissions, Peek),
   `panels.rs` (Downloads, Library), `settings.rs`, `boost_editor.rs`,
-  `assistant.rs`, `components.rs`.
+  `assistant.rs`, `components.rs`, `windows.rs` (Little Mori header, private
+  badge, window and profile menus and settings).
 
 ## Mori 2 (macOS overlay)
 

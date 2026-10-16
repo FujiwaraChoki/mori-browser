@@ -79,7 +79,24 @@ Chromium re-executes the `mori` binary for renderer, GPU, and utility
 processes; `main` calls `mori_engine::run_subprocess_if_needed()` before
 anything else. A second `mori` launch with the same profile is forwarded to
 the running instance by Chromium's process singleton
-(`on_already_running_app_relaunch`).
+(`on_already_running_app_relaunch`): its URLs open in Little Mori (or the
+current space), and `--new-window` / `--private-window` open windows.
+
+### Windows and profiles
+
+`crates/mori/src/windows.rs` opens and tracks the windows. Each window's
+root `Browser` holds its own copy of the stores; when one notifies, what it
+shares with each other window is compared and copied (normal windows share
+everything, Little Mori shares all but its one-page workspace, private
+windows only preferences). `mori_core::windows::adopt_workspace` keeps each
+window's own selection over the shared tabs, and one window writes the
+stores. A tab's running page lives in one window and moves when another
+window shows it.
+
+Pages run in a `mori_engine::BrowsingContext`: CEF's global context, a
+persistent context per profile (`<profile root>/Profile-<id>`, assigned to
+spaces in `mori_core::profiles`), or an in-memory context shared by the open
+private windows.
 
 ## Mori 2: SwiftUI on Chromium (macOS)
 
