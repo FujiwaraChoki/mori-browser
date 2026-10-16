@@ -540,6 +540,11 @@ pub(crate) fn view_for_browser(browser_id: i32) -> Option<Rc<ViewInner>> {
     })
 }
 
+/// Every view that is still alive.
+pub(crate) fn all_views() -> Vec<Rc<ViewInner>> {
+    VIEWS.with(|v| v.borrow().values().filter_map(Weak::upgrade).collect())
+}
+
 pub(crate) fn close_all_views() {
     let views: Vec<Rc<ViewInner>> =
         VIEWS.with(|v| v.borrow().values().filter_map(Weak::upgrade).collect());

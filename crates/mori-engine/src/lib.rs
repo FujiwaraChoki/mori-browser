@@ -10,6 +10,7 @@
 //! why the view state below uses `Rc`/`RefCell` rather than locks.
 
 mod app;
+mod appearance;
 mod client;
 mod devtools;
 mod downloads;
@@ -28,6 +29,7 @@ use anyhow::{Context as _, Result, bail};
 use cef::{args::Args, *};
 
 pub use devtools::Sink as DevToolsSink;
+pub use appearance::{reapply_color_scheme, set_color_scheme};
 pub use downloads::{
     DownloadId, DownloadState, DownloadUpdate, cancel_download, is_controllable, pause_download,
     resume_download, take_download_updates, unique_path,

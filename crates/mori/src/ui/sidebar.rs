@@ -44,18 +44,19 @@ impl Render for DraggedTab {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.tokens().clone();
         h_flex()
-            .h(px(30.))
-            .px_2()
-            .gap_2()
+            .h(metrics::ROW_HEIGHT)
+            .pl(px(7.))
+            .pr(px(10.))
+            .gap(px(10.))
             .max_w(px(220.))
-            .rounded(metrics::RADIUS)
+            .rounded(metrics::ROW_RADIUS)
             .bg(t.popover)
             .border_1()
-            .border_color(t.border.opacity(0.6))
+            .border_color(t.popover_border())
             .shadow(t.popover_shadow())
-            .text_size(metrics::TEXT_BASE)
+            .text_size(crate::theme::ui_font().size)
             .text_color(t.foreground)
-            .child(favicon(self.favicon.clone(), px(15.), false, cx))
+            .child(favicon(self.favicon.clone(), metrics::FAVICON, false, cx))
             .child(div().truncate().child(self.title.clone()))
     }
 }
@@ -72,6 +73,9 @@ pub enum DropTarget {
     PinnedEnd(SpaceId),
     Space(SpaceId),
 }
+
+/// The symbol new spaces start with; the switcher draws it as a plain dot.
+pub const DEFAULT_SPACE_SYMBOL: &str = "circle";
 
 /// Space glyphs offered in the space editor (Lucide icon names).
 pub const SPACE_SYMBOLS: [&str; 24] = [
@@ -121,9 +125,16 @@ impl Browser {
 
     pub fn render_sidebar(&mut self, floating: bool, window: &mut Window, cx: &mut Context<Self>) -> Stateful<Div> {
         let t = cx.tokens().clone();
+        let font = crate::theme::ui_font();
         let width = px(self.sidebar_drag.unwrap_or(self.settings.clamped_sidebar_width()));
         let left = self.settings.sidebar_position == mori_core::settings::SidebarPosition::Left;
-        let (outer, inner) = if floating { (px(8.), px(8.)) } else { (px(8.), px(0.)) };
+        // Content sits 7px from the window edge and runs up to the gutter
+        // before the web card (Zen); a floating sidebar is inset both sides.
+        let (outer, inner) = if floating {
+            (metrics::SIDEBAR_INSET, metrics::SIDEBAR_INSET)
+        } else {
+            (metrics::SIDEBAR_INSET, px(0.))
+        };
         let (pl, pr) = if left { (outer, inner) } else { (inner, outer) };
 
         v_flex()
@@ -132,7 +143,7 @@ impl Browser {
             .h_full()
             .flex_none()
             .text_color(t.sidebar_foreground)
-            .text_size(metrics::TEXT_BASE)
+            .text_size(font.size)
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, ev: &MouseDownEvent, _, cx| {
@@ -144,22 +155,24 @@ impl Browser {
                 }),
             )
             .child(self.render_header(left, window, cx).pl(pl).pr(pr))
+            .child(div().flex_none().pl(pl).pr(pr).child(self.render_pinned(cx)))
             .child(
                 v_flex()
                     .id("sidebar-scroll")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .pl(pl)
-                    .pr(pr)
-                    .gap_1()
+                    .pl(pl + metrics::ROW_INSET)
+                    .pr(pr + metrics::ROW_INSET)
                     .child(self.render_space_header(cx))
-                    .child(self.render_pinned(cx))
                     .child(self.render_folders(window, cx))
+                    // Zen's divider between the pinned section and the tabs.
+                    .child(div().flex_none().mt(px(10.)).mb(px(12.)).h(px(1.)).bg(t.sidebar_separator()))
                     .child(self.render_loose(window, cx)),
             )
             .children(self.render_media_strip(cx))
-            .child(self.render_bottom_bar(cx).pl(pl + px(2.)).pr(pr + px(2.)))
+            // The bar's own -4/-3px margins give back 7px of the padding.
+            .child(self.render_bottom_bar(f32::from(width - pl - pr) + 7., cx).pl(pl).pr(pr))
     }
 
     fn render_header(&mut self, left: bool, window: &mut Window, cx: &mut Context<Self>) -> Div {
@@ -168,32 +181,57 @@ impl Browser {
         let (can_back, can_fwd, loading) = live
             .map(|l| (l.can_go_back, l.can_go_forward, l.loading))
             .unwrap_or((false, false, false));
+        let has_downloads = !self.downloads.is_empty();
         let active_downloads = self.downloads.active_count();
         let download_fraction = self.downloads.active_fraction();
+        let button = metrics::TOOLBAR_BUTTON;
 
+        // Zen's toolbar: app menu and sidebar toggle on the left, navigation
+        // on the right; 30px buttons with 16px glyphs and no gaps.
         let nav = h_flex()
-            .h(px(28.))
-            .gap_1()
+            .h(button)
+            .ml(px(-4.))
+            .mr(px(-3.))
             .child(
-                icon_button("toggle-sidebar", if left { "panel-left" } else { "panel-right" }, px(28.), true, cx)
+                icon_button("app-menu", "ellipsis", button, true, cx).on_click(cx.listener(
+                    |this, ev: &ClickEvent, _, cx| {
+                        this.menu = Some(OpenMenu {
+                            kind: MenuKind::Sidebar,
+                            position: ev.position(),
+                        });
+                        cx.notify();
+                    },
+                )),
+            )
+            .child(
+                icon_button("toggle-sidebar", if left { "panel-left" } else { "panel-right" }, button, true, cx)
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
             )
+            .child(window_drag_area("window-drag"))
+            // A ring shows the progress of running downloads.
+            .when(has_downloads, |s| {
+                s.child(
+                    div()
+                        .relative()
+                        .child(
+                            icon_button("downloads", "download", button, true, cx).on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.panel = (this.panel != Some(Panel::Downloads))
+                                        .then_some(Panel::Downloads);
+                                    cx.notify();
+                                }),
+                            ),
+                        )
+                        .child(crate::ui::panels::download_ring(
+                            download_fraction,
+                            active_downloads > 0,
+                            t.status_info,
+                            t.sidebar_foreground.opacity(0.14),
+                        )),
+                )
+            })
             .child(
-                // Empty header space moves the window (client-side decorations).
-                div()
-                    .id("window-drag")
-                    .flex_1()
-                    .h_full()
-                    .on_mouse_down(MouseButton::Left, |ev: &MouseDownEvent, window, _| {
-                        if ev.click_count == 2 {
-                            window.zoom_window();
-                        } else {
-                            window.start_window_move();
-                        }
-                    }),
-            )
-            .child(
-                icon_button("back", "arrow-left", px(28.), can_back, cx).on_click(cx.listener(
+                icon_button("back", "arrow-left", button, can_back, cx).on_click(cx.listener(
                     |this, _, _, _| {
                         if let Some(v) = this.selected_view() {
                             v.go_back();
@@ -202,7 +240,7 @@ impl Browser {
                 )),
             )
             .child(
-                icon_button("forward", "arrow-right", px(28.), can_fwd, cx).on_click(cx.listener(
+                icon_button("forward", "arrow-right", button, can_fwd, cx).on_click(cx.listener(
                     |this, _, _, _| {
                         if let Some(v) = this.selected_view() {
                             v.go_forward();
@@ -211,7 +249,7 @@ impl Browser {
                 )),
             )
             .child(
-                icon_button("reload", if loading { "x" } else { "rotate-cw" }, px(28.), live.is_some(), cx)
+                icon_button("reload", if loading { "x" } else { "rotate-cw" }, button, live.is_some(), cx)
                     .on_click(cx.listener(move |this, _, _, _| {
                         if let Some(v) = this.selected_view() {
                             if loading {
@@ -221,106 +259,102 @@ impl Browser {
                             }
                         }
                     })),
-            )
-            .child(
-                icon_button("library", "library", px(28.), true, cx).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.panel = (this.panel != Some(Panel::Library)).then_some(Panel::Library);
-                        cx.notify();
-                    },
-                )),
-            )
-            // Always present so the buttons around it never shift; a ring
-            // shows the progress of running downloads.
-            .child(
-                div()
-                    .relative()
-                    .child(
-                        icon_button("downloads", "download", px(28.), true, cx).on_click(
-                            cx.listener(|this, _, _, cx| {
-                                this.panel = (this.panel != Some(Panel::Downloads))
-                                    .then_some(Panel::Downloads);
-                                cx.notify();
-                            }),
-                        ),
-                    )
-                    .child(crate::ui::panels::download_ring(
-                        download_fraction,
-                        active_downloads > 0,
-                        t.status_info,
-                        t.sidebar_foreground.opacity(0.14),
-                    )),
             );
 
-        let nav = nav.children(window_controls(window, cx));
+        // The window buttons don't fit next to the toolbar at Zen's sidebar
+        // width, so they get a row of their own above it.
+        let controls = window_controls(window, cx).map(|controls| {
+            h_flex()
+                .h(px(24.))
+                .mr(px(-3.))
+                .child(window_drag_area("window-drag-controls"))
+                .child(controls)
+        });
         v_flex()
-            .pt(px(10.))
-            .pb(px(6.))
-            .gap_2()
+            .pt(px(6.))
+            .pb(px(10.))
+            .gap(px(7.))
+            .children(controls)
             .child(nav)
             .child(self.render_omnibox(cx))
     }
 
     fn render_omnibox(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.tokens().clone();
+        let font = crate::theme::ui_font();
         let record = self.active_tab().and_then(|id| self.ws.tab(id)).cloned();
         let url = record.as_ref().map(|r| r.url.clone()).unwrap_or_default();
         let host = omnibox::display_host(&url);
-        let loading = self.active_live().is_some_and(|l| l.loading);
         let is_web = url.starts_with("http://") || url.starts_with("https://");
         let bookmarked = is_web && self.bookmarks.contains(&url);
         let reader = self.active_live().is_some_and(|l| l.reader);
-        let fav = self.active_tab().and_then(|id| self.favicon_for(id));
+        let muted = t.sidebar_foreground.opacity(if t.dark { 0.6 } else { 0.55 });
         let zoom = self.selected_zoom_level();
         let zoom_label = (is_web && !mori_core::zoom::is_default(zoom))
             .then(|| format!("{}%", mori_core::zoom::percent_for_level(zoom)));
 
-        let lead: AnyElement = if url.starts_with("https://") {
-            match fav {
-                Some(img) => favicon(Some(img), px(15.), false, cx),
-                None => icon("lock", px(13.), t.sidebar_foreground.opacity(0.6)).into_any_element(),
-            }
-        } else if url.starts_with("http://") {
-            icon("triangle-alert", px(13.), t.status_warning).into_any_element()
+        // Zen shows the bare host; only insecure pages and the empty state
+        // get a leading glyph.
+        let lead = if url.starts_with("http://") {
+            Some(icon("triangle-alert", px(14.), t.status_warning))
+        } else if host.is_empty() {
+            Some(icon("search", px(14.), muted))
         } else {
-            icon("search", px(13.), t.sidebar_foreground.opacity(0.6)).into_any_element()
+            None
         };
+        // Page actions appear on hover, or stay while they show state.
+        let action = |id: &'static str, glyph: &'static str, color: Hsla, toggles_reader: bool, cx: &mut Context<Self>| {
+            div()
+                .id(id)
+                .size(px(26.))
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .rounded(px(7.))
+                .hover(|s| s.bg(t.tab_hover()))
+                .cursor_pointer()
+                .child(icon(glyph, px(14.), color))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    if toggles_reader {
+                        this.toggle_reader(cx);
+                    } else {
+                        this.toggle_bookmark(cx);
+                    }
+                }))
+        };
+        let reader_color = if reader { t.primary } else { muted };
+        let star_color = if bookmarked { t.status_warning } else { muted };
 
-        h_flex()
+        let mut pill = h_flex()
             .id("omnibox")
-            .h(px(30.))
-            .px(px(11.))
+            .group("omnibox")
+            .relative()
+            .h(metrics::PILL_HEIGHT)
+            .pl(px(11.))
+            .pr(px(4.))
             .gap(px(7.))
             .rounded(metrics::RADIUS)
-            .bg(t.foreground.opacity(if t.dark { 0.08 } else { 0.05 }))
-            .border_1()
-            .border_color(t.border.opacity(0.35))
+            .bg(t.tile_rest())
             .cursor_text()
             .on_click(cx.listener(|this, _, window, cx| {
                 this.open_launcher(LauncherMode::Address, window, cx)
             }))
-            .child(div().flex_none().size(px(16.)).flex().items_center().justify_center().child(lead))
+            .children(lead)
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .truncate()
-                    .text_size(metrics::TEXT_BASE)
-                    .when(host.is_empty(), |s| {
-                        s.text_color(t.muted_foreground.opacity(0.7))
-                            .child("Search or enter address")
-                    })
+                    .text_size(font.url_size())
+                    .font_weight(FontWeight::MEDIUM)
+                    .when(host.is_empty(), |s| s.text_color(muted).child("Search..."))
                     .when(!host.is_empty(), |s| {
-                        s.text_color(t.sidebar_foreground.opacity(0.78)).child(host)
+                        s.text_color(t.sidebar_foreground.opacity(if t.dark { 0.75 } else { 0.68 }))
+                            .child(host)
                     }),
             )
-            .when(loading, |s| {
-                s.child(icon("loader-circle", px(13.), t.muted_foreground).with_animation(
-                    "omnibox-spin",
-                    Animation::new(std::time::Duration::from_millis(900)).repeat(),
-                    |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
-                ))
-            })
             // The site's zoom when it is not 100%; click to reset.
             .when_some(zoom_label, |s, label| {
                 s.child(
@@ -343,41 +377,61 @@ impl Browser {
                             this.zoom(0.0, cx);
                         })),
                 )
-            })
-            .when(is_web, |s| {
-                s.child(
-                    icon_button("reader", "book-open-text", px(22.), true, cx)
-                        .when(reader, |b| b.bg(t.primary.opacity(0.18)))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.toggle_reader(cx);
-                        })),
-                )
-                .child(
-                    div()
-                        .id("bookmark")
-                        .size(px(22.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(metrics::RADIUS)
-                        .hover(|s| s.bg(t.ghost_hover()))
-                        .cursor_pointer()
-                        .child(icon(
-                            "star",
-                            px(13.),
-                            if bookmarked { t.status_warning } else { t.sidebar_foreground.opacity(0.55) },
-                        ))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.toggle_bookmark(cx);
-                        })),
-                )
-            })
+            });
+        if !is_web {
+            return pill;
+        }
+        // Hover may only toggle visibility here, never `display`: GPUI
+        // panics when an element's display differs between prepaint and
+        // paint, which happens whenever the layout shifts under a resting
+        // pointer (a menu closing, a row disappearing).
+        match t.opaque_on_sidebar(t.tile_rest()) {
+            // The host keeps the whole pill until hover; the actions then
+            // slide in over its end on the pill's own colour.
+            Some(backing) => {
+                pill = pill
+                    .when(reader, |s| s.child(action("reader", "book-open-text", reader_color, true, cx)))
+                    .when(bookmarked, |s| s.child(action("bookmark", "star", star_color, false, cx)))
+                    .child(
+                        h_flex()
+                            .absolute()
+                            .top(px(4.))
+                            .bottom(px(4.))
+                            .right(px(4.))
+                            .invisible()
+                            .group_hover("omnibox", |s| s.visible())
+                            .child(div().w(px(16.)).h_full().bg(fade_to(backing)))
+                            .child(
+                                h_flex()
+                                    .h_full()
+                                    .items_center()
+                                    .gap(px(7.))
+                                    .bg(backing)
+                                    .child(action("reader-hover", "book-open-text", reader_color, true, cx))
+                                    .child(action("bookmark-hover", "star", star_color, false, cx)),
+                            ),
+                    );
+            }
+            // Under a gradient wash the pill has no single colour to cover
+            // the host with, so the actions keep their space.
+            None => {
+                pill = pill
+                    .child(
+                        action("reader", "book-open-text", reader_color, true, cx)
+                            .when(!reader, |s| s.invisible().group_hover("omnibox", |s| s.visible())),
+                    )
+                    .child(
+                        action("bookmark", "star", star_color, false, cx)
+                            .when(!bookmarked, |s| s.invisible().group_hover("omnibox", |s| s.visible())),
+                    );
+            }
+        }
+        pill
     }
 
     fn render_space_header(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.tokens().clone();
+        let font = crate::theme::ui_font();
         let space = self.ws.active().clone();
         let renaming = self
             .rename
@@ -385,13 +439,17 @@ impl Browser {
             .filter(|(r, _)| *r == RenameTarget::Space(space.id))
             .map(|(_, i)| i.clone());
         let id = space.id;
+        // The default symbol is drawn as a dot in the switcher; like Zen, the
+        // label only carries an icon the user picked.
+        let custom_symbol = (space.symbol != DEFAULT_SPACE_SYMBOL).then(|| space.symbol.clone());
         h_flex()
             .id("space-header")
-            .h(px(22.))
-            .mt_1()
-            .px(px(6.))
-            .gap_2()
-            .child(icon(&space.symbol, px(12.), t.muted_foreground))
+            .flex_none()
+            .h(px(24.))
+            .mt(px(8.))
+            .pl(px(7.))
+            .gap(px(6.))
+            .children(custom_symbol.map(|symbol| icon(&symbol, px(13.), t.muted_foreground)))
             .child(match renaming {
                 Some(input) => div()
                     .flex_1()
@@ -400,9 +458,9 @@ impl Browser {
                 None => div()
                     .flex_1()
                     .truncate()
-                    .text_size(metrics::TEXT_LABEL)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(t.sidebar_foreground.opacity(0.85))
+                    .text_size(font.label_size())
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(t.muted_foreground)
                     .child(space.name.clone())
                     .into_any_element(),
             })
@@ -446,9 +504,13 @@ impl Browser {
                 }))
                 .into_any_element();
         }
-        let columns = if pins.len() >= 4 { 4 } else { 3 };
         let selected = self.active_tab();
-        let tiles: Vec<AnyElement> = pins
+        let (selected_bg, selected_ring) = if t.dark {
+            (white().opacity(0.20), white().opacity(0.45))
+        } else {
+            (white().opacity(0.80), black().opacity(0.15))
+        };
+        let mut tiles: Vec<AnyElement> = pins
             .iter()
             .enumerate()
             .map(|(i, id)| {
@@ -457,44 +519,48 @@ impl Browser {
                 let is_selected = selected == Some(id);
                 let in_split = !is_selected && self.visible_split_member(id);
                 let loading = self.live.get(&id).is_some_and(|l| l.loading);
-                let asleep = !self.live.contains_key(&id);
-                let title: SharedString = self
-                    .ws
-                    .tab(id)
+                let record = self.ws.tab(id);
+                let title: SharedString = record
                     .map(|r| r.display_title().to_string())
                     .unwrap_or_default()
                     .into();
+                let host = record.and_then(|r| host_of(&r.url)).unwrap_or_default();
+                let glyph = match fav.clone() {
+                    Some(img) => favicon(Some(img), metrics::FAVICON, false, cx),
+                    None => monogram(&host, cx),
+                };
                 let space_id = space.id;
                 div()
                     .id(("pin", i))
                     .relative()
-                    .h(px(48.))
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(46.))
                     .flex()
                     .items_center()
                     .justify_center()
                     .rounded(metrics::RADIUS)
-                    .bg(if is_selected { t.tab_selected() } else { t.tile_rest() })
-                    .when(in_split, |s| s.bg(t.tab_selected().opacity(0.55)))
-                    .when(is_selected, |s| s.shadow(vec![BoxShadow {
-                        color: black().opacity(t.shadow_alpha(0.15, 0.05)),
-                        offset: point(px(0.), px(0.8)),
-                        blur_radius: px(1.5),
-                        spread_radius: px(0.),
-                        inset: false,
-                    }]))
-                    .hover(|s| s.bg(if is_selected { t.tab_selected() } else { t.tab_hover() }))
+                    .border_2()
+                    .border_color(if is_selected { selected_ring } else { transparent_black() })
+                    .bg(if is_selected { selected_bg } else { t.tile_rest() })
+                    .when(in_split, |s| s.bg(selected_bg.opacity(0.55)))
+                    .when(!is_selected, |s| s.hover(|s| s.bg(t.tile_hover())))
                     .cursor_pointer()
-                    .child(favicon(fav.clone(), px(24.), asleep && !is_selected, cx))
+                    .child(glyph)
                     .when(loading, |s| {
                         s.child(
                             div()
                                 .absolute()
                                 .bottom(px(5.))
                                 .left(px(5.))
-                                .size(px(6.))
+                                .size(px(5.))
                                 .rounded_full()
                                 .bg(t.status_info),
                         )
+                    })
+                    .tooltip({
+                        let title = title.clone();
+                        move |window, cx| gpui_kit::component::tooltip::Tooltip::new(title.clone()).build(window, cx)
                     })
                     .on_click(cx.listener(move |this, _, window, cx| this.select_tab(id, window, cx)))
                     .on_mouse_down(
@@ -520,9 +586,9 @@ impl Browser {
                     .drag_over::<DraggedTab>(move |s, d, _, _| {
                         let s = s.border_color(t.primary.opacity(0.8));
                         if d.lands_after(space_id, Slot::Pinned(i)) {
-                            s.border_r_2()
+                            s.border_r_4()
                         } else {
-                            s.border_l_2()
+                            s.border_l_4()
                         }
                     })
                     .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
@@ -540,7 +606,7 @@ impl Browser {
         let end_cell = tab_drag.then(|| {
             div()
                 .id("pin-end")
-                .h(px(48.))
+                .h(px(30.))
                 .rounded(metrics::RADIUS)
                 .border_1()
                 .border_dashed()
@@ -552,14 +618,14 @@ impl Browser {
                     this.drop_tab(d.id, DropTarget::PinnedEnd(space_id), window, cx)
                 }))
         });
-        div()
-            .id("pinned-grid")
-            .grid()
-            .grid_cols(columns)
-            .gap(px(6.))
-            .py_1()
-            .children(tiles)
-            .children(end_cell)
+        // Essentials-style grid: rows of up to four tiles that always fill
+        // the sidebar's width, balanced so no row has holes.
+        let mut rows = v_flex().id("pinned-grid").gap(px(7.)).pb(px(4.));
+        for len in mori_core::theme::balanced_rows(tiles.len(), 4) {
+            let rest = tiles.split_off(len);
+            rows = rows.child(h_flex().gap(px(7.)).children(std::mem::replace(&mut tiles, rest)));
+        }
+        rows.children(end_cell)
             .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
                 this.drop_tab(d.id, DropTarget::PinnedEnd(space_id), window, cx)
             }))
@@ -567,14 +633,10 @@ impl Browser {
     }
 
     fn render_folders(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let t = cx.tokens().clone();
         let space = self.ws.active().clone();
-        let mut out = v_flex().gap(px(2.));
+        let mut out = v_flex().gap(metrics::ROW_GAP);
         for folder in &space.folders {
             out = out.child(self.render_folder(space.id, folder, window, cx));
-        }
-        if !space.folders.is_empty() {
-            out = out.child(div().my_1().mx_2().h(px(1.)).bg(t.sidebar_foreground.opacity(0.12)));
         }
         out
     }
@@ -595,19 +657,28 @@ impl Browser {
             .as_ref()
             .filter(|(r, _)| *r == RenameTarget::Folder(fid))
             .map(|(_, i)| i.clone());
+        // The stock folder gets Zen's filled two-tone glyph; a symbol the
+        // user picked stays a Lucide outline.
+        let glyph: AnyElement = if folder.symbol == "folder" {
+            svg()
+                .path(if expanded { "mori/folder-open-filled.svg" } else { "mori/folder-filled.svg" })
+                .size(px(20.))
+                .flex_none()
+                .text_color(t.primary)
+                .into_any_element()
+        } else {
+            icon(&folder.symbol, px(18.), t.primary).into_any_element()
+        };
         let header = h_flex()
             .id(SharedString::from(format!("folder-{fid}")))
-            .h(px(32.))
-            .px(px(9.))
-            .gap_2()
-            .rounded(metrics::RADIUS_LG)
-            .hover(|s| s.bg(t.ghost_hover()))
+            .h(metrics::ROW_HEIGHT)
+            .pl(px(5.))
+            .pr(px(6.))
+            .gap(px(8.))
+            .rounded(metrics::ROW_RADIUS)
+            .hover(|s| s.bg(t.tab_hover()))
             .cursor_pointer()
-            .child(icon(
-                if expanded { "folder-open" } else { &folder.symbol },
-                px(18.),
-                t.primary.opacity(0.9),
-            ))
+            .child(div().size(px(20.)).flex_none().flex().items_center().justify_center().child(glyph))
             .child(match renaming {
                 Some(input) => div()
                     .flex_1()
@@ -616,7 +687,7 @@ impl Browser {
                 None => div()
                     .flex_1()
                     .truncate()
-                    .font_weight(FontWeight::MEDIUM)
+                    .font_weight(FontWeight::SEMIBOLD)
                     .child(folder.name.clone())
                     .into_any_element(),
             })
@@ -650,10 +721,25 @@ impl Browser {
             .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
                 this.drop_tab(d.id, DropTarget::FolderEnd(space, fid), window, cx)
             }));
-        let mut col = v_flex().gap(px(2.)).child(header);
-        if expanded {
+        let mut col = v_flex().gap(metrics::ROW_GAP).child(header);
+        if expanded && !folder.tab_ids.is_empty() {
+            // Children are indented behind a guide line under the folder.
             let rows = self.render_tab_rows(&folder.tab_ids, |i| Slot::Folder(fid, i), space, window, cx);
-            col = col.children(rows.into_iter().map(|row| div().pl(px(16.)).child(row)));
+            let children = v_flex()
+                .relative()
+                .pl(px(12.))
+                .gap(metrics::ROW_GAP)
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(14.))
+                        .top(px(2.))
+                        .bottom(px(2.))
+                        .w(px(1.))
+                        .bg(t.sidebar_separator()),
+                )
+                .children(rows);
+            col = col.child(children);
         }
         col
     }
@@ -708,13 +794,21 @@ impl Browser {
         let new_tab = h_flex()
             .id("new-tab-row")
             .h(metrics::ROW_HEIGHT)
-            .px(px(9.))
-            .gap(px(9.))
-            .rounded(metrics::RADIUS)
+            .pl(px(7.))
+            .gap(px(10.))
+            .rounded(metrics::ROW_RADIUS)
             .text_color(t.muted_foreground)
-            .hover(|s| s.bg(t.ghost_hover()))
+            .hover(|s| s.bg(t.tab_hover()))
             .cursor_pointer()
-            .child(icon("plus", px(15.), t.muted_foreground))
+            .child(
+                div()
+                    .size(metrics::FAVICON)
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(icon("plus", px(13.), t.muted_foreground)),
+            )
             .child("New Tab")
             .on_click(cx.listener(|this, _, window, cx| this.open_launcher(LauncherMode::NewTab, window, cx)))
             .drag_over::<DraggedTab>(move |s, _, _, _| s.bg(t.primary.opacity(0.14)))
@@ -723,7 +817,7 @@ impl Browser {
             }));
         let rows = self.render_tab_rows(&space.loose, Slot::Loose, space_id, window, cx);
         v_flex()
-            .gap(px(2.))
+            .gap(metrics::ROW_GAP)
             .pb(px(10.))
             .child(new_tab)
             .children(rows)
@@ -731,7 +825,7 @@ impl Browser {
                 div()
                     .id("loose-end")
                     .h(px(24.))
-                    .rounded(metrics::RADIUS)
+                    .rounded(metrics::ROW_RADIUS)
                     .drag_over::<DraggedTab>(move |s, _, _, _| {
                         s.bg(t.primary.opacity(0.14))
                             .border_1()
@@ -761,7 +855,6 @@ impl Browser {
         let multi = self.multi_select.contains(&id);
         let in_split = self.visible_split_member(id);
         let live = self.live.get(&id);
-        let asleep = live.is_none() && !Browser::is_internal(&record.url);
         let loading = live.is_some_and(|l| l.loading);
         let muted = live.is_some_and(|l| l.muted);
         let audible = self.is_tab_audible(id);
@@ -771,92 +864,164 @@ impl Browser {
             .as_ref()
             .filter(|(r, _)| *r == RenameTarget::Tab(id))
             .map(|(_, i)| i.clone());
+        // Asleep tabs keep full colour (as in Zen and Arc); only the selected
+        // row is brighter.
         let fg = if selected {
             t.sidebar_foreground
-        } else if asleep {
-            t.sidebar_foreground.opacity(0.5)
         } else {
-            t.sidebar_foreground.opacity(0.78)
+            t.sidebar_foreground.opacity(0.9)
         };
         let group = SharedString::from(format!("tab-{id}"));
+        let row_bg = if selected {
+            Some(t.tab_selected())
+        } else if in_split {
+            Some(t.tab_selected().opacity(0.55))
+        } else {
+            None
+        };
+        // Long titles fade into the row instead of ending in an ellipsis.
+        // The fade needs the row's exact colour, which a gradient wash
+        // doesn't have; those themes keep the ellipsis.
+        // A selected row's shadow is painted under its translucent fill and
+        // shows through it, so it is part of the colour the fade must match.
+        let mut layers: Vec<Hsla> = Vec::new();
+        if selected {
+            layers.extend(t.tab_selected_shadow().iter().map(|s| s.color));
+        }
+        layers.extend(row_bg);
+        let fade = t.opaque_on_sidebar_layers(&layers).map(|base| {
+            let hover = (!selected).then(|| t.opaque_on_sidebar(t.tab_hover())).flatten();
+            (base, hover)
+        });
+        let fade_out = fade_to;
+        let renaming_row = renaming.is_some();
+        let title_el: AnyElement = match renaming {
+            Some(input) => div()
+                .flex_1()
+                .child(Input::new(&input).appearance(false).bordered(false))
+                .into_any_element(),
+            None => match fade {
+                Some((base, hover)) => div()
+                    .relative()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .whitespace_nowrap()
+                    .child(title.clone())
+                    .child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right_0()
+                            .w(px(24.))
+                            .bg(fade_out(base))
+                            .when_some(hover, |s, hover| {
+                                s.group_hover(group.clone(), move |s| s.bg(fade_out(hover)))
+                            }),
+                    )
+                    .into_any_element(),
+                None => div().flex_1().min_w_0().truncate().child(title.clone()).into_any_element(),
+            },
+        };
+        let row_button = |id: &'static str| {
+            div()
+                .id(id)
+                .size(px(24.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.))
+                .hover(|s| s.bg(if t.dark { white().opacity(0.10) } else { black().opacity(0.07) }))
+        };
+
+        // Speaker while the tab plays sound (click to mute), crossed out
+        // while muted (click to unmute).
+        let sound = muted || audible;
+        let mute_button = |button_id: &'static str, cx: &mut Context<Self>| {
+            row_button(button_id)
+                .child(icon(if muted { "volume-x" } else { "volume-2" }, px(12.), fg.opacity(0.7)))
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    cx.stop_propagation();
+                    this.toggle_mute(id, cx);
+                }))
+        };
+        let close_button = |cx: &mut Context<Self>| {
+            row_button("close")
+                .child(icon("x", px(12.), fg.opacity(0.7)))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.close_tab(id, true, window, cx);
+                }))
+        };
+        // The row's colour while hovered, when it is a single opaque colour.
+        let hover_backing = fade
+            .filter(|_| !renaming_row)
+            .map(|(base, hover)| hover.unwrap_or(base));
 
         h_flex()
             .id(SharedString::from(format!("tab-row-{id}")))
             .group(group.clone())
+            .relative()
             .h(metrics::ROW_HEIGHT)
-            .pl(px(9.))
+            .pl(px(7.))
             .pr(px(6.))
-            .gap(px(9.))
-            .rounded(metrics::RADIUS)
+            .gap(px(10.))
+            .rounded(metrics::ROW_RADIUS)
             .text_color(fg)
-            .when(selected, |s| {
-                s.bg(t.tab_selected()).shadow(vec![BoxShadow {
-                    color: black().opacity(t.shadow_alpha(0.15, 0.05)),
-                    offset: point(px(0.), px(0.8)),
-                    blur_radius: px(1.5),
-                    spread_radius: px(0.),
-                    inset: false,
-                }])
-            })
-            .when(in_split && !selected, |s| s.bg(t.tab_selected().opacity(0.55)))
+            .when_some(row_bg, |s, bg| s.bg(bg))
+            .when(selected, |s| s.shadow(t.tab_selected_shadow()))
             .when(!selected, |s| s.hover(|s| s.bg(t.tab_hover())))
             .when(multi, |s| s.border_1().border_color(t.primary.opacity(0.8)))
             .cursor_pointer()
-            .child(div().relative().child(favicon(fav.clone(), px(15.), asleep, cx)).when(loading, |s| {
-                s.child(
-                    div()
-                        .absolute()
-                        .bottom(px(-2.))
-                        .right(px(-2.))
-                        .size(px(5.))
-                        .rounded_full()
-                        .bg(t.status_info),
-                )
-            }))
-            .child(match renaming {
-                Some(input) => div()
-                    .flex_1()
-                    .child(Input::new(&input).appearance(false).bordered(false))
-                    .into_any_element(),
-                None => div().flex_1().min_w_0().truncate().child(title.clone()).into_any_element(),
-            })
-            // Speaker while the tab plays sound (click to mute), crossed out
-            // while muted (click to unmute).
-            .when(muted || audible, |s| {
-                s.child(
-                    div()
-                        .id("mute")
-                        .size(px(18.))
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .rounded(metrics::RADIUS_MD)
-                        .hover(|s| s.bg(t.sidebar_foreground.opacity(0.10)))
-                        .child(icon(if muted { "volume-x" } else { "volume-2" }, px(11.), fg))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.toggle_mute(id, cx);
-                        })),
-                )
-            })
             .child(
                 div()
-                    .id("close")
-                    .size(px(18.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(metrics::RADIUS_MD)
-                    .invisible()
-                    .when(selected, |s| s.visible())
-                    .group_hover(group, |s| s.visible())
-                    .hover(|s| s.bg(t.sidebar_foreground.opacity(0.10)))
-                    .child(icon("x", px(11.), fg))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        this.close_tab(id, true, window, cx);
-                    })),
+                    .relative()
+                    .child(favicon(fav.clone(), metrics::FAVICON, false, cx))
+                    .when(loading, |s| {
+                        s.child(
+                            div()
+                                .absolute()
+                                .bottom(px(-2.))
+                                .right(px(-2.))
+                                .size(px(5.))
+                                .rounded_full()
+                                .bg(t.status_info),
+                        )
+                    }),
             )
+            .child(title_el)
+            .when(sound, |s| s.child(mute_button("mute", cx)))
+            // Close appears on hover only, for the selected row too (Zen).
+            // Hover may only toggle visibility, never `display`: GPUI panics
+            // when an element's display differs between prepaint and paint,
+            // which happens whenever rows shift under a resting pointer.
+            .map(|row| match hover_backing {
+                // The title keeps the whole row until hover; the buttons then
+                // cover its end on the row's own (hover) colour.
+                Some(backing) => row.child(
+                    h_flex()
+                        .absolute()
+                        .top(px(2.))
+                        .bottom(px(2.))
+                        .right(px(6.))
+                        .invisible()
+                        .group_hover(group.clone(), |s| s.visible())
+                        .child(div().w(px(24.)).h_full().bg(fade_to(backing)))
+                        .child(
+                            h_flex()
+                                .h_full()
+                                .items_center()
+                                .bg(backing)
+                                .when(sound, |s| s.child(mute_button("mute-hover", cx)))
+                                .child(close_button(cx)),
+                        ),
+                ),
+                // Under a gradient wash (or while renaming) there is no single
+                // colour to cover the title with, so the button keeps its slot.
+                None => row.child(close_button(cx).invisible().group_hover(group.clone(), |s| s.visible())),
+            })
             .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| {
                 let m = ev.modifiers();
                 if m.secondary() {
@@ -927,68 +1092,114 @@ impl Browser {
             .into_any_element()
     }
 
-    fn render_bottom_bar(&mut self, cx: &mut Context<Self>) -> Div {
+    /// The bottom bar; `bar_width` is the width its buttons and chips share.
+    fn render_bottom_bar(&mut self, bar_width: f32, cx: &mut Context<Self>) -> Div {
         let t = cx.tokens().clone();
         let active = self.ws.active_space;
         let ai = self.settings.ai_integration_enabled;
         let ai_open = self.assistant_visible;
-        let chips: Vec<AnyElement> = self
-            .ws
-            .spaces
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                let id = s.id;
-                let is_active = id == active;
-                let symbol = s.symbol.clone();
-                div()
-                    .id(("space-chip", i))
-                    .size(px(30.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded(metrics::RADIUS)
-                    .opacity(if is_active { 1.0 } else { 0.45 })
-                    .hover(|s| s.opacity(if is_active { 1.0 } else { 0.75 }).bg(t.ghost_hover()))
-                    .cursor_pointer()
-                    .child(icon(&symbol, if is_active { px(15.) } else { px(13.) }, t.sidebar_foreground))
-                    .tooltip({
-                        let name: SharedString = s.name.clone().into();
-                        move |window, cx| gpui_kit::component::tooltip::Tooltip::new(name.clone()).build(window, cx)
-                    })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if this.ws.active_space == id {
-                            this.begin_rename(RenameTarget::Space(id), window, cx);
-                        } else {
-                            this.switch_space(id, window, cx);
-                        }
-                    }))
-                    .on_mouse_down(
-                        MouseButton::Right,
-                        cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
-                            cx.stop_propagation();
-                            this.menu = Some(OpenMenu {
-                                kind: MenuKind::Space(id),
-                                position: ev.position,
-                            });
-                            cx.notify();
-                        }),
-                    )
-                    .drag_over::<DraggedTab>(move |s, _, _, _| s.bg(t.primary.opacity(0.2)))
-                    .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
-                        this.drop_tab(d.id, DropTarget::Space(id), window, cx)
-                    }))
-                    .into_any_element()
-            })
-            .collect();
+        let button = metrics::TOOLBAR_BUTTON;
+        // Zen's switcher: a dot per space (an icon when the user picked one),
+        // the active one brighter; hidden while there is only one space.
+        let (rest, current) = if t.dark {
+            (white().opacity(0.27), white().opacity(0.62))
+        } else {
+            (black().opacity(0.25), black().opacity(0.6))
+        };
+        let hover = if t.dark { white().opacity(0.45) } else { black().opacity(0.42) };
+        // Zen spaces its dots 32px apart; with more spaces they close up to
+        // fit between the buttons before the row starts to scroll.
+        let buttons = if ai { 3. } else { 2. };
+        let room = bar_width - buttons * f32::from(button);
+        let count = self.ws.spaces.len().max(1) as f32;
+        let pitch = (room / count).clamp(16., 32.);
+        let chip = px(pitch.min(24.));
+        let gap = px((pitch - 24.).max(0.));
+        // Centred while they fit; once they overflow they start at the left
+        // edge so the row can scroll to every chip (centring would push the
+        // first ones out of reach).
+        let overflow = pitch * count > room + 0.5;
+        let chips: Vec<AnyElement> = if self.ws.spaces.len() < 2 {
+            Vec::new()
+        } else {
+            self.ws
+                .spaces
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    let id = s.id;
+                    let is_active = id == active;
+                    let color = if is_active { current } else { rest };
+                    let glyph: AnyElement = if s.symbol == DEFAULT_SPACE_SYMBOL {
+                        div()
+                            .size(px(8.))
+                            .rounded_full()
+                            .bg(color)
+                            .when(!is_active, |d| d.group_hover("space-chip", |d| d.bg(hover)))
+                            .into_any_element()
+                    } else {
+                        icon(&s.symbol, px(14.), color).into_any_element()
+                    };
+                    div()
+                        .id(("space-chip", i))
+                        .group("space-chip")
+                        .size(chip)
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.))
+                        .hover(|s| s.bg(t.tab_hover()))
+                        .cursor_pointer()
+                        .child(glyph)
+                        .tooltip({
+                            let name: SharedString = s.name.clone().into();
+                            move |window, cx| gpui_kit::component::tooltip::Tooltip::new(name.clone()).build(window, cx)
+                        })
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            if this.ws.active_space == id {
+                                this.begin_rename(RenameTarget::Space(id), window, cx);
+                            } else {
+                                this.switch_space(id, window, cx);
+                            }
+                        }))
+                        .on_mouse_down(
+                            MouseButton::Right,
+                            cx.listener(move |this, ev: &MouseDownEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.menu = Some(OpenMenu {
+                                    kind: MenuKind::Space(id),
+                                    position: ev.position,
+                                });
+                                cx.notify();
+                            }),
+                        )
+                        .drag_over::<DraggedTab>(move |s, _, _, _| s.bg(t.primary.opacity(0.2)))
+                        .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
+                            this.drop_tab(d.id, DropTarget::Space(id), window, cx)
+                        }))
+                        .into_any_element()
+                })
+                .collect()
+        };
 
         h_flex()
-            .h(px(46.))
+            .h(px(40.))
             .flex_none()
-            .gap_1()
+            .ml(px(-4.))
+            .mr(px(-3.))
+            .child(
+                icon_button("library", "library-big", button, true, cx).flex_none().on_click(cx.listener(
+                    |this, _, _, cx| {
+                        this.panel = (this.panel != Some(Panel::Library)).then_some(Panel::Library);
+                        cx.notify();
+                    },
+                )),
+            )
             .when(ai, |s| {
                 s.child(
-                    icon_button("assistant", "sparkles", px(30.), true, cx)
+                    icon_button("assistant", "sparkles", button, true, cx)
+                        .flex_none()
                         .when(ai_open, |b| b.bg(t.primary.opacity(0.2)))
                         .on_click(cx.listener(|this, _, window, cx| this.toggle_assistant(window, cx))),
                 )
@@ -998,28 +1209,80 @@ impl Browser {
                     .id("space-switcher")
                     .flex_1()
                     .min_w_0()
-                    .justify_center()
-                    .gap_0p5()
+                    .when(!overflow, |s| s.justify_center())
+                    .gap(gap)
                     .overflow_x_scroll()
                     .children(chips),
             )
             .child(
-                icon_button("settings", "settings", px(30.), true, cx).on_click(cx.listener(
-                    |this, _, window, cx| this.toggle_settings(window, cx),
-                )),
-            )
-            .child(
-                icon_button("new-menu", "plus", px(30.), true, cx).on_click(cx.listener(
-                    |this, ev: &ClickEvent, _, cx| {
+                div()
+                    .id("new-menu")
+                    .size(button)
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .justify_center()
+                    .rounded(metrics::RADIUS)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(t.ghost_hover()))
+                    .active(|s| s.bg(t.ghost_pressed()))
+                    .child(icon("plus", px(14.), t.sidebar_foreground.opacity(if t.dark { 0.65 } else { 0.6 })))
+                    .on_click(cx.listener(|this, ev: &ClickEvent, _, cx| {
                         this.menu = Some(OpenMenu {
                             kind: MenuKind::NewMenu,
                             position: ev.position(),
                         });
                         cx.notify();
-                    },
-                )),
+                    })),
             )
     }
+}
+
+/// A horizontal fade from transparent into `color`, laid over the end of
+/// text that runs under something drawn on `color`.
+fn fade_to(color: Hsla) -> Background {
+    linear_gradient(
+        90.,
+        linear_color_stop(color.opacity(0.), 0.),
+        linear_color_stop(color, 1.),
+    )
+}
+
+/// A lettered tile for a site without a favicon, coloured from its host so
+/// pins stay tellable apart.
+fn monogram(host: &str, cx: &App) -> AnyElement {
+    let Some(letter) = mori_core::theme::monogram_letter(host) else {
+        return favicon(None, metrics::FAVICON, false, cx);
+    };
+    div()
+        .size(metrics::FAVICON)
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(4.))
+        .bg(crate::theme::hsla(mori_core::theme::monogram_color(host)))
+        .text_size(px(10.))
+        .font_weight(FontWeight::BOLD)
+        .text_color(white())
+        .child(letter.to_string())
+        .into_any_element()
+}
+
+/// Empty header space that moves the window (client-side decorations);
+/// a double click maximizes.
+fn window_drag_area(id: &'static str) -> Stateful<Div> {
+    div()
+        .id(id)
+        .flex_1()
+        .h_full()
+        .on_mouse_down(MouseButton::Left, |ev: &MouseDownEvent, window, _| {
+            if ev.click_count == 2 {
+                window.zoom_window();
+            } else {
+                window.start_window_move();
+            }
+        })
 }
 
 /// Minimize / maximize / close buttons, shown only when Mori draws its own

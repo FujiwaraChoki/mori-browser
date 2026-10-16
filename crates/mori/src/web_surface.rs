@@ -111,7 +111,7 @@ impl WebSurface {
             popup_dirty: false,
             file_drag: false,
             cursor: CursorKind::Arrow,
-            corner_radius: px(10.),
+            corner_radius: crate::theme::metrics::CARD_RADIUS,
             bounds: Bounds::default(),
             pressed: None,
             hovered: false,

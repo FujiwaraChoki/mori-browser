@@ -491,7 +491,7 @@ impl Browser {
                     .my(px(4.))
                     .mx_2()
                     .h(px(1.))
-                    .bg(t.border.opacity(0.6))
+                    .bg(t.popover_separator())
                     .into_any_element(),
                 Entry::Header(text) => div()
                     .h(px(26.))

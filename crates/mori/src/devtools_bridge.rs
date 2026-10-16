@@ -192,6 +192,8 @@ fn detach(view: &WebView) {
         };
         view.devtools_call(method, params, |_| {});
     }
+    // The media reset also dropped Mori's light/dark emulation.
+    mori_engine::reapply_color_scheme(view);
 }
 
 /// Ask the page which node is at `(x, y)` and tell the frontend to select
