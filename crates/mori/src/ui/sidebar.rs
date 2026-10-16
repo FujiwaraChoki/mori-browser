@@ -816,6 +816,7 @@ impl Browser {
         let active = self.ws.active_space;
         let ai = self.settings.ai_integration_enabled;
         let ai_open = self.assistant_visible;
+        let menu_closed = self.menu.is_none();
         let chips: Vec<AnyElement> = self
             .ws
             .spaces
@@ -836,9 +837,12 @@ impl Browser {
                     .hover(|s| s.opacity(if is_active { 1.0 } else { 0.75 }).bg(t.ghost_hover()))
                     .cursor_pointer()
                     .child(icon(&symbol, if is_active { px(15.) } else { px(13.) }, t.sidebar_foreground))
-                    .tooltip({
-                        let name: SharedString = s.name.clone().into();
-                        move |window, cx| gpui_kit::component::tooltip::Tooltip::new(name.clone()).build(window, cx)
+                    // A space's menu opens over its chip; its tooltip mustn't cover it.
+                    .when(menu_closed, |chip| {
+                        chip.tooltip({
+                            let name: SharedString = s.name.clone().into();
+                            move |window, cx| gpui_kit::component::tooltip::Tooltip::new(name.clone()).build(window, cx)
+                        })
                     })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         if this.ws.active_space == id {
@@ -896,15 +900,16 @@ impl Browser {
                 )),
             )
             .child(
-                icon_button("new-menu", "plus", px(30.), true, cx).on_click(cx.listener(
-                    |this, ev: &ClickEvent, _, cx| {
+                icon_button("new-menu", "plus", px(30.), true, cx)
+                    .relative()
+                    .child(crate::ui::menus::anchor_probe(crate::ui::menus::NEW_MENU_ANCHOR))
+                    .on_click(cx.listener(|this, ev: &ClickEvent, _, cx| {
                         this.menu = Some(OpenMenu {
                             kind: MenuKind::NewMenu,
                             position: ev.position(),
                         });
                         cx.notify();
-                    },
-                )),
+                    })),
             )
     }
 }

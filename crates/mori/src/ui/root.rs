@@ -27,7 +27,7 @@ impl Browser {
         } else if self.peek.is_some() {
             self.close_peek(window, cx);
         } else if self.menu.is_some() {
-            self.menu = None;
+            self.close_menu(window, cx);
         } else if self.launcher.is_some() {
             self.close_launcher(window, cx);
         } else if self.rename.is_some() {

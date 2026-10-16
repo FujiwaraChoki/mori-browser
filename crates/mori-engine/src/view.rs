@@ -160,6 +160,12 @@ pub struct ContextMenuInfo {
     pub can_select_all: bool,
     pub misspelled_word: Option<String>,
     pub suggestions: Vec<String>,
+    /// State of the right-clicked `<video>`/`<audio>` (with `media_url`).
+    pub media_paused: bool,
+    pub media_muted: bool,
+    pub media_loop: bool,
+    pub media_controls: bool,
+    pub media_has_audio: bool,
 }
 
 /// Something the chrome should react to.

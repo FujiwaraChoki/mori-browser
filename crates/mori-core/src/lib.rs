@@ -11,6 +11,7 @@ pub mod boosts;
 pub mod history;
 pub mod launcher;
 pub mod omnibox;
+pub mod page_actions;
 pub mod paths;
 pub mod routes;
 pub mod scripts;

@@ -75,7 +75,7 @@ pub fn available(browser: &Browser) -> Vec<CommandInfo> {
     add(Downloads, "Downloads", "files", "download", Some("secondary-shift-j"));
     add(NewSpace, "New Space", "context create", "layers", None);
     add(RenameSpace, "Rename Space", "context", "pencil", None);
-    add(ClearDownloads, "Clear Finished Downloads", "", "trash-2", None);
+    add(ClearDownloads, "Clear Finished Downloads", "", "trash", None);
     add(DevTools, "Developer Tools", "inspect console", "code", Some("secondary-shift-i"));
     add(Print, "Print…", "pdf", "printer", Some("secondary-p"));
     if browser.multi_select.len() >= 2 {
