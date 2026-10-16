@@ -2829,9 +2829,7 @@ impl Browser {
                         .and_then(|_| navigation::http_fallback(&url, code));
                     if let Some(http) = fallback {
                         self.typed_https.remove(&id);
-                        if let Some(t) = self.ws.tab_mut(id) {
-                            t.url = http.clone();
-                        }
+                        self.ws.set_url(id, &http);
                         if let Some(live) = self.live.get_mut(&id) {
                             live.error = None;
                             live.view.load_url(&http);

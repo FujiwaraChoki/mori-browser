@@ -16,6 +16,8 @@ pub enum Command {
     NewPrivateWindow,
     MoveTabToNewWindow,
     NewSpace,
+    NextSpace,
+    PrevSpace,
     NewFolderWithSelected,
     ReaderView,
     CaptureVisibleTab,
@@ -96,6 +98,10 @@ pub fn available(browser: &Browser) -> Vec<CommandInfo> {
     add(Library, "History & Bookmarks", "library archive", "library", Some("secondary-y"));
     add(Downloads, "Downloads", "files", "download", Some("secondary-shift-j"));
     add(NewSpace, "New Space", "context create", "layers", None);
+    if browser.ws.spaces.len() > 1 {
+        add(NextSpace, "Next Space", "switch context right", "arrow-right", Some("secondary-alt-right"));
+        add(PrevSpace, "Previous Space", "switch context left", "arrow-left", Some("secondary-alt-left"));
+    }
     add(RenameSpace, "Rename Space", "context", "pencil", None);
     add(ClearDownloads, "Clear Finished Downloads", "", "trash", None);
     add(DevTools, "Developer Tools", "inspect console", "code", Some("secondary-shift-i"));
@@ -149,6 +155,8 @@ pub fn run(b: &mut Browser, command: Command, window: &mut Window, cx: &mut Cont
             }
         }
         NewSpace => b.create_space(window, cx),
+        NextSpace => b.step_space(1, window, cx),
+        PrevSpace => b.step_space(-1, window, cx),
         NewFolderWithSelected => {
             let tabs = b.multi_select.clone();
             b.new_folder(tabs, window, cx);
