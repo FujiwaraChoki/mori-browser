@@ -94,6 +94,10 @@ pub enum ToastAction {
     /// Show a file in the file manager.
     Reveal(PathBuf),
     ResetZoom,
+    /// Print a tab (a page asked to with `window.print()`).
+    PrintTab(TabId),
+    /// Print the Peek page.
+    PrintPeek,
 }
 
 #[derive(Clone, Debug)]
@@ -441,6 +445,13 @@ impl Browser {
             ToastAction::OpenDownloads => self.panel = Some(Panel::Downloads),
             ToastAction::Reveal(path) => crate::ui::panels::reveal(&path),
             ToastAction::ResetZoom => self.zoom(0.0, cx),
+            ToastAction::PrintTab(tab) => self.print_tab(tab, cx),
+            ToastAction::PrintPeek => {
+                if let Some(peek) = &self.peek {
+                    let (view, title) = (peek.view.clone(), peek.title.clone());
+                    self.print_view(view, title, cx);
+                }
+            }
         }
         cx.notify();
     }
@@ -507,15 +518,19 @@ impl Browser {
         });
         let selected = self.selected() == Some(id);
         view.set_hidden(!selected);
+        // A view adopted from a popup or Peek has already loaded and will
+        // not report its loading state again.
+        let loading = view.is_loading().unwrap_or(true);
+        let (can_go_back, can_go_forward) = (view.can_go_back(), view.can_go_forward());
         self.live.insert(
             id,
             LiveTab {
                 surface,
                 view,
-                loading: true,
+                loading,
                 progress: 0.0,
-                can_go_back: false,
-                can_go_forward: false,
+                can_go_back,
+                can_go_forward,
                 error: None,
                 find_count: 0,
                 find_active: 0,
@@ -543,6 +558,7 @@ impl Browser {
             live.view.close();
         }
         self.drop_devtools(id, cx);
+        self.drop_popup_of(id, cx);
         self.dialogs.retain(|(t, _)| *t != id);
         self.permissions.retain(|(t, _)| *t != id);
         cx.notify();
@@ -1321,11 +1337,7 @@ impl Browser {
                     let view = peek.view.clone();
                     self.open_file_dialog(view, request, window, cx);
                 }
-                ViewEvent::PrintRequested => {
-                    let view = peek.view.clone();
-                    let title = peek.title.clone();
-                    self.print_view(view, title, cx);
-                }
+                ViewEvent::PrintRequested => self.offer_print(ToastAction::PrintPeek, cx),
                 _ => {}
             }
         }
@@ -1590,7 +1602,7 @@ impl Browser {
                         self.open_file_dialog(view, request, window, cx);
                     }
                 }
-                ViewEvent::PrintRequested => self.print_tab(id, cx),
+                ViewEvent::PrintRequested => self.offer_print(ToastAction::PrintTab(id), cx),
                 ViewEvent::FindResult { count, active, .. } => {
                     // Intermediate updates report ordinal 0; keep the last real one.
                     if let Some(live) = self.live.get_mut(&id) {

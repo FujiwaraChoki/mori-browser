@@ -151,6 +151,19 @@ impl Browser {
 
     // ---- Printing ------------------------------------------------------------------
 
+    /// A page called `window.print()`. Printing writes a file and opens
+    /// the system viewer, so a page must not do it on its own (or in a
+    /// loop): ask first, with one toast that repeated calls only replace.
+    pub(super) fn offer_print(&mut self, action: ToastAction, cx: &mut Context<Self>) {
+        self.toast_keyed(
+            "print",
+            "This page wants to print",
+            ToastStyle::Info,
+            Some(("Print".into(), action)),
+            cx,
+        );
+    }
+
     /// Print the selected page (⌘P / the Print command).
     pub fn print_selected(&mut self, cx: &mut Context<Self>) {
         if let Some(id) = self.selected() {

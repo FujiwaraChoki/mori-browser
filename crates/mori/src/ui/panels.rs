@@ -510,7 +510,10 @@ fn file_icon(name: &str) -> &'static str {
 }
 
 pub fn open_path(path: &std::path::Path) {
-    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    if let Ok(mut child) = std::process::Command::new("xdg-open").arg(path).spawn() {
+        // Reap it, or every open leaves a zombie behind until Mori exits.
+        std::thread::spawn(move || child.wait());
+    }
 }
 
 /// Show a file in the file manager (its folder, with the file selected

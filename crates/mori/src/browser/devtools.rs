@@ -38,6 +38,15 @@ impl Browser {
     /// Inspect the element at `(x, y)` of `tab`'s page, opening DevTools if
     /// needed.
     pub fn inspect_element(&mut self, tab: TabId, x: i32, y: i32, window: &mut Window, cx: &mut Context<Self>) {
+        // The menu reports view pixels; the protocol wants CSS pixels,
+        // which differ by the page zoom.
+        let factor = self
+            .live
+            .get(&tab)
+            .map(|l| mori_core::zoom::factor_for_level(l.view.zoom_level()))
+            .filter(|f| *f > 0.0)
+            .unwrap_or(1.0);
+        let (x, y) = ((x as f64 / factor).round() as i32, (y as f64 / factor).round() as i32);
         match self.devtools.get(&tab) {
             Some(pane) => {
                 let token = pane.token.clone();

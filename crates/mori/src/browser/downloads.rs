@@ -105,7 +105,11 @@ impl Browser {
         let Some((tab, opener)) = self
             .live
             .iter()
-            .find(|(_, l)| l.view.id() == source && l.blank_popup)
+            // Never a tab that already shows a document, even one still
+            // loading (a page may start a download before it finishes).
+            .find(|(_, l)| {
+                l.view.id() == source && l.blank_popup && matches!(l.view.url().as_str(), "" | "about:blank")
+            })
             .map(|(tab, l)| (*tab, l.opener))
         else {
             return;

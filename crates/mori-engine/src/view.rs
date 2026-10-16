@@ -655,6 +655,11 @@ impl WebView {
         }
     }
 
+    /// Whether the page is loading, or `None` before its browser exists.
+    pub fn is_loading(&self) -> Option<bool> {
+        self.0.browser.borrow().as_ref().map(|b| b.is_loading() == 1)
+    }
+
     pub fn can_go_back(&self) -> bool {
         self.0
             .browser

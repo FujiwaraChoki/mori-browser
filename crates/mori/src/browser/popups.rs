@@ -120,6 +120,18 @@ impl Browser {
         cx.notify();
     }
 
+    /// The popup floats over its opener: it goes when the opener's page
+    /// does (tab closed or put to sleep).
+    pub(super) fn drop_popup_of(&mut self, opener: TabId, cx: &mut Context<Self>) {
+        if self.popup.as_ref().is_some_and(|p| p.opener == opener)
+            && let Some(popup) = self.popup.take()
+        {
+            EngineHub::unregister(cx, popup.view.id());
+            popup.view.close();
+            cx.notify();
+        }
+    }
+
     /// Move the popup's page into a tab next to its opener.
     pub fn popup_to_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(popup) = self.popup.take() else { return };
