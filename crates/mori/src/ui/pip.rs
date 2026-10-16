@@ -65,6 +65,9 @@ pub struct PipWindow {
     /// Holds the window's keyboard focus so key presses reach
     /// [`PipWindow::forward_key`].
     focus: FocusHandle,
+    /// Where the left button went down, until the pointer has moved far
+    /// enough to drag the window (a press on a control stays a click).
+    press: Option<Point<Pixels>>,
     _frames: Subscription,
     _poll: Task<()>,
 }
@@ -100,7 +103,16 @@ impl PipWindow {
                 cx.background_executor().timer(RECT_POLL).await;
             }
         });
-        PipWindow { browser, tab, surface, rect: None, focus: cx.focus_handle(), _frames: frames, _poll: poll }
+        PipWindow {
+            browser,
+            tab,
+            surface,
+            rect: None,
+            focus: cx.focus_handle(),
+            press: None,
+            _frames: frames,
+            _poll: poll,
+        }
     }
 
     fn with_browser(&self, cx: &mut App, f: impl FnOnce(&mut Browser, &mut Window, &mut Context<Browser>) + 'static) {
@@ -130,6 +142,10 @@ impl PipWindow {
     }
 }
 
+/// How far (in pixels, along both axes) the pointer moves with the button
+/// held before the window follows.
+const DRAG_THRESHOLD: f32 = 4.;
+
 impl Render for PipWindow {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let t = cx.tokens().clone();
@@ -146,8 +162,11 @@ impl Render for PipWindow {
                 .justify_center()
                 .rounded_full()
                 .cursor_pointer()
-                .bg(black().opacity(0.55))
-                .hover(|s| s.bg(black().opacity(0.75)))
+                // Reads on the black letterbox bars as well as on video.
+                .bg(rgba(0x282828cc))
+                .border_1()
+                .border_color(white().opacity(0.18))
+                .hover(|s| s.bg(rgba(0x3c3c3ce6)))
                 .child(icon(glyph, (size * 0.5).round(), white()))
         };
         div()
@@ -161,7 +180,27 @@ impl Render for PipWindow {
             .border_1()
             .border_color(t.border.opacity(0.4))
             .track_focus(&self.focus)
-            .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
+            // Dragging moves the window. The move starts once the pointer
+            // has travelled a little: started on the press, the compositor
+            // would take the pointer and the controls would never see the
+            // release that makes their click.
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, _, _| this.press = Some(ev.position)),
+            )
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, _, _, _| this.press = None))
+            .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, _| {
+                let Some(start) = this.press else { return };
+                if ev.pressed_button != Some(MouseButton::Left) {
+                    this.press = None;
+                    return;
+                }
+                let d = ev.position - start;
+                if f32::from(d.x).abs() + f32::from(d.y).abs() >= DRAG_THRESHOLD {
+                    this.press = None;
+                    window.start_window_move();
+                }
+            }))
             .on_key_down(cx.listener(|this, ev: &KeyDownEvent, _, cx| {
                 this.forward_key(PlatformInput::KeyDown(ev.clone()), cx);
             }))
