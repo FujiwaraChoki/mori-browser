@@ -313,9 +313,13 @@ fn restore(cx: &mut App) {
     // From disk, or the stores of an open Little Mori window (with the
     // saved workspace).
     let first = seed_for(WindowKind::Normal, cx);
-    let saved = if first.ephemeral_session || std::env::var_os("MORI_START_URL").is_some() {
+    let throwaway = first.ephemeral_session || std::env::var_os("MORI_START_URL").is_some();
+    let saved = if throwaway {
         Vec::new()
     } else {
+        // Spaces deleted last run (deleting is undoable until then) let go
+        // of their profiles.
+        with(|r| r.profiles.retain_spaces(|s| first.ws.space(s).is_some()));
         WindowSession::load(&mori_core::paths::data_dir()).windows
     };
     let saved = WindowSession { windows: saved }.restore(&first.ws);

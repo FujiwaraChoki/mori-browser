@@ -91,12 +91,15 @@ everything, Little Mori shares all but its one-page workspace, private
 windows only preferences). `mori_core::windows::adopt_workspace` keeps each
 window's own selection over the shared tabs, and one window writes the
 stores. A tab's running page lives in one window and moves when another
-window shows it.
+window shows it; a window whose page went away (its window closed, or the
+page slept) loads it again. A run that starts with Little Mori or a private
+window restores the saved windows when Mori proper first opens.
 
 Pages run in a `mori_engine::BrowsingContext`: CEF's global context, a
 persistent context per profile (`<profile root>/Profile-<id>`, assigned to
 spaces in `mori_core::profiles`), or an in-memory context shared by the open
-private windows.
+private windows. Little Mori opens its page in the profile of the space
+"Open in …" would take it to.
 
 ## Mori 2: SwiftUI on Chromium (macOS)
 
