@@ -972,6 +972,18 @@ impl Browser {
     /// Air Traffic Control sends each into the space its rule names; the
     /// first link is selected and the rest follow it in order.
     pub fn open_external_urls(&mut self, inputs: &[String], window: &mut Window, cx: &mut Context<Self>) {
+        if inputs.is_empty() {
+            return;
+        }
+        // The command bar a blank start tab opened yields to the handed-off
+        // pages (it would otherwise sit over the page that replaced it).
+        if self
+            .launcher
+            .as_ref()
+            .is_some_and(|l| l.read(cx).mode() == LauncherMode::NewTab && l.read(cx).query(cx).is_empty())
+        {
+            self.close_launcher(window, cx);
+        }
         let mut first: Option<TabId> = None;
         let mut last_in_space: HashMap<SpaceId, TabId> = HashMap::new();
         for input in inputs {

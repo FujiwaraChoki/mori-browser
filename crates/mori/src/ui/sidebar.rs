@@ -291,6 +291,7 @@ impl Browser {
         let zoom = self.selected_zoom_level();
         let zoom_label = (is_web && !mori_core::zoom::is_default(zoom))
             .then(|| format!("{}%", mori_core::zoom::percent_for_level(zoom)));
+        let has_zoom_chip = zoom_label.is_some();
 
         // Zen shows the bare host; only insecure pages and the empty state
         // get a leading glyph.
@@ -414,7 +415,9 @@ impl Browser {
         // panics when an element's display differs between prepaint and
         // paint, which happens whenever the layout shifts under a resting
         // pointer (a menu closing, a row disappearing).
-        match t.opaque_on_sidebar(t.tile_rest()) {
+        // The hover overlay would cover the zoom chip, so while the chip shows
+        // the actions keep their own slots instead.
+        match t.opaque_on_sidebar(t.tile_rest()).filter(|_| !has_zoom_chip) {
             // The host keeps the whole pill until hover; the actions then
             // slide in over its end on the pill's own colour.
             Some(backing) => {

@@ -276,7 +276,7 @@ impl Launcher {
         });
     }
 
-    fn query(&self, cx: &App) -> String {
+    pub fn query(&self, cx: &App) -> String {
         self.input.read(cx).value().to_string()
     }
 
