@@ -503,6 +503,9 @@ impl Browser {
             live.view.set_hidden(*tab != id && Some(*tab) != split);
         }
         if let Some(find) = &self.find_bar {
+            if let Some(prev) = previous_selected.filter(|p| *p != id).and_then(|p| self.live.get(&p)) {
+                prev.view.stop_finding(true);
+            }
             find.update(cx, |f, cx| f.reset_results(cx));
         }
         self.focus_selected_page(window, cx);
@@ -1013,24 +1016,29 @@ impl Browser {
         if self.selected_view().is_none() {
             return;
         }
-        let bar = self
-            .find_bar
-            .get_or_insert_with(|| cx.new(|cx| FindBar::new(window, cx)))
-            .clone();
-        let sub = cx.subscribe_in(&bar, window, |this, _, ev: &FindBarEvent, window, cx| {
-            let Some(view) = this.selected_view() else { return };
-            match ev {
-                FindBarEvent::Search { text, forward, next } => {
-                    if text.is_empty() {
-                        view.stop_finding(true);
-                    } else {
-                        view.find(text, *forward, false, *next);
+        let bar = match &self.find_bar {
+            Some(bar) => bar.clone(),
+            None => {
+                let bar = cx.new(|cx| FindBar::new(window, cx));
+                let sub = cx.subscribe_in(&bar, window, |this, _, ev: &FindBarEvent, window, cx| {
+                    let Some(view) = this.selected_view() else { return };
+                    match ev {
+                        FindBarEvent::Search { text, forward, next } => {
+                            if text.is_empty() {
+                                view.stop_finding(true);
+                            } else {
+                                view.find(text, *forward, false, *next);
+                            }
+                        }
+                        FindBarEvent::Close => this.close_find(window, cx),
                     }
-                }
-                FindBarEvent::Close => this.close_find(window, cx),
+                });
+                // The bar owns its handler, so Ctrl+F again never adds another.
+                bar.update(cx, |b, _| b.hold(sub));
+                self.find_bar = Some(bar.clone());
+                bar
             }
-        });
-        self._subscriptions.push(sub);
+        };
         bar.update(cx, |b, cx| b.focus(window, cx));
         cx.notify();
     }
@@ -1526,17 +1534,18 @@ impl Browser {
                     save = true;
                 }
                 ViewEvent::CloseRequested => self.close_tab(id, true, window, cx),
-                ViewEvent::FindResult { count, active, .. } => {
+                ViewEvent::FindResult { count, active, final_update } => {
                     // Intermediate updates report ordinal 0; keep the last real one.
                     if let Some(live) = self.live.get_mut(&id) {
                         live.find_count = count;
                         if active > 0 || count == 0 {
                             live.find_active = active;
                         }
-                        let active = live.find_active;
-                        if let Some(bar) = &self.find_bar {
-                            bar.update(cx, |b, cx| b.set_results(count, active, cx));
-                        }
+                    }
+                    if self.selected() == Some(id)
+                        && let Some(bar) = &self.find_bar
+                    {
+                        bar.update(cx, |b, cx| b.set_results(count, active, final_update, cx));
                     }
                 }
                 ViewEvent::ContextMenu(info) => {
