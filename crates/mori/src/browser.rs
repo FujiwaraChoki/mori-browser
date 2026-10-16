@@ -273,6 +273,10 @@ pub struct Browser {
     sidebar_hide: Option<Task<()>>,
     pub sidebar_drag: Option<f32>,
     pub multi_select: Vec<TabId>,
+    /// A blank tab made for the address bar ("New Tab in Folder", "New Tab
+    /// Below") and the tab selected before it: dismissing the address bar
+    /// without going anywhere removes it again.
+    pub pending_blank: Option<(TabId, Option<TabId>)>,
     /// The assistant panel, kept alive while hidden so its conversation and
     /// Codex server survive toggling.
     pub assistant: Option<Entity<crate::ui::assistant::AssistantPanel>>,
@@ -373,6 +377,7 @@ impl Browser {
             sidebar_hide: None,
             sidebar_drag: None,
             multi_select: Vec::new(),
+            pending_blank: None,
             assistant: None,
             assistant_visible: false,
             split: None,
@@ -590,15 +595,22 @@ impl Browser {
                 self.schedule_save(cx);
             }
             ToastAction::UndoArchive { closed, entry } => {
-                self.archive.remove(entry);
-                let tab = self.ws.restore_tab(*closed);
-                self.select_tab(tab, window, cx);
+                // Already reopened from Library > Archive: nothing to undo.
+                if self.archive.remove(entry).is_some() {
+                    let tab = self.ws.restore_tab(*closed);
+                    self.select_tab(tab, window, cx);
+                }
             }
             ToastAction::UndoDeleteSpace(deleted) => {
                 let (deleted, routes) = *deleted;
                 let space = self.ws.restore_space(deleted);
                 self.routes.restore(routes);
-                self.switch_space(space, window, cx);
+                // A deleted background space comes back in the background.
+                if self.ws.active_space == space {
+                    self.switch_space(space, window, cx);
+                } else {
+                    cx.notify();
+                }
                 self.schedule_save(cx);
             }
             ToastAction::UndoClearHistory(cleared) => {
@@ -1567,6 +1579,7 @@ impl Browser {
     // ---- Launcher ------------------------------------------------------------
 
     pub fn open_launcher(&mut self, mode: LauncherMode, window: &mut Window, cx: &mut Context<Self>) {
+        self.pending_blank = None;
         if let Some(launcher) = &self.launcher {
             let same = launcher.read(cx).mode() == mode;
             if same && mode == LauncherMode::NewTab {
@@ -1597,8 +1610,28 @@ impl Browser {
 
     pub fn close_launcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.launcher.take().is_some() {
+            if let Some((blank, previous)) = self.pending_blank.take()
+                && self.ws.tab(blank).is_some_and(|t| Self::is_internal(&t.url))
+            {
+                self.close_tab_quietly(blank, previous, window, cx);
+            }
             self.focus_selected_page(window, cx);
             cx.notify();
+        }
+    }
+
+    /// Open the address bar for `blank`, a tab just made for it; dismissing
+    /// it removes the tab and goes back to `previous`.
+    pub fn open_launcher_for_blank(
+        &mut self,
+        blank: TabId,
+        previous: Option<TabId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_launcher(LauncherMode::Address, window, cx);
+        if self.launcher.is_some() {
+            self.pending_blank = Some((blank, previous));
         }
     }
 
@@ -1608,6 +1641,10 @@ impl Browser {
             .as_ref()
             .map(|l| l.read(cx).mode() == LauncherMode::NewTab)
             .unwrap_or(true);
+        if !matches!(ev, LauncherEvent::Dismiss) {
+            // Going somewhere: the blank tab is used (or replaced) now.
+            self.pending_blank = None;
+        }
         match ev {
             LauncherEvent::Dismiss => self.close_launcher(window, cx),
             LauncherEvent::OpenInput(text) => {

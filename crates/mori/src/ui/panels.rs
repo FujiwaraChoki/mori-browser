@@ -429,6 +429,14 @@ impl Browser {
                                     .map(|e| e.id);
                                 if let Some(id) = found {
                                     this.archive.remove(id);
+                                    // Its "Archived … Undo" toast would bring
+                                    // back a second copy.
+                                    this.toasts.retain(|t| {
+                                        !matches!(
+                                            &t.action,
+                                            Some((_, crate::browser::ToastAction::UndoArchive { entry, .. })) if *entry == id
+                                        )
+                                    });
                                 }
                             }
                             this.open_url(&url, true, window, cx);

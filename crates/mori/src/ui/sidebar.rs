@@ -644,24 +644,37 @@ impl Browser {
         // Resize drags (sidebar edge, split divider) aren't tab drags.
         let tab_drag = cx.has_active_drag()
             && cx.active_drag_cursor_style() != Some(CursorStyle::ResizeColumn);
+        // The cell floats over what follows (the space header) instead of
+        // pushing it down: every row must stay where the user saw it when
+        // the drag began, or drops land one row off. Painted on top and
+        // occluding, so the drop goes to it alone.
+        let backing = t.opaque_on_sidebar(t.tile_rest());
         let end_cell = tab_drag.then(|| {
-            div()
-                .id("pin-end")
-                .h(px(30.))
-                .rounded(metrics::RADIUS)
-                .border_1()
-                .border_dashed()
-                .border_color(t.sidebar_foreground.opacity(0.18))
-                .drag_over::<DraggedTab>(move |s, _, _, _| {
-                    s.bg(t.primary.opacity(0.14)).border_color(t.primary.opacity(0.7))
-                })
-                .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
-                    this.drop_tab(d.id, DropTarget::PinnedEnd(space_id), window, cx)
-                }))
+            deferred(
+                div()
+                    .id("pin-end")
+                    .absolute()
+                    .top_full()
+                    .left_0()
+                    .right_0()
+                    .h(px(30.))
+                    .occlude()
+                    .rounded(metrics::RADIUS)
+                    .when_some(backing, |s, bg| s.bg(bg))
+                    .border_1()
+                    .border_dashed()
+                    .border_color(t.sidebar_foreground.opacity(0.18))
+                    .drag_over::<DraggedTab>(move |s, _, _, _| {
+                        s.bg(t.primary.opacity(0.14)).border_color(t.primary.opacity(0.7))
+                    })
+                    .on_drop(cx.listener(move |this, d: &DraggedTab, window, cx| {
+                        this.drop_tab(d.id, DropTarget::PinnedEnd(space_id), window, cx)
+                    })),
+            )
         });
         // Essentials-style grid: rows of up to four tiles that always fill
         // the sidebar's width, balanced so no row has holes.
-        let mut rows = v_flex().id("pinned-grid").gap(px(7.)).pb(px(4.));
+        let mut rows = v_flex().id("pinned-grid").relative().gap(px(7.)).pb(px(4.));
         for len in mori_core::theme::balanced_rows(tiles.len(), 4) {
             let rest = tiles.split_off(len);
             rows = rows.child(h_flex().gap(px(7.)).children(std::mem::replace(&mut tiles, rest)));

@@ -171,12 +171,13 @@ fn entries(b: &Browser, kind: &MenuKind) -> Vec<Entry> {
             vec![
                 item("New Tab in Folder", "plus", move |b, w, cx| {
                     let url = b.settings.new_tab_url().to_string();
+                    let previous = b.selected();
                     let id = b.new_tab_with_url(&url, w, cx);
                     if let Some((space, f)) = b.ws.find_folder(fid) {
                         let end = f.tab_ids.len();
                         b.ws.move_tab(id, space, mori_core::workspace::Slot::Folder(fid, end));
                     }
-                    b.open_launcher(LauncherMode::Address, w, cx);
+                    b.open_launcher_for_blank(id, previous, w, cx);
                 }),
                 item("Rename Folder", "pencil", move |b, w, cx| {
                     b.begin_rename(RenameTarget::Folder(fid), w, cx)
@@ -288,9 +289,10 @@ fn tab_entries(b: &Browser, id: TabId) -> Vec<Entry> {
     let mut v = vec![
         item("New Tab Below", "plus", move |b, w, cx| {
             let url = b.settings.new_tab_url().to_string();
+            let previous = b.selected();
             let new_id = b.ws.add_child_tab(TabRecord::new(url), id, None);
             b.select_tab(new_id, w, cx);
-            b.open_launcher(LauncherMode::Address, w, cx);
+            b.open_launcher_for_blank(new_id, previous, w, cx);
         }),
         Entry::Separator,
         item("Reload Tab", "rotate-cw", move |b, w, cx| match b.live.get(&id) {
