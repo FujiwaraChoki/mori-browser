@@ -15,6 +15,7 @@ pub mod maintenance;
 pub mod navigation;
 pub mod omnibox;
 pub mod page_actions;
+pub mod passwords;
 pub mod paths;
 pub mod persist;
 pub mod prompts;

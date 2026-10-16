@@ -13,3 +13,6 @@ serde_json = { workspace = true, features = ["float_roundtrip"] }
 url.workspace = true
 uuid.workspace = true
 dirs.workspace = true
+# Passwords: wiping secrets from memory, and the generator's random source.
+zeroize = "1"
+getrandom = "0.4"
