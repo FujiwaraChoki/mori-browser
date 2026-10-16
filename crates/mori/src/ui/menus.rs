@@ -7,7 +7,7 @@ use gpui_kit::*;
 use mori_core::workspace::TabId;
 
 use crate::{
-    browser::{Browser, MenuKind, NEW_TAB_URL, RenameTarget, ToastStyle},
+    browser::{Browser, MenuKind, RenameTarget, ToastStyle},
     commands::{self, Command},
     theme::{ActiveTokens, metrics},
     ui::{
@@ -88,7 +88,8 @@ fn entries(b: &Browser, kind: &MenuKind) -> Vec<Entry> {
                     b.begin_rename(RenameTarget::Folder(fid), w, cx)
                 }),
                 item("New Tab in Folder", "plus", move |b, w, cx| {
-                    let id = b.new_tab_with_url(NEW_TAB_URL, w, cx);
+                    let url = b.settings.new_tab_url().to_string();
+                    let id = b.new_tab_with_url(&url, w, cx);
                     if let Some((space, f)) = b.ws.find_folder(fid) {
                         let end = f.tab_ids.len();
                         b.ws.move_tab(id, space, mori_core::workspace::Slot::Folder(fid, end));
@@ -276,7 +277,9 @@ fn tab_entries(b: &Browser, id: TabId) -> Vec<Entry> {
         }
     }));
     v.push(item("Close Other Tabs", "x", move |b, w, cx| b.close_other_tabs(id, w, cx)));
-    v.push(item("Close Tabs Below", "x", move |b, w, cx| b.close_tabs_below(id, w, cx)));
+    if b.ws.active().loose.contains(&id) {
+        v.push(item("Close Tabs Below", "x", move |b, w, cx| b.close_tabs_below(id, w, cx)));
+    }
     v.push(item("Close Tab", "x", move |b, w, cx| b.close_tab(id, true, w, cx)).shortcut("secondary-w"));
     v
 }

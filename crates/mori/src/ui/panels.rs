@@ -402,11 +402,7 @@ impl Browser {
                         .text_color(t.destructive)
                         .cursor_pointer()
                         .child("Clear browsing history")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.history.clear();
-                            this.schedule_save(cx);
-                            this.toast("History cleared", crate::browser::ToastStyle::Success, None, cx);
-                        })),
+                        .on_click(cx.listener(|this, _, _, cx| this.clear_history(cx))),
                 )
             })
     }

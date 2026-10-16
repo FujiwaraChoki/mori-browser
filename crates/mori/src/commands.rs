@@ -4,7 +4,7 @@ use gpui_kit::*;
 use mori_core::workspace::SpaceId;
 
 use crate::{
-    browser::{Browser, NEW_TAB_URL, Panel, RenameTarget, ToastStyle},
+    browser::{Browser, Panel, RenameTarget, ToastStyle},
     ui::launcher::LauncherMode,
 };
 
@@ -114,7 +114,8 @@ pub fn run(b: &mut Browser, command: Command, window: &mut Window, cx: &mut Cont
     use Command::*;
     match command {
         NewTab => {
-            b.new_tab_with_url(NEW_TAB_URL, window, cx);
+            let url = b.settings.new_tab_url().to_string();
+            b.new_tab_with_url(&url, window, cx);
             b.open_launcher(LauncherMode::NewTab, window, cx);
         }
         NewSpace => b.create_space(window, cx),
@@ -131,10 +132,7 @@ pub fn run(b: &mut Browser, command: Command, window: &mut Window, cx: &mut Cont
         ReopenClosedTab => b.reopen_closed_tab(window, cx),
         FindInPage => b.open_find(window, cx),
         ToggleSidebar => b.toggle_sidebar(cx),
-        Settings => {
-            b.settings_open = true;
-            cx.notify();
-        }
+        Settings => b.set_settings_open(true, window, cx),
         RenameSpace => {
             let id = b.ws.active_space;
             b.begin_rename(RenameTarget::Space(id), window, cx);
