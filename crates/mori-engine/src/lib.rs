@@ -29,9 +29,9 @@ pub use downloads::{
     unique_path,
 };
 pub use view::{
-    ContextMenuInfo, CursorKind, DialogId, DialogKind, Disposition, Frame, JsDialog, MouseButton,
-    PermissionId, PermissionKind, PermissionRequest, PopupFrame, ViewEvent, ViewId, WebView,
-    take_dirty_views,
+    AuthId, AuthRequest, CertErrorId, CertificateError, ContextMenuInfo, CursorKind, DialogId,
+    DialogKind, Disposition, Frame, JsDialog, MouseButton, PermissionId, PermissionKind,
+    PermissionRequest, PopupFrame, UnhandledKey, ViewEvent, ViewId, WebView, take_dirty_views,
 };
 
 /// Configuration for [`initialize`].

@@ -139,6 +139,43 @@ pub struct PermissionRequest {
     pub kinds: Vec<PermissionKind>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct AuthId(pub u64);
+
+/// A server or proxy asked for HTTP credentials (Basic/Digest/NTLM).
+#[derive(Clone, Debug)]
+pub struct AuthRequest {
+    pub id: AuthId,
+    /// Origin of the page that made the request.
+    pub origin: String,
+    pub host: String,
+    pub port: i32,
+    pub realm: String,
+    pub scheme: String,
+    pub is_proxy: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct CertErrorId(pub u64);
+
+/// A navigation hit an invalid TLS certificate and waits for a decision.
+#[derive(Clone, Debug)]
+pub struct CertificateError {
+    pub id: CertErrorId,
+    pub url: String,
+    /// Chromium net error code, e.g. -202 (`ERR_CERT_AUTHORITY_INVALID`).
+    pub code: i32,
+}
+
+/// A key press the page did not consume (no `preventDefault`), reported so
+/// the chrome can run a browser shortcut bound to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnhandledKey {
+    pub windows_key_code: i32,
+    /// `keys::MOD_*` flags.
+    pub modifiers: u32,
+}
+
 /// What the user right-clicked on.
 #[derive(Clone, Debug, Default)]
 pub struct ContextMenuInfo {
@@ -215,6 +252,9 @@ pub enum ViewEvent {
     DialogsReset,
     PermissionPrompt(PermissionRequest),
     PermissionDismissed(PermissionId),
+    AuthRequired(AuthRequest),
+    CertificateError(CertificateError),
+    UnhandledKey(UnhandledKey),
     TextSelectionChanged(String),
     /// Composition character bounds in view coordinates, for IME placement.
     ImeCompositionBounds(Vec<(i32, i32, i32, i32)>),
@@ -251,6 +291,8 @@ pub(crate) struct ViewInner {
     pub pending_url: RefCell<Option<String>>,
     pub dialogs: RefCell<HashMap<DialogId, JsdialogCallback>>,
     pub permissions: RefCell<HashMap<PermissionId, PendingPermission>>,
+    pub auths: RefCell<HashMap<AuthId, AuthCallback>>,
+    pub cert_errors: RefCell<HashMap<CertErrorId, Callback>>,
     pub evals: RefCell<HashMap<i32, EvalCallback>>,
     pub devtools_registration: RefCell<Option<Registration>>,
     pub closing: Cell<bool>,
@@ -261,7 +303,8 @@ pub(crate) struct ViewInner {
 }
 
 pub(crate) enum PendingPermission {
-    Prompt(PermissionPromptCallback),
+    /// Chromium's prompt id, so a withdrawn prompt can be matched.
+    Prompt(PermissionPromptCallback, u64),
     Media(MediaAccessCallback, u32),
 }
 
@@ -302,6 +345,8 @@ impl ViewInner {
             pending_url: RefCell::new(None),
             dialogs: RefCell::new(HashMap::new()),
             permissions: RefCell::new(HashMap::new()),
+            auths: RefCell::new(HashMap::new()),
+            cert_errors: RefCell::new(HashMap::new()),
             evals: RefCell::new(HashMap::new()),
             devtools_registration: RefCell::new(None),
             closing: Cell::new(false),
@@ -346,6 +391,18 @@ impl Drop for ViewInner {
 /// Views that received events or paints since the last call.
 pub fn take_dirty_views() -> Vec<ViewId> {
     DIRTY.with(|d| d.borrow_mut().drain().collect())
+}
+
+/// The live view showing Chromium browser `browser_id`.
+pub(crate) fn view_for_browser(browser_id: i32) -> Option<Rc<ViewInner>> {
+    VIEWS.with(|v| {
+        v.borrow().values().filter_map(Weak::upgrade).find(|view| {
+            view.browser
+                .borrow()
+                .as_ref()
+                .is_some_and(|b| b.identifier() == browser_id)
+        })
+    })
 }
 
 pub(crate) fn close_all_views() {
@@ -746,13 +803,25 @@ impl WebView {
 
     /// Evaluate `expression` in the main frame and receive its JSON-encoded
     /// value (or an error string). Uses the DevTools protocol, so the result
-    /// cannot be spoofed by page script.
+    /// cannot be spoofed by page script. The page gets no user activation,
+    /// so background work cannot unlock popups, autoplay or fullscreen.
     pub fn evaluate(
         &self,
         expression: &str,
         callback: impl FnOnce(Result<serde_json::Value, String>) + 'static,
     ) {
-        crate::devtools::evaluate(&self.0, expression, Box::new(callback));
+        crate::devtools::evaluate(&self.0, expression, false, Box::new(callback));
+    }
+
+    /// Like [`WebView::evaluate`], but runs as a user gesture. Only for
+    /// scripts that carry out something the user just asked for (paste,
+    /// a media button, an approved assistant action).
+    pub fn evaluate_as_user(
+        &self,
+        expression: &str,
+        callback: impl FnOnce(Result<serde_json::Value, String>) + 'static,
+    ) {
+        crate::devtools::evaluate(&self.0, expression, true, Box::new(callback));
     }
 
     pub fn find(&self, text: &str, forward: bool, match_case: bool, find_next: bool) {
@@ -836,8 +905,38 @@ impl WebView {
     // ---- Prompts ----------------------------------------------------------
 
     pub fn resolve_dialog(&self, id: DialogId, accept: bool, text: Option<&str>) {
-        if let Some(cb) = self.0.dialogs.borrow_mut().remove(&id) {
+        // Release the borrow first: Chromium re-enters on_reset_dialog_state
+        // from inside cont().
+        let cb = self.0.dialogs.borrow_mut().remove(&id);
+        if let Some(cb) = cb {
             cb.cont(accept as _, text.map(CefString::from).as_ref());
+        }
+    }
+
+    /// Answer an [`AuthRequest`]: `Some((user, password))` retries the
+    /// request with credentials, `None` cancels it.
+    pub fn resolve_auth(&self, id: AuthId, credentials: Option<(&str, &str)>) {
+        let cb = self.0.auths.borrow_mut().remove(&id);
+        if let Some(cb) = cb {
+            match credentials {
+                Some((user, password)) => {
+                    cb.cont(Some(&CefString::from(user)), Some(&CefString::from(password)))
+                }
+                None => cb.cancel(),
+            }
+        }
+    }
+
+    /// Answer a [`CertificateError`]: `proceed` loads the page anyway (and
+    /// Chromium remembers the exception for this session).
+    pub fn resolve_certificate_error(&self, id: CertErrorId, proceed: bool) {
+        let cb = self.0.cert_errors.borrow_mut().remove(&id);
+        if let Some(cb) = cb {
+            if proceed {
+                cb.cont();
+            } else {
+                cb.cancel();
+            }
         }
     }
 
@@ -846,7 +945,7 @@ impl WebView {
             return;
         };
         match pending {
-            PendingPermission::Prompt(cb) => cb.cont(if allow {
+            PendingPermission::Prompt(cb, _) => cb.cont(if allow {
                 PermissionRequestResult::ACCEPT
             } else {
                 PermissionRequestResult::DENY
@@ -858,6 +957,19 @@ impl WebView {
     }
 
     // ---- Lifetime ---------------------------------------------------------
+
+    /// Ask the page to close, running its `beforeunload` handler first. If
+    /// the page (or the user, through a [`DialogKind::BeforeUnload`] dialog)
+    /// agrees, a [`ViewEvent::CloseRequested`] follows; otherwise nothing.
+    pub fn request_close(&self) {
+        if self.0.closing.get() {
+            return;
+        }
+        match self.0.host() {
+            Some(host) => host.close_browser(false as _),
+            None => self.0.push(ViewEvent::CloseRequested),
+        }
+    }
 
     /// Close the browser. Emits [`ViewEvent::Closed`] once Chromium is done.
     pub fn close(&self) {
@@ -872,6 +984,14 @@ impl WebView {
         let ids: Vec<_> = self.0.permissions.borrow().keys().copied().collect();
         for id in ids {
             self.resolve_permission(id, false);
+        }
+        let auths: Vec<_> = self.0.auths.borrow_mut().drain().collect();
+        for (_, cb) in auths {
+            cb.cancel();
+        }
+        let certs: Vec<_> = self.0.cert_errors.borrow_mut().drain().collect();
+        for (_, cb) in certs {
+            cb.cancel();
         }
         match self.0.host() {
             Some(host) => host.close_browser(true as _),

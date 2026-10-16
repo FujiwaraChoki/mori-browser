@@ -7,7 +7,7 @@ use mori_core::settings::SidebarPosition;
 
 use crate::{
     actions::*,
-    browser::{Browser, Panel},
+    browser::{Browser, PageOwner, Panel},
     commands::{self, Command},
     theme::{ActiveTokens, metrics},
     ui::{
@@ -22,6 +22,8 @@ impl Browser {
         // the key goes on to the page.
         if self.zapping.is_some() {
             self.finish_zap(cx);
+        } else if self.cancel_front_modal(window, cx) {
+            // A page's dialog or sign-in prompt took the key.
         } else if self.boost_editor.is_some() {
             self.boost_editor = None;
         } else if self.peek.is_some() {
@@ -39,8 +41,6 @@ impl Browser {
         } else if self.settings_open {
             self.settings_open = false;
             self.focus_selected_page(window, cx);
-        } else if !self.dialogs.is_empty() {
-            self.resolve_dialog(false, window, cx);
         } else if self.selected_live().is_some_and(|l| l.error.is_some()) {
             if let Some(id) = self.selected()
                 && let Some(l) = self.live.get_mut(&id)
@@ -157,11 +157,8 @@ impl Browser {
         if let Some(err) = error {
             card = card.child(self.render_error(err, cx));
         }
-        if let Some(dialog) = self.render_js_dialog(cx) {
-            card = card.child(dialog);
-        }
-        if let Some(prompt) = self.render_permission(cx) {
-            card = card.child(prompt);
+        if let Some(id) = selected.filter(|_| !self.settings_open) {
+            card = card.children(self.render_page_prompts(PageOwner::Tab(id), cx));
         }
         card.drag_over::<crate::ui::sidebar::DraggedTab>(move |s, _, _, _| {
             s.border_2().border_color(t.primary.opacity(0.7))
@@ -178,6 +175,8 @@ impl Browser {
         let live = self.live.get(&id)?;
         let t = cx.tokens().clone();
         let loading = live.loading;
+        let surface = live.surface.clone();
+        let prompts = self.render_page_prompts(PageOwner::Tab(id), cx);
         Some(
             div()
                 .id("split-card")
@@ -190,7 +189,8 @@ impl Browser {
                 .border_1()
                 .border_color(t.border.opacity(0.7))
                 .shadow(t.card_shadow())
-                .child(live.surface.clone())
+                .child(surface)
+                .children(prompts)
                 .when(loading, |s| s.child(loading_bar(cx)))
                 .child(
                     div()
@@ -567,8 +567,14 @@ impl Render for Browser {
             .on_action(cx.listener(|this, _: &ZoomReset, _, cx| this.zoom(0.0, cx)))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &ToggleAssistant, window, cx| this.toggle_assistant(window, cx)))
-            .on_action(cx.listener(|this, _: &OpenSettings, _, cx| {
+            .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 this.settings_open = !this.settings_open;
+                // Settings replace the page, which can't keep the keyboard.
+                if this.settings_open {
+                    window.focus(&this.focus_handle, cx);
+                } else {
+                    this.focus_selected_page(window, cx);
+                }
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &CopyUrl, _, cx| this.copy_url(cx)))

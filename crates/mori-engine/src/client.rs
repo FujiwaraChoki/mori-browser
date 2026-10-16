@@ -14,9 +14,9 @@ use std::{
 use cef::*;
 
 use crate::view::{
-    ContextMenuInfo, CursorKind, DialogId, DialogKind, Disposition, Frame, JsDialog,
-    PendingPermission, PermissionId, PermissionKind, PermissionRequest, PopupFrame, ViewEvent,
-    ViewInner, WebView, next_token,
+    AuthId, AuthRequest, CertErrorId, CertificateError, ContextMenuInfo, CursorKind, DialogId,
+    DialogKind, Disposition, Frame, JsDialog, PendingPermission, PermissionId, PermissionKind,
+    PermissionRequest, PopupFrame, UnhandledKey, ViewEvent, ViewInner, WebView, next_token,
 };
 
 thread_local! {
@@ -69,6 +69,7 @@ pub(crate) fn build_client(inner: &Rc<ViewInner>) -> Client {
         PermissionHandlerImpl::new(weak.clone()),
         ContextMenuHandlerImpl::new(weak.clone()),
         FindHandlerImpl::new(weak.clone()),
+        KeyboardHandlerImpl::new(weak.clone()),
         crate::downloads::build_handler(weak),
     )
 }
@@ -118,6 +119,7 @@ wrap_client! {
         permission: PermissionHandler,
         context_menu: ContextMenuHandler,
         find: FindHandler,
+        keyboard: KeyboardHandler,
         download: DownloadHandler,
     }
 
@@ -131,6 +133,7 @@ wrap_client! {
         fn permission_handler(&self) -> Option<PermissionHandler> { Some(self.permission.clone()) }
         fn context_menu_handler(&self) -> Option<ContextMenuHandler> { Some(self.context_menu.clone()) }
         fn find_handler(&self) -> Option<FindHandler> { Some(self.find.clone()) }
+        fn keyboard_handler(&self) -> Option<KeyboardHandler> { Some(self.keyboard.clone()) }
         fn download_handler(&self) -> Option<DownloadHandler> { Some(self.download.clone()) }
     }
 }
@@ -686,6 +689,87 @@ wrap_request_handler! {
                 view.push(ViewEvent::RenderProcessGone);
             }
         }
+
+        /// Runs on Chromium's IO thread, so it must not touch the view (an
+        /// `Rc`); the request is handed to the UI thread instead.
+        fn auth_credentials(
+            &self,
+            browser: Option<&mut Browser>,
+            origin_url: Option<&CefString>,
+            is_proxy: ::std::os::raw::c_int,
+            host: Option<&CefString>,
+            port: ::std::os::raw::c_int,
+            realm: Option<&CefString>,
+            scheme: Option<&CefString>,
+            callback: Option<&mut AuthCallback>,
+        ) -> ::std::os::raw::c_int {
+            let (Some(browser), Some(callback)) = (browser, callback) else { return 0 };
+            let mut task = AuthTask::new(
+                browser.identifier(),
+                cef_str(origin_url),
+                is_proxy == 1,
+                cef_str(host),
+                port,
+                cef_str(realm),
+                cef_str(scheme),
+                callback.clone(),
+            );
+            post_task(ThreadId::UI, Some(&mut task))
+        }
+
+        fn on_certificate_error(
+            &self,
+            _browser: Option<&mut Browser>,
+            cert_error: Errorcode,
+            request_url: Option<&CefString>,
+            _ssl_info: Option<&mut Sslinfo>,
+            callback: Option<&mut Callback>,
+        ) -> ::std::os::raw::c_int {
+            let (Some(view), Some(callback)) = (self.view.upgrade(), callback) else { return 0 };
+            let code: cef::sys::cef_errorcode_t = cert_error.into();
+            let id = CertErrorId(next_token());
+            view.cert_errors.borrow_mut().insert(id, callback.clone());
+            view.push(ViewEvent::CertificateError(CertificateError {
+                id,
+                url: cef_str(request_url),
+                code: code as i32,
+            }));
+            1
+        }
+    }
+}
+
+// Delivers an HTTP auth challenge from the IO thread to the view.
+wrap_task! {
+    pub(crate) struct AuthTask {
+        browser_id: ::std::os::raw::c_int,
+        origin: String,
+        is_proxy: bool,
+        host: String,
+        port: ::std::os::raw::c_int,
+        realm: String,
+        scheme: String,
+        callback: AuthCallback,
+    }
+
+    impl Task {
+        fn execute(&self) {
+            let Some(view) = crate::view::view_for_browser(self.browser_id) else {
+                self.callback.cancel();
+                return;
+            };
+            let id = AuthId(next_token());
+            view.auths.borrow_mut().insert(id, self.callback.clone());
+            view.push(ViewEvent::AuthRequired(AuthRequest {
+                id,
+                origin: self.origin.clone(),
+                host: self.host.clone(),
+                port: self.port,
+                realm: self.realm.clone(),
+                scheme: self.scheme.clone(),
+                is_proxy: self.is_proxy,
+            }));
+        }
     }
 }
 
@@ -747,7 +831,16 @@ wrap_jsdialog_handler! {
 
         fn on_reset_dialog_state(&self, _browser: Option<&mut Browser>) {
             let Some(view) = self.view.upgrade() else { return };
-            view.dialogs.borrow_mut().clear();
+            // Chromium calls this from inside JsdialogCallback::cont(); a
+            // panic here would abort the whole browser.
+            let stale = match view.dialogs.try_borrow_mut() {
+                Ok(mut dialogs) => std::mem::take(&mut *dialogs),
+                Err(_) => {
+                    log::warn!("dialog state reset while dialogs are borrowed");
+                    Default::default()
+                }
+            };
+            drop(stale);
             view.push(ViewEvent::DialogsReset);
         }
     }
@@ -829,7 +922,7 @@ wrap_permission_handler! {
         fn on_show_permission_prompt(
             &self,
             _browser: Option<&mut Browser>,
-            _prompt_id: u64,
+            prompt_id: u64,
             requesting_origin: Option<&CefString>,
             requested_permissions: u32,
             callback: Option<&mut PermissionPromptCallback>,
@@ -838,13 +931,31 @@ wrap_permission_handler! {
             let id = PermissionId(next_token());
             view.permissions
                 .borrow_mut()
-                .insert(id, PendingPermission::Prompt(callback.clone()));
+                .insert(id, PendingPermission::Prompt(callback.clone(), prompt_id));
             view.push(ViewEvent::PermissionPrompt(PermissionRequest {
                 id,
                 origin: cef_str(requesting_origin),
                 kinds: permission_kinds(requested_permissions),
             }));
             1
+        }
+
+        fn on_dismiss_permission_prompt(
+            &self,
+            _browser: Option<&mut Browser>,
+            prompt_id: u64,
+            _result: PermissionRequestResult,
+        ) {
+            // Chromium withdrew the prompt itself (navigation, tab closed).
+            let Some(view) = self.view.upgrade() else { return };
+            let id = view.permissions.borrow().iter().find_map(|(id, p)| match p {
+                PendingPermission::Prompt(_, pid) if *pid == prompt_id => Some(*id),
+                _ => None,
+            });
+            if let Some(id) = id {
+                view.permissions.borrow_mut().remove(&id);
+                view.push(ViewEvent::PermissionDismissed(id));
+            }
         }
     }
 }
@@ -903,6 +1014,36 @@ wrap_context_menu_handler! {
                 suggestions: suggestions.into_iter().map(|s| s.to_string()).collect(),
             };
             view.push(ViewEvent::ContextMenu(info));
+        }
+    }
+}
+
+// ---- Keyboard ---------------------------------------------------------------
+
+wrap_keyboard_handler! {
+    pub(crate) struct KeyboardHandlerImpl {
+        view: Weak<ViewInner>,
+    }
+
+    impl KeyboardHandler {
+        /// Chromium offers every key the page did not consume (no
+        /// `preventDefault`) here, after the renderer had its turn. Report
+        /// key presses so the chrome can run a browser shortcut, the way
+        /// Chrome lets pages override most of its shortcuts.
+        fn on_key_event(
+            &self,
+            _browser: Option<&mut Browser>,
+            event: Option<&KeyEvent>,
+            _os_event: Option<&mut cef::sys::XEvent>,
+        ) -> ::std::os::raw::c_int {
+            let (Some(view), Some(event)) = (self.view.upgrade(), event) else { return 0 };
+            if matches!(event.type_, KeyEventType::RAWKEYDOWN | KeyEventType::KEYDOWN) {
+                view.push(ViewEvent::UnhandledKey(UnhandledKey {
+                    windows_key_code: event.windows_key_code,
+                    modifiers: event.modifiers,
+                }));
+            }
+            0
         }
     }
 }

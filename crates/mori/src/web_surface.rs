@@ -5,26 +5,39 @@
 //! rounded corners. Mouse, wheel, keyboard and IME input are translated back
 //! into Chromium events.
 
-use std::{ops::Range, sync::Arc};
+use std::{collections::VecDeque, ops::Range, sync::Arc, time::Duration};
 
 use gpui_kit::*;
 use mori_engine::{
-    CursorKind, Frame, WebView,
+    CursorKind, Frame, UnhandledKey, WebView,
     keys::{self, KeyInput, KeyPhase},
 };
 use smallvec::SmallVec;
 
+use crate::{
+    actions::SURFACE_CONTEXT,
+    theme::{ActiveTokens, metrics},
+};
+
 /// Pixels scrolled per wheel "line" for devices that report lines.
 const LINE_HEIGHT_PX: f32 = 50.0;
 
+/// How long the pointer rests before a page tooltip (`title=`) appears.
+const TOOLTIP_DELAY: Duration = Duration::from_millis(500);
+
+/// Shortcut key presses awaiting the page's verdict, oldest first. Handled
+/// keys never come back, so the queue is kept short.
+const MAX_PENDING_SHORTCUTS: usize = 8;
+
 /// What the chrome needs to hear about from a page surface.
 pub enum SurfaceEvent {
-    /// A click or key press reached the page (a user gesture), so it may
+    /// A click or command key reached the page (a user gesture), so it may
     /// have just copied something.
     Interacted,
     /// The user pressed the paste shortcut; the chrome syncs the system
-    /// clipboard into Chromium and then pastes.
-    PasteRequested { plain: bool },
+    /// clipboard into Chromium and then replays `key` (down and up) so the
+    /// page gets its keydown and Chromium pastes.
+    PasteRequested { key: KeyInput },
 }
 
 pub struct WebSurface {
@@ -47,7 +60,19 @@ pub struct WebSurface {
     composition_bounds: Vec<Bounds<Pixels>>,
     had_focus: bool,
     /// Grayed out and non-interactive, e.g. behind a modal.
-    pub inert: bool,
+    inert: bool,
+    /// Browser shortcuts sent to the page first: `(Chromium key signature,
+    /// keystroke)`, matched against unhandled-key reports.
+    pending_shortcuts: VecDeque<((i32, u32), Keystroke)>,
+    /// The paste key whose release the chrome replays itself.
+    paste_key_up: Option<String>,
+    /// Sub-pixel scroll left over from precise (touchpad) deltas.
+    scroll_remainder: (f32, f32),
+    /// Last pointer position over the page, view coordinates.
+    pointer: Point<Pixels>,
+    /// The page's tooltip text and whether its delay has passed.
+    tooltip: Option<(SharedString, bool)>,
+    _tooltip_timer: Option<Task<()>>,
 }
 
 impl WebSurface {
@@ -69,6 +94,103 @@ impl WebSurface {
             composition_bounds: Vec::new(),
             had_focus: false,
             inert: false,
+            pending_shortcuts: VecDeque::new(),
+            paste_key_up: None,
+            scroll_remainder: (0., 0.),
+            pointer: Point::default(),
+            tooltip: None,
+            _tooltip_timer: None,
+        }
+    }
+
+    /// Gray the page out and stop input to it, e.g. while one of its
+    /// dialogs is open.
+    pub fn set_inert(&mut self, inert: bool, cx: &mut Context<Self>) {
+        if self.inert == inert {
+            return;
+        }
+        self.inert = inert;
+        if inert {
+            if self.pressed.take().is_some() {
+                self.view.send_capture_lost();
+            }
+            self.hide_tooltip(cx);
+        }
+        cx.notify();
+    }
+
+    /// Tell Chromium the page lost focus. GPUI focus is synced on render,
+    /// which no longer happens once the surface leaves the tree (a
+    /// background tab), so hiding a page must blur it explicitly.
+    pub fn blur(&mut self) {
+        if self.had_focus {
+            self.had_focus = false;
+            self.view.set_focus(false);
+            self.view.send_capture_lost();
+        }
+    }
+
+    /// Chromium reported the page's tooltip (`title=`) text.
+    pub fn set_tooltip(&mut self, text: Option<String>, cx: &mut Context<Self>) {
+        let Some(text) = text.map(|t| t.trim().to_string()).filter(|t| !t.is_empty()) else {
+            self.hide_tooltip(cx);
+            return;
+        };
+        if self.tooltip.as_ref().is_some_and(|(t, _)| t.as_ref() == text) {
+            return;
+        }
+        let shown = self.tooltip.as_ref().is_some_and(|(_, shown)| *shown);
+        self.tooltip = Some((text.into(), shown));
+        if !shown {
+            self._tooltip_timer = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(TOOLTIP_DELAY).await;
+                let _ = this.update(cx, |this, cx| {
+                    if let Some((_, shown)) = this.tooltip.as_mut() {
+                        *shown = true;
+                        cx.notify();
+                    }
+                });
+            }));
+        }
+        cx.notify();
+    }
+
+    fn hide_tooltip(&mut self, cx: &mut Context<Self>) {
+        self._tooltip_timer = None;
+        if self.tooltip.take().is_some_and(|(_, shown)| shown) {
+            cx.notify();
+        }
+    }
+
+    /// The browser shortcut this keystroke would run if the page leaves it
+    /// unhandled: a binding in the browser's key context that the page's
+    /// context hides (see `actions::bind_keys`).
+    fn page_first_shortcut(ks: &Keystroke, window: &Window, cx: &App) -> Option<Box<dyn Action>> {
+        let mut stack = window.context_stack();
+        if !stack.iter().any(|c| c.contains(SURFACE_CONTEXT)) {
+            return None;
+        }
+        stack.retain(|c| !c.contains(SURFACE_CONTEXT));
+        let keymap = cx.key_bindings();
+        let keymap = keymap.borrow();
+        let (bindings, _) = keymap.bindings_for_input(std::slice::from_ref(ks), &stack);
+        bindings
+            .iter()
+            .find(|b| b.action().name().starts_with("mori::"))
+            .map(|b| b.action().boxed_clone())
+    }
+
+    /// The page did not consume a key press: if it was a browser shortcut
+    /// that was offered to the page first, run it now.
+    pub fn run_unhandled_shortcut(&mut self, key: UnhandledKey, window: &mut Window, cx: &mut App) {
+        let signature = (key.windows_key_code, key.modifiers & keys::MOD_KEYS);
+        let Some(i) = self.pending_shortcuts.iter().position(|(s, _)| *s == signature) else {
+            return;
+        };
+        // Older entries were handled by the page and will not come back.
+        let Some((_, keystroke)) = self.pending_shortcuts.drain(..=i).next_back() else { return };
+        if let Some(action) = Self::page_first_shortcut(&keystroke, window, cx) {
+            window.dispatch_action(action, cx);
         }
     }
 
@@ -160,13 +282,15 @@ impl WebSurface {
         flags
     }
 
-    fn on_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if self.inert {
             return;
         }
+        self.hide_tooltip(cx);
         let ks = &event.keystroke;
         let input = KeyInput {
             key: ks.key.clone(),
+            text: ks.key_char.clone(),
             phase: KeyPhase::Down,
             modifiers: modifier_flags(&ks.modifiers),
             repeat: event.is_held,
@@ -174,32 +298,50 @@ impl WebSurface {
         if !input.is_known() {
             return;
         }
-        // Paste goes through the chrome so the system clipboard is used.
         let m = &ks.modifiers;
+        let command = m.control || m.alt || m.platform;
+        // Paste goes through the chrome so the system clipboard is used.
         let secondary = if cfg!(target_os = "macos") { m.platform } else { m.control };
         if secondary && !m.alt && ks.key == "v" {
-            cx.emit(SurfaceEvent::PasteRequested { plain: m.shift });
+            self.paste_key_up = Some(ks.key.clone());
+            cx.emit(SurfaceEvent::PasteRequested { key: input });
             cx.stop_propagation();
             return;
         }
         self.view.send_key(&input);
+        if let Some(signature) = input.signature()
+            && Self::page_first_shortcut(ks, window, cx).is_some()
+        {
+            if self.pending_shortcuts.len() == MAX_PENDING_SHORTCUTS {
+                self.pending_shortcuts.pop_front();
+            }
+            self.pending_shortcuts.push_back((signature, ks.clone()));
+        }
+        // A command key or button activation may copy something.
+        if command || matches!(ks.key.as_str(), "enter" | "space" | "delete" | "insert") {
+            cx.emit(SurfaceEvent::Interacted);
+        }
         // Printable text without command modifiers comes back through the
         // input handler (IME-aware); everything else is fully handled here.
-        let m = &ks.modifiers;
-        let types_text = ks.key_char.is_some() && !m.control && !m.alt && !m.platform;
+        let types_text = ks.key_char.is_some() && !command;
         if !types_text {
             cx.stop_propagation();
         }
     }
 
-    fn on_key_up(&mut self, event: &KeyUpEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    fn on_key_up(&mut self, event: &KeyUpEvent, _window: &mut Window, _cx: &mut Context<Self>) {
         if self.inert {
             return;
         }
-        cx.emit(SurfaceEvent::Interacted);
         let ks = &event.keystroke;
+        if self.paste_key_up.as_deref() == Some(ks.key.as_str()) {
+            // The chrome sends this release after the replayed press.
+            self.paste_key_up = None;
+            return;
+        }
         self.view.send_key(&KeyInput {
             key: ks.key.clone(),
+            text: ks.key_char.clone(),
             phase: KeyPhase::Up,
             modifiers: modifier_flags(&ks.modifiers),
             repeat: false,
@@ -219,6 +361,15 @@ impl WebSurface {
             }
             e.update(cx, |this, cx| {
                 if this.inert {
+                    return;
+                }
+                this.hide_tooltip(cx);
+                // Mouse side buttons navigate, as in every browser.
+                if let gpui_kit::MouseButton::Navigate(direction) = ev.button {
+                    match direction {
+                        NavigationDirection::Back => this.view.go_back(),
+                        NavigationDirection::Forward => this.view.go_forward(),
+                    }
                     return;
                 }
                 let Some(button) = map_button(ev.button) else { return };
@@ -257,7 +408,7 @@ impl WebSurface {
                 return;
             }
             let hovered = hb.is_hovered(window);
-            e.update(cx, |this, _cx| {
+            e.update(cx, |this, cx| {
                 if this.inert {
                     return;
                 }
@@ -265,8 +416,10 @@ impl WebSurface {
                 let mods = this.mouse_modifiers(&ev.modifiers);
                 if hovered || this.pressed.is_some() {
                     this.view.send_mouse_move(x, y, mods, false);
+                    this.pointer = point(px(x as f32), px(y as f32));
                 } else if this.hovered {
                     this.view.send_mouse_move(x, y, mods, true);
+                    this.hide_tooltip(cx);
                 }
                 this.hovered = hovered;
             });
@@ -278,18 +431,28 @@ impl WebSurface {
             if phase != DispatchPhase::Bubble || !hb.is_hovered(window) {
                 return;
             }
-            e.update(cx, |this, _cx| {
+            e.update(cx, |this, cx| {
                 if this.inert {
                     return;
                 }
+                this.hide_tooltip(cx);
                 let (dx, dy) = match ev.delta {
                     ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
                     ScrollDelta::Lines(l) => (l.x * LINE_HEIGHT_PX, l.y * LINE_HEIGHT_PX),
                 };
+                if ev.touch_phase == TouchPhase::Started {
+                    this.scroll_remainder = (0., 0.);
+                }
+                let (rx, ry) = this.scroll_remainder;
+                let (sx, rx) = accumulate_scroll(rx, dx);
+                let (sy, ry) = accumulate_scroll(ry, dy);
+                this.scroll_remainder = (rx, ry);
+                if sx == 0 && sy == 0 {
+                    return;
+                }
                 let (x, y) = this.local(ev.position);
                 let mods = modifier_flags(&ev.modifiers);
-                this.view
-                    .send_mouse_wheel(x, y, dx.round() as i32, dy.round() as i32, mods);
+                this.view.send_mouse_wheel(x, y, sx, sy, mods);
             });
             cx.stop_propagation();
         });
@@ -304,6 +467,17 @@ fn frame_to_image(frame: Frame) -> Arc<RenderImage> {
         .unwrap_or_else(|| image::RgbaImage::new(width.max(1), height.max(1)));
     let frames: SmallVec<[image::Frame; 1]> = SmallVec::from_elem(image::Frame::new(buffer), 1);
     Arc::new(RenderImage::new(frames))
+}
+
+/// Add a scroll delta to the sub-pixel remainder of earlier ones and split
+/// off the whole pixels to send: `(pixels, new remainder)`. Touchpads send
+/// many sub-pixel deltas during slow scrolls that rounding would drop; a
+/// change of direction discards the old remainder.
+fn accumulate_scroll(remainder: f32, delta: f32) -> (i32, f32) {
+    let remainder = if remainder * delta < 0. { 0. } else { remainder };
+    let total = remainder + delta;
+    let whole = total.trunc();
+    (whole as i32, total - whole)
 }
 
 fn map_button(b: gpui_kit::MouseButton) -> Option<mori_engine::MouseButton> {
@@ -381,10 +555,17 @@ impl Render for WebSurface {
         let cursor = cursor_style(self.cursor);
         let focus_handle = self.focus_handle.clone();
         let inert = self.inert;
+        let tooltip = self
+            .tooltip
+            .as_ref()
+            .filter(|(_, shown)| *shown && !inert)
+            .map(|(text, _)| self.render_tooltip(text.clone(), cx));
 
         div()
             .id("web-surface")
+            .relative()
             .size_full()
+            .key_context(SURFACE_CONTEXT)
             .track_focus(&self.focus_handle)
             .on_key_down(cx.listener(Self::on_key_down))
             .on_key_up(cx.listener(Self::on_key_up))
@@ -430,6 +611,45 @@ impl Render for WebSurface {
                 )
                 .size_full(),
             )
+            .children(tooltip)
+    }
+}
+
+impl WebSurface {
+    /// A small bubble under the pointer, like the native tooltips Chromium
+    /// would show, kept inside the page.
+    fn render_tooltip(&self, text: SharedString, cx: &App) -> AnyElement {
+        let t = cx.tokens();
+        const MAX_WIDTH: f32 = 360.;
+        let width = f32::from(self.bounds.size.width);
+        let height = f32::from(self.bounds.size.height);
+        let x = f32::from(self.pointer.x);
+        let y = f32::from(self.pointer.y);
+        let mut bubble = div()
+            .absolute()
+            .max_w(px(MAX_WIDTH))
+            .px_2()
+            .py_1()
+            .rounded(metrics::RADIUS_MD)
+            .bg(t.popover)
+            .border_1()
+            .border_color(t.border.opacity(0.6))
+            .shadow(t.popover_shadow())
+            .text_size(metrics::TEXT_SMALL)
+            .text_color(t.foreground)
+            .child(text);
+        // Below and right of the pointer; flip when it would leave the page.
+        bubble = if x + MAX_WIDTH + 8. > width {
+            bubble.right(px((width - x).max(8.)))
+        } else {
+            bubble.left(px(x))
+        };
+        bubble = if y + 48. > height {
+            bubble.bottom(px((height - y + 8.).max(8.)))
+        } else {
+            bubble.top(px(y + 20.))
+        };
+        bubble.into_any_element()
     }
 }
 
@@ -529,5 +749,33 @@ impl EntityInputHandler for WebSurface {
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::accumulate_scroll;
+
+    #[test]
+    fn sub_pixel_scrolls_add_up() {
+        // Five 0.4 px touchpad deltas scroll 2 px instead of nothing.
+        let mut remainder = 0.;
+        let mut sent = 0;
+        for _ in 0..5 {
+            let (px, rest) = accumulate_scroll(remainder, 0.4);
+            sent += px;
+            remainder = rest;
+        }
+        assert_eq!(sent, 2);
+        assert!(remainder.abs() < 1e-4);
+    }
+
+    #[test]
+    fn direction_change_drops_the_remainder() {
+        let (px, rest) = accumulate_scroll(0.9, -0.5);
+        assert_eq!(px, 0);
+        assert!((rest + 0.5).abs() < 1e-6);
+        assert_eq!(accumulate_scroll(0., -2.5).0, -2);
+        assert_eq!(accumulate_scroll(0., 50.).0, 50);
     }
 }

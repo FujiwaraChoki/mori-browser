@@ -1,5 +1,11 @@
-//! Background media: a 1s poll of playing tabs and the sidebar mini player
-//! shown while media plays in a tab other than the selected one.
+//! Background media: which tabs play sound (the tab row's speaker), and the
+//! sidebar mini player shown while media plays in a tab other than the
+//! selected one.
+//!
+//! A tab's media is read with a page script, never as a user gesture, and
+//! only when there is reason to: shortly after the page loads or the user
+//! clicks or presses a command key in it, then every second while it plays
+//! (for the mini player's progress) and every few seconds while paused.
 
 use std::time::Duration;
 
@@ -30,6 +36,19 @@ pub struct MediaState {
     pub is_video: bool,
 }
 
+/// Polls between checks of a tab whose media is paused.
+const PAUSED_POLL_TICKS: u64 = 5;
+
+/// Delay before reading a tab's media after a load or a click, so playback
+/// has started (or stopped) by then.
+const CHECK_DELAY: Duration = Duration::from_millis(900);
+
+/// Whether a tab is making sound: its media plays unmuted and the tab is not
+/// muted.
+pub fn is_audible(state: &MediaState, tab_muted: bool) -> bool {
+    state.has_media && state.playing && !state.muted && !tab_muted
+}
+
 /// The most recent media report per tab, plus when it last played.
 #[derive(Clone, Debug, Default)]
 pub struct TabMedia {
@@ -40,9 +59,11 @@ pub struct TabMedia {
 impl Browser {
     pub fn start_media_polling(&mut self, cx: &mut Context<Self>) {
         cx.spawn(async move |this, cx| {
+            let mut tick: u64 = 0;
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                if this.update(cx, |this, cx| this.poll_media(cx)).is_err() {
+                tick += 1;
+                if this.update(cx, |this, cx| this.poll_media(tick, cx)).is_err() {
                     break;
                 }
             }
@@ -50,26 +71,61 @@ impl Browser {
         .detach();
     }
 
-    fn poll_media(&mut self, cx: &mut Context<Self>) {
-        for (id, live) in &self.live {
-            let id = *id;
-            let weak = cx.entity().downgrade();
-            let async_cx = cx.to_async();
-            live.view.evaluate(MEDIA_STATE_SCRIPT, move |result| {
-                let state: MediaState = result
-                    .ok()
-                    .and_then(|v| serde_json::from_value(v).ok())
-                    .unwrap_or_default();
-                let _ = weak.update(&mut async_cx.clone(), |this, cx| this.set_media(id, state, cx));
-            });
+    /// Re-read tabs known to have media; tabs without any are left alone
+    /// until a load or a click gives reason to look.
+    fn poll_media(&mut self, tick: u64, cx: &mut Context<Self>) {
+        self.media.retain(|id, _| self.live.contains_key(id));
+        let due: Vec<TabId> = self
+            .media
+            .iter()
+            .filter(|(_, m)| m.state.playing || tick.is_multiple_of(PAUSED_POLL_TICKS))
+            .map(|(id, _)| *id)
+            .collect();
+        for id in due {
+            self.check_media(id, cx);
         }
-        let live: Vec<TabId> = self.live.keys().copied().collect();
-        self.media.retain(|id, _| live.contains(id));
+    }
+
+    /// Read a tab's media state shortly (see [`CHECK_DELAY`]).
+    pub fn check_media_soon(&mut self, id: TabId, cx: &mut Context<Self>) {
+        if !self.media_checks.insert(id) {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(CHECK_DELAY).await;
+            let _ = this.update(cx, |this, cx| {
+                this.media_checks.remove(&id);
+                this.check_media(id, cx);
+            });
+        })
+        .detach();
+    }
+
+    fn check_media(&mut self, id: TabId, cx: &mut Context<Self>) {
+        let Some(live) = self.live.get(&id) else { return };
+        let weak = cx.entity().downgrade();
+        let async_cx = cx.to_async();
+        live.view.evaluate(MEDIA_STATE_SCRIPT, move |result| {
+            let state: MediaState = result
+                .ok()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+            let _ = weak.update(&mut async_cx.clone(), |this, cx| this.set_media(id, state, cx));
+        });
+    }
+
+    /// The tab is playing sound right now (the tab row shows a speaker).
+    pub fn is_tab_audible(&self, id: TabId) -> bool {
+        let tab_muted = self.live.get(&id).is_some_and(|l| l.muted);
+        self.media.get(&id).is_some_and(|m| is_audible(&m.state, tab_muted))
     }
 
     fn set_media(&mut self, id: TabId, state: MediaState, cx: &mut Context<Self>) {
-        let changed = self.media.get(&id).map(|m| (m.state.playing, m.state.has_media, m.state.title.clone()))
-            != Some((state.playing, state.has_media, state.title.clone()));
+        let changed = self
+            .media
+            .get(&id)
+            .map(|m| (m.state.playing, m.state.muted, m.state.has_media, m.state.title.clone()))
+            != Some((state.playing, state.muted, state.has_media, state.title.clone()));
         if !state.has_media {
             if self.media.remove(&id).is_some() {
                 cx.notify();
@@ -97,9 +153,11 @@ impl Browser {
             .map(|(id, _)| *id)
     }
 
-    pub fn media_command(&mut self, id: TabId, command: MediaCommand) {
+    pub fn media_command(&mut self, id: TabId, command: MediaCommand, cx: &mut Context<Self>) {
         if let Some(live) = self.live.get(&id) {
-            live.view.evaluate(&media_command_script(command), |_| {});
+            // The user pressed a media button: play() may need activation.
+            live.view.evaluate_as_user(&media_command_script(command), |_| {});
+            self.check_media_soon(id, cx);
         }
     }
 
@@ -145,16 +203,16 @@ impl Browser {
                                 .on_click(cx.listener(move |this, _, window, cx| this.select_tab(id, window, cx))),
                         )
                         .child(icon_button("media-back", "rotate-ccw", px(26.), true, cx).on_click(cx.listener(
-                            move |this, _, _, _| this.media_command(id, MediaCommand::SeekBy(-10.0)),
+                            move |this, _, _, cx| this.media_command(id, MediaCommand::SeekBy(-10.0), cx),
                         )))
                         .child(
                             icon_button("media-play", if media.playing { "pause" } else { "play" }, px(28.), true, cx)
-                                .on_click(cx.listener(move |this, _, _, _| {
-                                    this.media_command(id, MediaCommand::TogglePlay)
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.media_command(id, MediaCommand::TogglePlay, cx)
                                 })),
                         )
                         .child(icon_button("media-fwd", "rotate-cw", px(26.), true, cx).on_click(cx.listener(
-                            move |this, _, _, _| this.media_command(id, MediaCommand::SeekBy(10.0)),
+                            move |this, _, _, cx| this.media_command(id, MediaCommand::SeekBy(10.0), cx),
                         ))),
                 )
                 .child(
@@ -166,5 +224,20 @@ impl Browser {
                 )
                 .into_any_element(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MediaState, is_audible};
+
+    #[test]
+    fn audible_only_when_playing_unmuted() {
+        let playing = MediaState { has_media: true, playing: true, ..Default::default() };
+        assert!(is_audible(&playing, false));
+        assert!(!is_audible(&playing, true));
+        assert!(!is_audible(&MediaState { muted: true, ..playing.clone() }, false));
+        assert!(!is_audible(&MediaState { playing: false, ..playing }, false));
+        assert!(!is_audible(&MediaState::default(), false));
     }
 }

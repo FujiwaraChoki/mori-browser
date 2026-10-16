@@ -16,7 +16,14 @@ pub(crate) fn attach(view: &Rc<ViewInner>) {
     *view.devtools_registration.borrow_mut() = registration;
 }
 
-pub(crate) fn evaluate(view: &Rc<ViewInner>, expression: &str, callback: EvalCallback) {
+/// `user_gesture` makes Blink treat the evaluation as user activation (popups,
+/// autoplay, clipboard writes); background scripts must pass `false`.
+pub(crate) fn evaluate(
+    view: &Rc<ViewInner>,
+    expression: &str,
+    user_gesture: bool,
+    callback: EvalCallback,
+) {
     let Some(host) = view.host() else {
         callback(Err("page is not ready".into()));
         return;
@@ -29,15 +36,17 @@ pub(crate) fn evaluate(view: &Rc<ViewInner>, expression: &str, callback: EvalCal
             "expression": expression,
             "returnByValue": true,
             "awaitPromise": true,
-            "userGesture": true,
+            "userGesture": user_gesture,
         }
     });
     view.evals.borrow_mut().insert(id, callback);
     let bytes = message.to_string().into_bytes();
-    if host.send_dev_tools_message(Some(&bytes)) != 1
-        && let Some(cb) = view.evals.borrow_mut().remove(&id)
-    {
-        cb(Err("DevTools message rejected".into()));
+    if host.send_dev_tools_message(Some(&bytes)) != 1 {
+        // End the borrow before the callback, which may evaluate again.
+        let cb = view.evals.borrow_mut().remove(&id);
+        if let Some(cb) = cb {
+            cb(Err("DevTools message rejected".into()));
+        }
     }
 }
 

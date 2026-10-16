@@ -684,11 +684,26 @@ async fn sleep(cx: &AsyncApp, ms: u64) {
 }
 
 /// Evaluate a page script, bridging the engine's callback into a future.
+/// Reading the page is not a user gesture; use [`evaluate_as_user`] for an
+/// approved action that clicks or types on the user's behalf.
 async fn evaluate(view: &WebView, script: &str, cx: &AsyncApp) -> Result<Value, String> {
+    run_script(view, script, false, cx).await
+}
+
+async fn evaluate_as_user(view: &WebView, script: &str, cx: &AsyncApp) -> Result<Value, String> {
+    run_script(view, script, true, cx).await
+}
+
+async fn run_script(view: &WebView, script: &str, user_gesture: bool, cx: &AsyncApp) -> Result<Value, String> {
     let (tx, rx) = oneshot::channel();
-    view.evaluate(script, move |result| {
+    let done = move |result| {
         let _ = tx.send(result);
-    });
+    };
+    if user_gesture {
+        view.evaluate_as_user(script, done);
+    } else {
+        view.evaluate(script, done);
+    }
     let timer = cx.background_executor().timer(EVAL_TIMEOUT);
     match select(rx, timer.boxed_local()).await {
         Either::Left((Ok(result), _)) => result,
@@ -1145,7 +1160,7 @@ async fn action(args: &Value, ctx: &ToolCtx, cx: &mut AsyncApp) -> Result<ToolOu
                 amount: arg_f64(args, "amount").unwrap_or(600.0),
                 duration: arg_u64(args, "durationMS").unwrap_or(450).min(5_000),
             };
-            let result = evaluate(&view, &scripts::page_action(&script_args), cx).await?;
+            let result = evaluate_as_user(&view, &scripts::page_action(&script_args), cx).await?;
             if let Some(failure) = page_error(&result) {
                 return Ok(ToolOutcome::fail(
                     format!("{} failed: {failure}", action_label(&action)),
@@ -1173,7 +1188,7 @@ async fn action(args: &Value, ctx: &ToolCtx, cx: &mut AsyncApp) -> Result<ToolOu
                 .collect();
             let id = ctx.read(cx, |b, _| resolve_target(args, b))??;
             let view = page_view(ctx, id, cx).await?;
-            let result = evaluate(&view, &scripts::fill_form(&fields), cx).await?;
+            let result = evaluate_as_user(&view, &scripts::fill_form(&fields), cx).await?;
             if let Some(failure) = page_error(&result) {
                 return Ok(ToolOutcome::fail(
                     format!("Fill Form failed: {failure}"),
