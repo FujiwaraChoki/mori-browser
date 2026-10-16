@@ -167,7 +167,9 @@ impl SpaceEditor {
         cx.notify();
     }
 
-    fn cancel(&mut self, cx: &mut Context<Self>) {
+    /// Esc or Cancel: a space just created goes again; edits to an
+    /// existing one stay (they were applied live).
+    pub fn cancel(&mut self, cx: &mut Context<Self>) {
         if self.is_new {
             cx.emit(SpaceEditorEvent::Discard(self.space));
         } else {

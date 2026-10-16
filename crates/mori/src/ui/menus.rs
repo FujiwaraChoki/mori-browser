@@ -446,8 +446,9 @@ fn tab_entries(b: &Browser, id: TabId) -> Vec<Entry> {
     if away {
         v.push(item("Back to Pinned Page", "undo-2", move |b, w, cx| b.reset_pinned_tab(id, w, cx)));
         v.push(item("Replace Pinned URL with Current", "pin", move |b, _, cx| {
-            b.ws.replace_pinned_url(id);
-            b.toast("This page is the pinned one now", ToastStyle::Success, None, cx);
+            if b.ws.replace_pinned_url(id) {
+                b.toast("This page is the pinned one now", ToastStyle::Success, None, cx);
+            }
             b.schedule_save(cx);
         }));
     }

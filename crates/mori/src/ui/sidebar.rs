@@ -189,6 +189,15 @@ pub struct SidebarSwipe {
     spent: bool,
 }
 
+impl SidebarSwipe {
+    /// Something under the pointer (the scrolling space switcher) uses
+    /// this gesture itself: it won't switch spaces.
+    fn claim(&mut self) {
+        self.last = Some(std::time::Instant::now());
+        self.spent = true;
+    }
+}
+
 /// The latest space change, for the sidebar's slide: a serial that keys
 /// the animation and the direction the new space comes from (1 = from the
 /// right, the next space).
@@ -849,9 +858,11 @@ impl Browser {
                         move |window, cx| gpui_kit::component::tooltip::Tooltip::new(title.clone()).build(window, cx)
                     })
                     .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| this.click_tab(id, ev, window, cx)))
+                    // Middle-click acts on this tile alone, even when it is
+                    // part of a multi-selection (only Ctrl+W takes them all).
                     .on_mouse_down(
                         MouseButton::Middle,
-                        cx.listener(move |this, _, window, cx| this.close_tab(id, false, window, cx)),
+                        cx.listener(move |this, _, window, cx| this.unload_saved_tab(id, window, cx)),
                     )
                     .on_mouse_down(
                         MouseButton::Right,
@@ -1458,7 +1469,13 @@ impl Browser {
                 .child(icon(if unloads { "minus" } else { "x" }, px(12.), fg.opacity(0.7)))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     cx.stop_propagation();
-                    this.close_tab(id, !unloads, window, cx);
+                    // This row's button acts on this tab alone, even when it
+                    // is part of a multi-selection.
+                    if unloads {
+                        this.unload_saved_tab(id, window, cx);
+                    } else {
+                        this.close_tab(id, true, window, cx);
+                    }
                 }))
         };
         // The row's colour while hovered, when it is a single opaque colour.
@@ -1562,7 +1579,13 @@ impl Browser {
             .on_click(cx.listener(move |this, ev: &ClickEvent, window, cx| this.click_tab(id, ev, window, cx)))
             .on_mouse_down(
                 MouseButton::Middle,
-                cx.listener(move |this, _, window, cx| this.close_tab(id, !saved, window, cx)),
+                cx.listener(move |this, _, window, cx| {
+                    if saved {
+                        this.unload_saved_tab(id, window, cx);
+                    } else {
+                        this.close_tab(id, true, window, cx);
+                    }
+                }),
             )
             .on_mouse_down(
                 MouseButton::Right,
@@ -1767,6 +1790,11 @@ impl Browser {
                     .when(!overflow, |s| s.justify_center())
                     .gap(gap)
                     .overflow_x_scroll()
+                    // A sideways swipe here scrolls the chips; it must not
+                    // also switch spaces.
+                    .when(overflow, |s| {
+                        s.on_scroll_wheel(cx.listener(|this, _: &ScrollWheelEvent, _, _| this.sidebar_swipe.claim()))
+                    })
                     .children(chips),
             )
             .child(

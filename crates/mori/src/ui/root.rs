@@ -29,8 +29,10 @@ impl Browser {
             self.close_menu(window, cx);
         } else if self.boost_editor.is_some() {
             self.boost_editor = None;
-        } else if self.space_editor.is_some() {
-            self.close_space_editor(window, cx);
+        } else if let Some(editor) = self.space_editor.clone() {
+            // Esc with the focus outside the editor's fields still cancels
+            // a space being created, as Esc inside them does.
+            editor.update(cx, |e, cx| e.cancel(cx));
         } else if self.peek.is_some() {
             self.close_peek(window, cx);
         } else if self.popup.is_some() {

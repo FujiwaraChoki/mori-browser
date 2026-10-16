@@ -1178,13 +1178,17 @@ impl Browser {
     /// neighbour if the selected tab went away, and give the keyboard back
     /// to the page.
     fn after_tabs_closed(&mut self, was_selected: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ws.active().ordered().is_empty() {
+        // Favorites show in every space, so a space with nothing but
+        // favorites left still has tabs (and may be showing one).
+        let shown = self.ws.visible_in(self.ws.active_space);
+        if self.ws.favorites.is_empty() && self.ws.active().ordered().is_empty() {
             self.open_blank_tab(window, cx);
         } else if was_selected {
             let next = self
                 .ws
                 .selected()
-                .or_else(|| self.ws.active().visible().first().copied());
+                .or_else(|| shown.first().copied())
+                .or_else(|| self.ws.active().ordered().first().copied());
             if let Some(next) = next {
                 self.select_tab(next, window, cx);
             }
@@ -1617,6 +1621,11 @@ impl Browser {
     /// Create a space (with its own symbol and colours), switch to it, and
     /// open the space editor to name and style it.
     pub fn create_space(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // One editor at a time: a second new space would orphan the first
+        // one's Cancel.
+        if self.space_editor.is_some() {
+            return;
+        }
         let name = self.ws.next_space_name();
         let previous = self.ws.active_space;
         let id = self.ws.create_space(name);
