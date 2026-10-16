@@ -173,7 +173,7 @@ impl Favicons {
                 for (host, rgba) in icons {
                     let (width, height) = rgba.dimensions();
                     let mut bgra = rgba.into_raw();
-                    for px in bgra.chunks_exact_mut(4) {
+                    for px in bgra.as_chunks_mut::<4>().0 {
                         px.swap(0, 2);
                     }
                     this.insert(&host, Frame { width, height, bgra }, cx);
