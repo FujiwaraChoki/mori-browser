@@ -35,16 +35,18 @@ pub enum SettingsCategory {
     Appearance,
     Tabs,
     Sites,
+    Passwords,
     Assistant,
     About,
 }
 
 impl SettingsCategory {
-    pub const ALL: [SettingsCategory; 6] = [
+    pub const ALL: [SettingsCategory; 7] = [
         SettingsCategory::General,
         SettingsCategory::Appearance,
         SettingsCategory::Tabs,
         SettingsCategory::Sites,
+        SettingsCategory::Passwords,
         SettingsCategory::Assistant,
         SettingsCategory::About,
     ];
@@ -55,6 +57,7 @@ impl SettingsCategory {
             SettingsCategory::Appearance => "Appearance",
             SettingsCategory::Tabs => "Tabs",
             SettingsCategory::Sites => "Sites",
+            SettingsCategory::Passwords => "Passwords",
             SettingsCategory::Assistant => "Assistant",
             SettingsCategory::About => "About Mori",
         }
@@ -66,6 +69,7 @@ impl SettingsCategory {
             SettingsCategory::Appearance => "palette",
             SettingsCategory::Tabs => "app-window",
             SettingsCategory::Sites => "globe",
+            SettingsCategory::Passwords => "key-round",
             SettingsCategory::Assistant => "sparkles",
             SettingsCategory::About => "info",
         }
@@ -81,7 +85,7 @@ pub struct SettingsInputs {
     category: SettingsCategory,
 }
 
-fn section(title: &str, cx: &App) -> Div {
+pub(crate) fn section(title: &str, cx: &App) -> Div {
     let t = cx.tokens();
     v_flex().gap_2().child(
         div()
@@ -93,7 +97,7 @@ fn section(title: &str, cx: &App) -> Div {
     )
 }
 
-fn card(cx: &App) -> Div {
+pub(crate) fn card(cx: &App) -> Div {
     let t = cx.tokens();
     v_flex()
         .gap_3()
@@ -104,7 +108,7 @@ fn card(cx: &App) -> Div {
         .border_color(t.border.opacity(0.6))
 }
 
-fn field(label: &str, control: impl IntoElement, cx: &App) -> Div {
+pub(crate) fn field(label: &str, control: impl IntoElement, cx: &App) -> Div {
     let t = cx.tokens();
     h_flex()
         .gap_3()
@@ -119,7 +123,7 @@ fn field(label: &str, control: impl IntoElement, cx: &App) -> Div {
         .child(h_flex().flex_1().min_w_0().child(control))
 }
 
-fn hint(text: impl Into<SharedString>, cx: &App) -> Div {
+pub(crate) fn hint(text: impl Into<SharedString>, cx: &App) -> Div {
     let t = cx.tokens();
     div()
         .text_size(metrics::TEXT_SMALL)
@@ -327,6 +331,7 @@ impl Browser {
             SettingsCategory::Appearance => self.render_appearance_settings(cx).into_any_element(),
             SettingsCategory::Tabs => self.render_tab_settings(cx).into_any_element(),
             SettingsCategory::Sites => self.render_site_settings(window, cx).into_any_element(),
+            SettingsCategory::Passwords => self.render_password_settings(window, cx).into_any_element(),
             SettingsCategory::Assistant => self.render_assistant_settings(cx).into_any_element(),
             SettingsCategory::About => self.render_about_settings(cx).into_any_element(),
         };

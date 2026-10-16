@@ -27,6 +27,8 @@ impl Browser {
         } else if self.menu.is_some() {
             // A menu can sit over the Peek (opened from the sidebar).
             self.close_menu(window, cx);
+        } else if self.passwords_escape(cx) {
+            // The save-password popover or a login suggestions dropdown.
         } else if self.boost_editor.is_some() {
             self.boost_editor = None;
         } else if self.peek.is_some() {
@@ -555,6 +557,7 @@ impl Render for Browser {
         });
 
         let launcher = self.launcher.clone();
+        let passwords = self.render_password_overlays(window, cx);
         let menu = self.render_menu(window, cx);
         let panel = self.render_panel(window, cx);
         let peek = self.render_peek(window, cx);
@@ -703,6 +706,7 @@ impl Render for Browser {
             .children(peek)
             .children(popup)
             .children(overlay_toasts)
+            .children(passwords)
             .children(boost.map(|b| b.into_any_element()))
             .children(launcher.map(|l| l.into_any_element()))
             .children(menu)
