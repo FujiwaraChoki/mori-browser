@@ -242,6 +242,9 @@ impl Browser {
                         this.open_launcher(LauncherMode::Address, window, cx)
                     })),
             )
+            // Saved logins and the save offer (the sidebar's pill has it in
+            // normal windows).
+            .children(self.password_key_button(cx))
             .child(drag_area("little-drag"))
             .child(
                 text_button("little-open", open_label, true, cx)

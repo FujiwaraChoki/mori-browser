@@ -321,6 +321,23 @@ pub enum ViewEvent {
     ContentBlocked {
         count: u32,
     },
+    /// A script called a binding installed with the DevTools method
+    /// `Runtime.addBinding` (see [`WebView::devtools_call`]).
+    BindingCalled {
+        name: String,
+        payload: BindingPayload,
+    },
+}
+
+/// What a script passed to a DevTools binding. It may hold what the user
+/// typed (a password), so it prints only its length.
+#[derive(Default, Clone, PartialEq, Eq)]
+pub struct BindingPayload(pub String);
+
+impl std::fmt::Debug for BindingPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "BindingPayload({} bytes)", self.0.len())
+    }
 }
 
 pub(crate) struct ViewInner {

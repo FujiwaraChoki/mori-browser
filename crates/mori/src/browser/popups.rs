@@ -83,7 +83,7 @@ impl Browser {
     fn on_popup_events(&mut self, events: Vec<ViewEvent>, window: &mut Window, cx: &mut Context<Self>) {
         let Some(popup_view) = self.popup.as_ref().map(|p| p.view.clone()) else { return };
         let mut events = events.into_iter();
-        while let Some(event) = events.next() {
+        while let Some(mut event) = events.next() {
             if self.popup.as_ref().is_none_or(|p| p.view != popup_view) {
                 // "Open as Tab" partway through the batch: the rest belongs
                 // to that tab now. A closed popup's events are moot.
@@ -94,6 +94,8 @@ impl Browser {
                 }
                 return;
             }
+            // Saving and filling logins (sign-in popups).
+            self.passwords_on_popup_event(&mut event, cx);
             // Dialogs, sign-in, certificate and permission prompts, page-first
             // shortcuts and tooltips, drawn over the popup card.
             let Some(event) = self.on_page_event(PageOwner::Popup, event, window, cx) else { continue };
@@ -122,6 +124,7 @@ impl Browser {
     pub fn close_popup_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(popup) = self.popup.take() else { return };
         EngineHub::unregister(cx, popup.view.id());
+        self.passwords_popup_closed(popup.view.id(), popup.opener, cx);
         popup.view.close();
         self.forget_prompts(PageOwner::Popup);
         self.sync_page_modals(cx);

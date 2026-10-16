@@ -40,7 +40,7 @@ pub use downloads::{
     resume_download, take_download_updates, unique_path,
 };
 pub use view::{
-    AuthId, AuthRequest, CertErrorId, CertificateError, ContextMenuInfo, CursorKind, DialogId,
+    AuthId, AuthRequest, BindingPayload, CertErrorId, CertificateError, ContextMenuInfo, CursorKind, DialogId,
     DialogKind, Disposition, FileDialogId, FileDialogMode, FileDialogRequest, Frame, JsDialog,
     MouseButton, PermissionId, PermissionKind, PermissionRequest, PopupFeatures, PopupFrame,
     UnhandledKey, ViewEvent, ViewId, WebView, take_dirty_views,

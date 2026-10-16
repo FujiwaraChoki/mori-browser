@@ -337,6 +337,7 @@ pub struct Browser {
     pub library_tab: crate::ui::panels::LibraryTab,
     pub library_search: Option<Entity<gpui_kit::component::input::InputState>>,
     pub settings_inputs: Option<crate::ui::settings::SettingsInputs>,
+    pub passwords_ui: crate::passwords::PasswordsUi,
 
     pub focus_handle: FocusHandle,
     pub(crate) window_handle: AnyWindowHandle,
@@ -442,6 +443,7 @@ impl Browser {
             library_tab: Default::default(),
             library_search: None,
             settings_inputs: None,
+            passwords_ui: Default::default(),
             focus_handle: cx.focus_handle(),
             window_handle: window.window_handle(),
             saver,
@@ -1197,6 +1199,7 @@ impl Browser {
 
     pub fn navigate(&mut self, id: TabId, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.typed_https.remove(&id);
+        self.passwords_user_navigated(id, cx);
         // A new address starts at the top, not at the old page's offset.
         self.pending_scroll.remove(&id);
         if self.settings_open && self.active_tab() == Some(id) {
@@ -2674,10 +2677,14 @@ impl Browser {
         let mut save = false;
         // Only events that change what the chrome shows redraw the window.
         let mut changed = false;
-        for ev in events {
+        for mut ev in events {
+            // Login forms and the form agent's reports (the passwords
+            // module redraws itself when that changes anything).
+            self.passwords_on_view_event(id, &mut ev, cx);
             changed |= !matches!(
                 ev,
                 ViewEvent::ConsoleMessage { .. }
+                    | ViewEvent::BindingCalled { .. }
                     | ViewEvent::Created
                     | ViewEvent::Painted
                     | ViewEvent::PopupWidgetChanged
@@ -2935,6 +2942,8 @@ impl Browser {
                 | ViewEvent::ImeCompositionBounds(_)
                 | ViewEvent::AudioStateChanged { .. }
                 | ViewEvent::MediaAccessChanged { .. } => {}
+                // Handled by `passwords_on_view_event`.
+                ViewEvent::BindingCalled { .. } => {}
                 // Answered by `on_page_event`.
                 ViewEvent::Tooltip(_)
                 | ViewEvent::UnhandledKey(_)

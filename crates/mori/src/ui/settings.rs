@@ -39,18 +39,20 @@ pub enum SettingsCategory {
     Profiles,
     Sites,
     Privacy,
+    Passwords,
     Assistant,
     About,
 }
 
 impl SettingsCategory {
-    pub const ALL: [SettingsCategory; 8] = [
+    pub const ALL: [SettingsCategory; 9] = [
         SettingsCategory::General,
         SettingsCategory::Appearance,
         SettingsCategory::Tabs,
         SettingsCategory::Profiles,
         SettingsCategory::Sites,
         SettingsCategory::Privacy,
+        SettingsCategory::Passwords,
         SettingsCategory::Assistant,
         SettingsCategory::About,
     ];
@@ -63,6 +65,7 @@ impl SettingsCategory {
             SettingsCategory::Profiles => "Profiles",
             SettingsCategory::Sites => "Sites",
             SettingsCategory::Privacy => "Privacy",
+            SettingsCategory::Passwords => "Passwords",
             SettingsCategory::Assistant => "Assistant",
             SettingsCategory::About => "About Mori",
         }
@@ -76,6 +79,7 @@ impl SettingsCategory {
             SettingsCategory::Profiles => "users",
             SettingsCategory::Sites => "globe",
             SettingsCategory::Privacy => "shield",
+            SettingsCategory::Passwords => "key-round",
             SettingsCategory::Assistant => "sparkles",
             SettingsCategory::About => "info",
         }
@@ -339,6 +343,7 @@ impl Browser {
             SettingsCategory::Profiles => self.render_profile_settings(window, cx).into_any_element(),
             SettingsCategory::Sites => self.render_site_settings(window, cx).into_any_element(),
             SettingsCategory::Privacy => self.render_privacy_settings(cx).into_any_element(),
+            SettingsCategory::Passwords => self.render_password_settings(window, cx).into_any_element(),
             SettingsCategory::Assistant => self.render_assistant_settings(cx).into_any_element(),
             SettingsCategory::About => self.render_about_settings(cx).into_any_element(),
         };

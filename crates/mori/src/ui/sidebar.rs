@@ -633,6 +633,8 @@ impl Browser {
                         }),
                 )
             })
+            // Saved logins and the save-password popover (as Zen's key icon).
+            .children(self.password_key_button(cx))
             .child(
                 div()
                     .flex_1()
