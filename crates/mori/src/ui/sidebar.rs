@@ -427,6 +427,7 @@ impl Browser {
                     .on_click(cx.listener(|this, _, _, cx| this.toggle_sidebar(cx))),
             )
             .child(window_drag_area("window-drag"))
+            .children(crate::ui::windows::private_badge(self, cx))
             // A ring shows the progress of running downloads.
             .when(has_downloads, |s| {
                 s.child(
@@ -494,9 +495,27 @@ impl Browser {
             .pb(px(10.))
             .gap(px(7.))
             .children(controls)
-            .children(crate::ui::windows::private_badge(self, cx))
             .child(nav)
             .child(self.render_omnibox(cx))
+    }
+
+    /// The address's lead glyph for the page of `tab` at `url`: an orange
+    /// warning for an insecure page or a bad certificate, a quiet lock (in
+    /// `muted`) for a secure one, nothing otherwise. The sidebar's pill and
+    /// Little Mori's header share it.
+    pub(crate) fn security_glyph(&self, tab: Option<TabId>, url: &str, muted: Hsla, cx: &App) -> Option<Svg> {
+        use mori_core::security::Security;
+        let t = cx.tokens();
+        let security = match tab {
+            Some(id) => self.page_security(crate::browser::PageOwner::Tab(id), url),
+            None => Security::Neutral,
+        };
+        match security {
+            Security::NotSecure | Security::CertificateError => Some(icon("triangle-alert", px(14.), t.status_warning)),
+            // Secure page: a quiet lock that opens site info.
+            Security::Secure => Some(icon("lock", px(13.), muted)),
+            _ => None,
+        }
     }
 
     /// Ctrl+T's bar is open: the sidebar shows the tab being created as
@@ -529,21 +548,9 @@ impl Browser {
         // Zen shows the bare host; only insecure pages and the empty state
         // get a leading glyph. The lock needs a valid certificate, not just
         // the scheme.
-        use mori_core::security::Security;
-        let security = match self.active_tab() {
-            Some(id) => self.page_security(crate::browser::PageOwner::Tab(id), &url),
-            None => Security::Neutral,
-        };
-        let lead = if matches!(security, Security::NotSecure | Security::CertificateError) {
-            Some(icon("triangle-alert", px(14.), t.status_warning))
-        } else if host.is_empty() {
-            Some(icon("search", px(14.), muted))
-        } else if security == Security::Secure {
-            // Secure page: a quiet lock that opens site info.
-            Some(icon("lock", px(13.), muted))
-        } else {
-            None
-        };
+        let lead = self
+            .security_glyph(self.active_tab(), &url, muted, cx)
+            .or_else(|| host.is_empty().then(|| icon("search", px(14.), muted)));
         // Page actions appear on hover, or stay while they show state.
         let action = |id: &'static str, glyph: &'static str, color: Hsla, toggles_reader: bool, cx: &mut Context<Self>| {
             div()

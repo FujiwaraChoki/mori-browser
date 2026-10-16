@@ -39,30 +39,25 @@ pub struct WindowUi {
     _rename_events: Option<Subscription>,
 }
 
-/// The "Private" pill at the top of a private window's sidebar.
+/// A private window's mark in the sidebar toolbar: the hat-and-glasses
+/// glyph in a tinted disc (the space label already says "Private").
 pub fn private_badge(b: &Browser, cx: &App) -> Option<AnyElement> {
     if b.kind != WindowKind::Private {
         return None;
     }
     let t = cx.tokens();
     Some(
-        h_flex()
-            .h(px(24.))
-            .child(
-                h_flex()
-                    .h(px(22.))
-                    .px(px(9.))
-                    .gap(px(6.))
-                    .rounded_full()
-                    .bg(t.primary.opacity(0.24))
-                    .border_1()
-                    .border_color(t.primary.opacity(0.5))
-                    .text_size(metrics::TEXT_LABEL)
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(t.sidebar_foreground)
-                    .child(icon("hat-glasses", px(13.), t.sidebar_foreground))
-                    .child("Private"),
-            )
+        div()
+            .id("private-badge")
+            .size(px(24.))
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .bg(t.primary.opacity(0.24))
+            .child(icon("hat-glasses", px(14.), t.sidebar_foreground))
+            .tooltip(|window, cx| gpui_kit::component::tooltip::Tooltip::new("Private window").build(window, cx))
             .into_any_element(),
     )
 }
@@ -190,8 +185,9 @@ impl Browser {
         let title = record.map(|r| r.display_title().to_string()).unwrap_or_default();
         let host = host_of(&url);
         let image = host.as_deref().and_then(|h| self.favicons.get(h));
-        let address = host.clone().unwrap_or_else(|| url.clone());
-        let secure = url.starts_with("https://");
+        // The port stays (as in the sidebar's pill).
+        let address = Some(mori_core::omnibox::display_host(&url)).filter(|h| !h.is_empty()).unwrap_or_else(|| url.clone());
+        let lead = self.security_glyph(self.selected(), &url, t.muted_foreground, cx);
         let can_back = self.selected_live().is_some_and(|l| l.can_go_back);
         let target = windows::little_target_name(cx);
         let open_label = format!("Open in {target}");
@@ -225,9 +221,7 @@ impl Browser {
                     .cursor_pointer()
                     .hover(|s| s.bg(t.ghost_hover()))
                     .child(favicon(image, px(16.), false, cx))
-                    .when(!secure && !Browser::is_internal(&url), |s| {
-                        s.child(icon("lock-open", px(12.), t.muted_foreground))
-                    })
+                    .children(lead)
                     .child(
                         div()
                             .flex_none()
