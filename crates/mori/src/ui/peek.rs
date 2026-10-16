@@ -173,6 +173,7 @@ impl Browser {
             }])
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(surface)
+            .children(self.find_bar.clone())
             .children(prompts)
             .with_animation(
                 ("peek-card", key),

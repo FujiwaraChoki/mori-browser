@@ -2210,8 +2210,22 @@ impl Browser {
 
     // ---- Find ------------------------------------------------------------------
 
+    /// The page find in page searches: the Peek while one is open (the
+    /// page the user is looking at), else the active pane's.
+    pub fn find_view(&self) -> Option<WebView> {
+        self.peek.as_ref().map(|p| p.view.clone()).or_else(|| self.selected_view())
+    }
+
+    /// The Peek is going away or becoming a tab: its search ends with it.
+    fn end_peek_find(&mut self, peek_view: &WebView, cx: &mut Context<Self>) {
+        if self.find_bar.take().is_some() {
+            peek_view.stop_finding(true);
+            cx.notify();
+        }
+    }
+
     pub fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_view().is_none() {
+        if self.find_view().is_none() {
             return;
         }
         let bar = match &self.find_bar {
@@ -2219,7 +2233,7 @@ impl Browser {
             None => {
                 let bar = cx.new(|cx| FindBar::new(window, cx));
                 let sub = cx.subscribe_in(&bar, window, |this, _, ev: &FindBarEvent, window, cx| {
-                    let Some(view) = this.selected_view() else { return };
+                    let Some(view) = this.find_view() else { return };
                     match ev {
                         FindBarEvent::Search {
                             text,
@@ -2255,10 +2269,16 @@ impl Browser {
 
     pub fn close_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.find_bar.take().is_some() {
-            if let Some(view) = self.selected_view() {
+            if let Some(view) = self.find_view() {
                 view.stop_finding(true);
             }
-            self.focus_selected_page(window, cx);
+            match &self.peek {
+                Some(peek) => {
+                    let focus = peek.surface.read(cx).focus_handle().clone();
+                    window.focus(&focus, cx);
+                }
+                None => self.focus_selected_page(window, cx),
+            }
             cx.notify();
         }
     }
@@ -2453,6 +2473,13 @@ impl Browser {
 
     /// Show an already-created view (e.g. a shift-clicked link) in Peek.
     pub fn peek_view(&mut self, view: WebView, url: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // A search open on the tab (or the old Peek) ends: find in page
+        // follows the Peek.
+        if self.find_bar.is_some()
+            && let Some(searched) = self.find_view()
+        {
+            self.end_peek_find(&searched, cx);
+        }
         if let Some(old) = self.peek.take() {
             EngineHub::unregister(cx, old.view.id());
             old.view.close();
@@ -2491,6 +2518,7 @@ impl Browser {
 
     pub fn close_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(peek) = self.peek.take() {
+            self.end_peek_find(&peek.view, cx);
             EngineHub::unregister(cx, peek.view.id());
             peek.view.close();
             self.forget_prompts(PageOwner::Peek);
@@ -2501,6 +2529,7 @@ impl Browser {
 
     /// Move the peeked page into a new tab after the current one.
     fn adopt_peek(&mut self, peek: Peek, window: &mut Window, cx: &mut Context<Self>) -> TabId {
+        self.end_peek_find(&peek.view, cx);
         EngineHub::unregister(cx, peek.view.id());
         let url = peek.view.url();
         let mut record = TabRecord::new(url.clone());
@@ -2616,6 +2645,11 @@ impl Browser {
                     self.open_file_dialog(view, request, window, cx);
                 }
                 ViewEvent::PrintRequested => self.offer_print(ToastAction::PrintPeek, cx),
+                ViewEvent::FindResult { count, active, final_update } => {
+                    if let Some(bar) = &self.find_bar {
+                        bar.update(cx, |b, cx| b.set_results(count, active, final_update, cx));
+                    }
+                }
                 _ => {}
             }
         }
@@ -2942,6 +2976,7 @@ impl Browser {
                         }
                     }
                     if self.active_tab() == Some(id)
+                        && self.peek.is_none()
                         && let Some(bar) = &self.find_bar
                     {
                         bar.update(cx, |b, cx| b.set_results(count, active, final_update, cx));

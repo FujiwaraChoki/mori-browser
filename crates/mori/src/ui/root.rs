@@ -283,8 +283,11 @@ impl Browser {
                     .child(status),
             );
         }
+        // (While a Peek is open, find in page searches it; the bar sits on
+        // its card.)
         if let Some(bar) = &self.find_bar
             && !self.settings_open
+            && self.peek.is_none()
         {
             card = card.child(bar.clone());
         }
