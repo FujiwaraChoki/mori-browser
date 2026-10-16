@@ -8,6 +8,10 @@
 //!
 //! `windows.json` remembers the open windows (their selection and size) so
 //! a restart brings all of them back.
+//!
+//! Besides normal windows there are private windows and Little Mori windows
+//! (a link opened from another app); [`WindowKind::shares_with`] says what
+//! two windows keep in step.
 
 use std::path::Path;
 
@@ -20,6 +24,52 @@ use crate::{
 };
 
 pub const WINDOWS_FILE: &str = "windows.json";
+
+/// What a window is for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowKind {
+    Normal,
+    /// Browses without writing anything to disk.
+    Private,
+    /// Little Mori: one page opened from another app, in a small window.
+    Little,
+}
+
+/// What two windows keep in step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sharing {
+    /// Spaces, folders and tabs.
+    pub workspace: bool,
+    /// Settings, bookmarks, Air Traffic Control rules and Boosts.
+    pub preferences: bool,
+    /// History, archive, downloads, site zoom and site permissions.
+    pub browsing_data: bool,
+}
+
+impl WindowKind {
+    /// Normal windows share everything. A Little Mori window has its own
+    /// one-page workspace but browses like a normal window. A private window
+    /// has its own workspace and keeps what it browses to itself; it only
+    /// follows (and changes) the preferences.
+    pub fn shares_with(self, other: WindowKind) -> Sharing {
+        use WindowKind::*;
+        Sharing {
+            workspace: self == Normal && other == Normal,
+            preferences: true,
+            browsing_data: self != Private && other != Private,
+        }
+    }
+
+    /// The window that writes the shared stores to disk among windows of
+    /// `kinds` (in opening order): the first normal window, else the first
+    /// Little Mori window. Private windows never write.
+    pub fn writer(kinds: &[WindowKind]) -> Option<usize> {
+        kinds
+            .iter()
+            .position(|k| *k == WindowKind::Normal)
+            .or_else(|| kinds.iter().position(|k| *k == WindowKind::Little))
+    }
+}
 
 /// Where a window is in the workspace.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -256,6 +306,31 @@ mod tests {
         assert_eq!(loaded.windows[0], session.windows[0]);
         assert_eq!(loaded.windows[1].size, None);
         assert_eq!(loaded.windows[1].selection, session.windows[1].selection);
+    }
+
+    #[test]
+    fn what_windows_share() {
+        use WindowKind::*;
+        let all = Sharing { workspace: true, preferences: true, browsing_data: true };
+        assert_eq!(Normal.shares_with(Normal), all);
+        // Little Mori browses like a normal window but keeps its own page.
+        assert_eq!(Little.shares_with(Normal), Sharing { workspace: false, ..all });
+        assert_eq!(Normal.shares_with(Little), Sharing { workspace: false, ..all });
+        // Private windows only follow preferences, both ways.
+        let prefs = Sharing { workspace: false, preferences: true, browsing_data: false };
+        for other in [Normal, Little, Private] {
+            assert_eq!(Private.shares_with(other), prefs);
+            assert_eq!(other.shares_with(Private), prefs);
+        }
+    }
+
+    #[test]
+    fn one_window_writes_and_never_a_private_one() {
+        use WindowKind::*;
+        assert_eq!(WindowKind::writer(&[Little, Private, Normal, Normal]), Some(2));
+        assert_eq!(WindowKind::writer(&[Private, Little]), Some(1));
+        assert_eq!(WindowKind::writer(&[Private, Private]), None);
+        assert_eq!(WindowKind::writer(&[]), None);
     }
 
     #[test]

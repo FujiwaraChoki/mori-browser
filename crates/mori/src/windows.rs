@@ -5,7 +5,7 @@
 //! (it notifies), the stores it shares with each other window are compared
 //! and copied over, so all windows show the same spaces and tabs while each
 //! keeps its own selection (`mori_core::windows`). What a window shares
-//! depends on its kind:
+//! depends on its kind ([`WindowKind::shares_with`]):
 //!
 //! - Normal windows share everything.
 //! - Little Mori windows (links opened from other apps) have a workspace of
@@ -55,14 +55,7 @@ use crate::{
     theme::Tokens,
 };
 
-/// What a window is for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WindowKind {
-    Normal,
-    Private,
-    /// Little Mori: one page opened from another app, in a small window.
-    Little,
-}
+pub use mori_core::windows::WindowKind;
 
 /// How a new window picks its first page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -624,10 +617,8 @@ fn register(handle: AnyWindowHandle, browser: &Entity<Browser>, kind: WindowKind
 fn elect_writer(cx: &mut App) {
     let entries: Vec<(WindowKind, Option<Entity<Browser>>)> =
         with(|r| r.entries.iter().map(|e| (e.kind, e.browser.upgrade())).collect());
-    let writer = entries
-        .iter()
-        .position(|(k, _)| *k == WindowKind::Normal)
-        .or_else(|| entries.iter().position(|(k, _)| *k == WindowKind::Little));
+    let kinds: Vec<WindowKind> = entries.iter().map(|(k, _)| *k).collect();
+    let writer = WindowKind::writer(&kinds);
     for (i, (_, browser)) in entries.into_iter().enumerate() {
         let Some(browser) = browser else { continue };
         let writes = Some(i) == writer;
@@ -760,15 +751,9 @@ impl Shared {
     /// What `to` lacks of `from`'s state.
     fn between(from: &Browser, to: &Browser) -> Shared {
         let mut out = Shared::default();
-        let (a, b) = (from.kind, to.kind);
-        if a == WindowKind::Normal && b == WindowKind::Normal && !same_content(&from.ws, &to.ws) {
+        let sharing = from.kind.shares_with(to.kind);
+        if sharing.workspace && !same_content(&from.ws, &to.ws) {
             out.ws = Some(from.ws.clone());
-        }
-        // Preferences go everywhere; the sidebar's visibility is per window.
-        let mut settings = from.settings.clone();
-        settings.sidebar_visible = to.settings.sidebar_visible;
-        if settings != to.settings {
-            out.settings = Some(settings);
         }
         macro_rules! copy_if_changed {
             ($($field:ident),*) => {$(
@@ -777,9 +762,16 @@ impl Shared {
                 }
             )*};
         }
-        copy_if_changed!(bookmarks, routes, boosts);
-        // Browsing data stays out of private windows.
-        if a != WindowKind::Private && b != WindowKind::Private {
+        if sharing.preferences {
+            // The sidebar's visibility is per window.
+            let mut settings = from.settings.clone();
+            settings.sidebar_visible = to.settings.sidebar_visible;
+            if settings != to.settings {
+                out.settings = Some(settings);
+            }
+            copy_if_changed!(bookmarks, routes, boosts);
+        }
+        if sharing.browsing_data {
             copy_if_changed!(history, archive, zoom, site_permissions, downloads);
         }
         out
