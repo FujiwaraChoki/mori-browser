@@ -71,19 +71,18 @@ impl Browser {
         }
     }
 
-    /// A pinned tab's page asked to peek a link the user clicked. Only
-    /// honoured right after a real click in a page on screen (any page can
-    /// log the marker); if the tab is no longer pinned or the setting is
-    /// off, the link opens in the tab as it would have.
+    /// A pinned tab's page asked to peek a link the user followed. Peek
+    /// only opens right after a real click (or Enter / Space) in a page on
+    /// screen, since any page can log the marker. Otherwise, or if the tab
+    /// is no longer pinned or the setting is off, the link opens in the tab
+    /// as it would have (the page already cancelled its own navigation, so
+    /// dropping the request would leave the link dead).
     pub fn on_pinned_peek_request(&mut self, tab: TabId, url: String, window: &mut Window, cx: &mut Context<Self>) {
-        let clicked = self.click_at.take().is_some_and(|t| t.elapsed() < Duration::from_secs(2));
+        let user = self.click_at.take().is_some_and(|t| t.elapsed() < Duration::from_secs(2));
         let on_screen = self.selected() == Some(tab) || self.split == Some(tab);
-        if !clicked || !on_screen {
-            return;
-        }
         let page = self.ws.tab(tab).map(|t| t.url.clone()).unwrap_or_default();
         let wanted = self.settings.peek_links_from_pinned && self.ws.is_pinned(tab);
-        if wanted && !mori_core::util::same_site(&page, &url) {
+        if user && on_screen && wanted && !mori_core::util::same_site(&page, &url) {
             self.peek_url(&url, window, cx);
         } else {
             self.navigate(tab, &url, window, cx);

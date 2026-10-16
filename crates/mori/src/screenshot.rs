@@ -102,40 +102,50 @@ impl Browser {
     }
 
     /// Put a captured PNG on the clipboard and/or save it to the downloads
-    /// folder, and say so. `cut_off`: a very long page was shortened.
+    /// folder, and say so. `cut_off`: a very long page was shortened. The
+    /// file write and the desktop clipboard tool run off the UI thread (a
+    /// full-page PNG can be tens of MB).
     fn deliver_capture(&mut self, png: Vec<u8>, destinations: &[Destination], cut_off: bool, cx: &mut Context<Self>) {
         let copy = destinations.contains(&Destination::Clipboard);
         let save = destinations.contains(&Destination::Downloads);
-        let saved = save.then(|| {
-            let dir = self.downloads_dir.clone();
-            let local = mori_core::paths::now() as i64 + crate::ui::panels::local_utc_offset();
-            let path = capture::unique_path(&dir, &capture::file_name(local));
-            std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &png)).map(|_| path)
+        let dir = self.downloads_dir.clone();
+        let local = mori_core::paths::now() as i64 + crate::ui::panels::local_utc_offset();
+        let work = cx.background_spawn(async move {
+            let saved = save.then(|| {
+                let path = capture::unique_path(&dir, &capture::file_name(local));
+                std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, &png)).map(|_| path)
+            });
+            let system = copy && copy_png_to_system_clipboard(&png);
+            (saved, system, png)
         });
         let note = if cut_off { " (cut at its first 16,384 px)" } else { "" };
-        if !copy {
-            match saved {
-                Some(Ok(path)) => self.toast(
-                    format!("Capture saved to Downloads{note}"),
-                    ToastStyle::Success,
-                    Some(("Show".into(), ToastAction::Reveal(path))),
-                    cx,
-                ),
-                Some(Err(e)) => self.toast(format!("Couldn't save the capture: {e}"), ToastStyle::Error, None, cx),
-                None => {}
-            }
-            return;
-        }
-        let image = png.clone();
-        let copied = cx.background_spawn(async move { copy_png_to_system_clipboard(&image) });
         cx.spawn(async move |this, cx| {
-            let system = copied.await;
+            let (saved, system, png) = work.await;
             this.update(cx, |this, cx| {
+                if !copy {
+                    match saved {
+                        Some(Ok(path)) => this.toast(
+                            format!("Capture saved to Downloads{note}"),
+                            ToastStyle::Success,
+                            Some(("Show".into(), ToastAction::Reveal(path))),
+                            cx,
+                        ),
+                        Some(Err(e)) => {
+                            this.toast(format!("Couldn't save the capture: {e}"), ToastStyle::Error, None, cx)
+                        }
+                        None => {}
+                    }
+                    return;
+                }
                 if !system {
                     // Pasting inside Mori still works.
                     cx.write_to_clipboard(ClipboardItem::new_image(&Image::from_bytes(ImageFormat::Png, png)));
                 }
-                let copied = if system { "Capture copied" } else { "Capture copied for Mori only (install wl-clipboard)" };
+                let copied = if system {
+                    "Capture copied"
+                } else {
+                    "Capture copied for Mori only (install wl-clipboard or xclip)"
+                };
                 match saved {
                     Some(Ok(path)) => this.toast(
                         format!("{copied} and saved to Downloads{note}"),

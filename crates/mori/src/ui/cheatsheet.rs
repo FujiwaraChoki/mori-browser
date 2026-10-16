@@ -75,13 +75,13 @@ fn caps(label: &str, cx: &App) -> Div {
     }))
 }
 
-/// A row's keys: one or two bindings side by side; a run of numbered ones
-/// (Ctrl+1 … Ctrl+8) as its first and last.
+/// A row's keys: up to three bindings side by side; a run of numbered
+/// ones (Ctrl+1 … Ctrl+8) as its first and last.
 fn keys_of(keys: &[String], cx: &App) -> Div {
     let t = cx.tokens();
     let row = h_flex().gap(px(6.)).flex_none();
     match keys {
-        [first, .., last] if keys.len() > 2 => row
+        [first, .., last] if keys.len() > 3 => row
             .child(caps(first, cx))
             .child(div().text_size(metrics::TEXT_SMALL).text_color(t.muted_foreground).child("…"))
             .child(caps(last, cx)),

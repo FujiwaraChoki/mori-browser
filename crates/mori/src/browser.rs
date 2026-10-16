@@ -321,8 +321,9 @@ pub struct Browser {
     pub onboarding: Option<crate::ui::onboarding::OnboardingStep>,
     /// Sidebar slide animations (compact mode, Ctrl+S, the floating sidebar).
     pub sidebar_fx: crate::ui::root::SidebarFx,
-    /// When the user last clicked in the window; a pinned tab's request to
-    /// peek a link (PINNED_PEEK_SCRIPT) is only honoured right after one.
+    /// When the user last clicked in the window or pressed Enter / Space; a
+    /// pinned tab's request to peek a link (PINNED_PEEK_SCRIPT) is only
+    /// honoured right after one.
     pub click_at: Option<Instant>,
 
     pub focus_handle: FocusHandle,

@@ -620,7 +620,11 @@ impl DbCopy {
     pub(crate) fn open(path: &Path) -> anyhow::Result<DbCopy> {
         use anyhow::Context as _;
         let dir = TempFiles(std::env::temp_dir().join(format!("mori-import-{}", uuid::Uuid::new_v4())));
-        std::fs::create_dir_all(&dir.0).with_context(|| format!("creating {}", dir.0.display()))?;
+        // Private: the copies hold the user's browsing history.
+        let mut builder = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+        builder.create(&dir.0).with_context(|| format!("creating {}", dir.0.display()))?;
         let name = path.file_name().map(|n| n.to_os_string()).unwrap_or_else(|| "db".into());
         let copy = dir.0.join(&name);
         std::fs::copy(path, &copy).with_context(|| format!("copying {}", path.display()))?;

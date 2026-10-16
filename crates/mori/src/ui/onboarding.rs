@@ -20,6 +20,10 @@ use crate::{
 
 const CARD_WIDTH: Pixels = px(580.);
 
+/// The window's key context while the welcome is up, in place of the
+/// browser's: none of the browser shortcuts apply behind it.
+pub const CONTEXT: &str = "MoriOnboarding";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OnboardingStep {
     Welcome,
@@ -95,6 +99,31 @@ impl Browser {
         cx.notify();
     }
 
+    /// The welcome's primary button: the next step, or finish.
+    fn advance_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(step) = self.onboarding else { return };
+        if self.import.is_running() {
+            return;
+        }
+        match step.next() {
+            Some(next) => self.set_onboarding_step(next, cx),
+            None => self.finish_onboarding(window, cx),
+        }
+    }
+
+    /// Keys while the welcome is up (browser shortcuts are off, see
+    /// [`CONTEXT`]): Enter presses the primary button, Ctrl+Q still quits.
+    pub fn on_onboarding_key(&mut self, ev: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        let keystroke = &ev.keystroke;
+        let m = keystroke.modifiers;
+        match keystroke.key.as_str() {
+            "enter" if !m.modified() && !ev.is_held => self.advance_onboarding(window, cx),
+            "q" if m.secondary() && !m.shift && !m.alt => self.quit(cx),
+            _ => return,
+        }
+        cx.stop_propagation();
+    }
+
     pub fn render_onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let step = self.onboarding?;
         let t = cx.tokens().clone();
@@ -159,15 +188,7 @@ impl Browser {
             .child(
                 text_button("onboarding-next", primary_label, true, cx)
                     .when(importing, |b| b.opacity(0.5).cursor_default())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        if this.import.is_running() {
-                            return;
-                        }
-                        match step.next() {
-                            Some(next) => this.set_onboarding_step(next, cx),
-                            None => this.finish_onboarding(window, cx),
-                        }
-                    })),
+                    .on_click(cx.listener(|this, _, window, cx| this.advance_onboarding(window, cx))),
             );
 
         Some(

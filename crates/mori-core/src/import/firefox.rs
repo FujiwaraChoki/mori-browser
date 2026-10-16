@@ -136,6 +136,9 @@ pub(super) fn read(source: &Source, step: Step, out: &mut Imported) -> anyhow::R
     Ok(())
 }
 
+/// Largest decompressed session read (Zen/Firefox sessions are a few MB).
+const MAX_SESSION_BYTES: usize = 512 << 20;
+
 /// Decode Mozilla's `mozLz40\0` container: an 8-byte magic, the decoded
 /// size (u32 LE) and one LZ4 block.
 pub(super) fn decompress_mozlz4(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
@@ -144,6 +147,12 @@ pub(super) fn decompress_mozlz4(bytes: &[u8]) -> anyhow::Result<Vec<u8>> {
         bail!("not a mozLz4 file");
     }
     let size = u32::from_le_bytes([bytes[8], bytes[9], bytes[10], bytes[11]]) as usize;
+    // The output buffer is allocated up front: a damaged header must not
+    // ask for gigabytes. LZ4 expands at most ~255x; real sessions are far
+    // below the cap.
+    if size > MAX_SESSION_BYTES || size > bytes.len().saturating_mul(255) {
+        bail!("session too large ({size} bytes)");
+    }
     lz4_flex::block::decompress(&bytes[12..], size).map_err(|e| anyhow::anyhow!("lz4: {e}"))
 }
 
@@ -403,6 +412,11 @@ mod tests {
         file.extend(lz4_flex::block::compress(json));
         assert_eq!(decompress_mozlz4(&file).unwrap(), json);
         assert!(decompress_mozlz4(b"mozLz40\0").is_err());
+        // A header claiming a huge size is refused before allocating.
+        let mut huge = b"mozLz40\0".to_vec();
+        huge.extend(u32::MAX.to_le_bytes());
+        huge.extend([0u8; 16]);
+        assert!(decompress_mozlz4(&huge).is_err());
         assert!(decompress_mozlz4(b"{\"windows\":[]}").is_err());
     }
 

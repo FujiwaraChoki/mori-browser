@@ -746,6 +746,12 @@ impl Render for Browser {
             None
         };
         let boost = self.boost_editor.clone();
+        // The command bar opened over the cheatsheet or capture mode (Ctrl+T,
+        // Ctrl+L) replaces them; otherwise they'd sit on top of it.
+        if self.launcher.is_some() {
+            self.cheatsheet = None;
+            self.capture = None;
+        }
         let capture = self.render_capture(cx);
         let tab_hover = self.render_tab_hover(window, cx);
         let cheatsheet = self.render_cheatsheet();
@@ -754,7 +760,9 @@ impl Render for Browser {
 
         div()
             .id("mori-root")
-            .key_context(CONTEXT)
+            // The welcome takes the whole window: browser shortcuts would
+            // act on things hidden behind it, so they're off until it ends.
+            .key_context(if self.onboarding.is_some() { crate::ui::onboarding::CONTEXT } else { CONTEXT })
             .track_focus(&self.focus_handle)
             .capture_any_mouse_down(cx.listener(|this, ev: &MouseDownEvent, _, _| {
                 if ev.button == MouseButton::Left {
@@ -764,7 +772,17 @@ impl Render for Browser {
                     }
                 }
             }))
-            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| this.on_switcher_key(ev, window, cx)))
+            .capture_key_down(cx.listener(|this, ev: &KeyDownEvent, window, cx| {
+                // Enter or Space can follow a focused link, like a click.
+                if matches!(ev.keystroke.key.as_str(), "enter" | "space") {
+                    this.click_at = Some(std::time::Instant::now());
+                }
+                if this.onboarding.is_some() {
+                    this.on_onboarding_key(ev, window, cx);
+                } else {
+                    this.on_switcher_key(ev, window, cx);
+                }
+            }))
             .on_modifiers_changed(cx.listener(|this, ev: &ModifiersChangedEvent, window, cx| {
                 this.on_switcher_modifiers(ev, window, cx)
             }))

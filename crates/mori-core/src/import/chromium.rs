@@ -228,12 +228,12 @@ impl SessionTab {
         let navs = std::mem::take(&mut self.navs);
         self.navs = navs
             .into_iter()
-            .map(|(i, n)| if i >= from { (i - by, n) } else { (i, n) })
+            .map(|(i, n)| if i >= from { (i.saturating_sub(by), n) } else { (i, n) })
             .collect();
         if let Some(s) = self.selected_nav.as_mut()
             && *s >= from
         {
-            *s -= by;
+            *s = s.saturating_sub(by);
         }
     }
 }
@@ -317,8 +317,9 @@ pub(super) fn parse_session(bytes: &[u8]) -> anyhow::Result<Vec<SessionWindow>> 
                 if let (Some(tab), Some(index), Some(count)) = (int(0), int(4), int(8))
                     && let Some(t) = tabs.get_mut(&tab)
                 {
-                    t.navs.retain(|i, _| *i < index || *i >= index + count);
-                    t.shift_navs(index + count, count);
+                    let end = index.saturating_add(count);
+                    t.navs.retain(|i, _| *i < index || *i >= end);
+                    t.shift_navs(end, count);
                 }
             }
             TAB_CLOSED => {
@@ -447,6 +448,20 @@ mod tests {
             payload.extend(body);
             self.command(UPDATE_TAB_NAVIGATION, &payload)
         }
+    }
+
+    #[test]
+    fn damaged_prune_counts_do_not_overflow() {
+        let mut s = Snss::new();
+        s.ints(SET_TAB_WINDOW, &[1, 10])
+            .nav(10, 0, "https://a.test/", "A")
+            .ints(SET_SELECTED_NAVIGATION_INDEX, &[10, i32::MAX])
+            .ints(PRUNED, &[10, i32::MAX, i32::MAX])
+            .ints(PRUNED_FROM_FRONT, &[10, i32::MIN])
+            .ints(PRUNED, &[10, i32::MIN, i32::MIN]);
+        // No panic; the tab survives with whatever is left.
+        let windows = parse_session(&s.0).unwrap();
+        assert!(windows.len() <= 1);
     }
 
     #[test]

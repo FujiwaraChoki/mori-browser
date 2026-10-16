@@ -399,7 +399,17 @@ impl Browser {
 
     pub fn render_tab_hover(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         let id = self.tab_hover.tab.filter(|_| self.tab_hover.shown)?;
-        if self.menu.is_some() || cx.has_active_drag() {
+        // The row may have gone without a hover-out (Ctrl+S, compact mode,
+        // the floating sidebar sliding away), or something covers it.
+        let sidebar_shown = self.settings.docks_sidebar() || (self.sidebar_peek && !self.sidebar_fx.peek_leaving());
+        let covered = self.menu.is_some()
+            || self.launcher.is_some()
+            || self.tab_switcher.is_some()
+            || self.cheatsheet.is_some()
+            || self.capture.is_some()
+            || self.onboarding.is_some()
+            || self.selected_live().is_some_and(|l| l.fullscreen);
+        if !sidebar_shown || covered || cx.has_active_drag() {
             return None;
         }
         let record = self.ws.tab(id)?.clone();
