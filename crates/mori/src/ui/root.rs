@@ -505,7 +505,7 @@ impl Render for Browser {
         let launcher = self.launcher.clone();
         let menu = self.render_menu(window, cx);
         let panel = self.render_panel(window, cx);
-        let peek = self.render_peek(cx);
+        let peek = self.render_peek(window, cx);
         let boost = self.boost_editor.clone();
         let toasts = self.render_toasts(cx);
 

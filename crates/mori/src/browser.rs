@@ -125,6 +125,9 @@ pub struct Peek {
     pub view: WebView,
     pub title: String,
     pub url: String,
+    pub loading: bool,
+    pub can_go_back: bool,
+    pub can_go_forward: bool,
 }
 
 pub struct Browser {
@@ -1205,13 +1208,20 @@ impl Browser {
     }
 
     pub fn peek_url(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let size = self.peek_view_size(window, cx);
+        let view = WebView::new(url, size, window.scale_factor());
+        self.peek_view(view, url, window, cx);
+    }
+
+    /// Show an already-created view (e.g. a shift-clicked link) in Peek.
+    pub fn peek_view(&mut self, view: WebView, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(old) = self.peek.take() {
             EngineHub::unregister(cx, old.view.id());
             old.view.close();
         }
-        let (w, h) = self.card_size(window);
-        let size = ((w as f32 * 0.74).min(1000.) as i32, (h as f32 * 0.82).min(820.) as i32 - 46);
-        let view = WebView::new(url, size, window.scale_factor());
+        self.menu = None;
+        self.launcher = None;
+        view.set_hidden(false);
         let surface = cx.new(|cx| WebSurface::new(view.clone(), cx));
         self.watch_surface(&surface, cx);
         let weak = cx.entity().downgrade();
@@ -1231,6 +1241,9 @@ impl Browser {
             view,
             title: String::new(),
             url: url.to_string(),
+            loading: true,
+            can_go_back: false,
+            can_go_forward: false,
         });
         cx.notify();
     }
@@ -1244,16 +1257,35 @@ impl Browser {
         }
     }
 
-    /// Turn the peeked page into a real tab in the active space.
-    pub fn promote_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(peek) = self.peek.take() else { return };
+    /// Move the peeked page into a new tab after the current one.
+    fn adopt_peek(&mut self, peek: Peek, window: &mut Window, cx: &mut Context<Self>) -> TabId {
         EngineHub::unregister(cx, peek.view.id());
         let mut record = TabRecord::new(peek.view.url());
         record.title = peek.title;
         let id = self.ws.add_tab_after(record, self.selected());
-        self.ws.select(id);
         self.adopt_view(id, peek.view, window, cx);
+        if let Some(live) = self.live.get_mut(&id) {
+            live.loading = peek.loading;
+            live.can_go_back = peek.can_go_back;
+            live.can_go_forward = peek.can_go_forward;
+        }
+        id
+    }
+
+    /// Turn the peeked page into a real tab in the active space.
+    pub fn promote_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(peek) = self.peek.take() else { return };
+        let id = self.adopt_peek(peek, window, cx);
         self.select_tab(id, window, cx);
+    }
+
+    /// Turn the peeked page into a tab shown beside the current one.
+    pub fn peek_to_split(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(peek) = self.peek.take() else { return };
+        let id = self.adopt_peek(peek, window, cx);
+        self.open_split(id, window, cx);
+        self.focus_selected_page(window, cx);
+        self.schedule_save(cx);
     }
 
     fn on_peek_events(&mut self, events: Vec<ViewEvent>, window: &mut Window, cx: &mut Context<Self>) {
@@ -1265,6 +1297,15 @@ impl Browser {
                     peek.view.execute_js(mori_core::scripts::CLIPBOARD_BRIDGE_SCRIPT)
                 }
                 ViewEvent::AddressChanged(u) => peek.url = u,
+                ViewEvent::LoadingStateChanged {
+                    loading,
+                    can_go_back,
+                    can_go_forward,
+                } => {
+                    peek.loading = loading;
+                    peek.can_go_back = can_go_back;
+                    peek.can_go_forward = can_go_forward;
+                }
                 ViewEvent::NewView { view, url, .. } => {
                     view.close();
                     self.open_url(&url, true, window, cx);
@@ -1491,6 +1532,7 @@ impl Browser {
                     self.apply_boost(id);
                     if let Some(live) = self.live.get(&id) {
                         live.view.execute_js(mori_core::scripts::CLIPBOARD_BRIDGE_SCRIPT);
+                        live.view.execute_js(mori_core::page_actions::PEEK_LINK_SCRIPT);
                     }
                     if let Some(live) = self.live.get(&id)
                         && live.zoom_level != 0.0
@@ -1516,9 +1558,14 @@ impl Browser {
                     view,
                     url,
                     disposition,
-                    ..
+                    user_gesture,
                 } => {
                     use mori_engine::Disposition as D;
+                    // Shift+click ("new window") previews the link in Peek.
+                    if disposition == D::Window && user_gesture {
+                        self.peek_view(view, &url, window, cx);
+                        continue;
+                    }
                     let background = disposition == D::BackgroundTab;
                     let mut record = TabRecord::new(url.clone());
                     record.title = url;
@@ -1591,8 +1638,15 @@ impl Browser {
                         self.live.remove(&id);
                     }
                 }
-                ViewEvent::ConsoleMessage { .. }
-                | ViewEvent::Created
+                // Alt+click on a link in the visible page (PEEK_LINK_SCRIPT).
+                ViewEvent::ConsoleMessage { message, .. } => {
+                    if self.selected() == Some(id)
+                        && let Some(url) = mori_core::page_actions::peek_request(&message)
+                    {
+                        self.peek_url(&url, window, cx);
+                    }
+                }
+                ViewEvent::Created
                 | ViewEvent::Painted
                 | ViewEvent::PopupWidgetChanged
                 | ViewEvent::CursorChanged(_)

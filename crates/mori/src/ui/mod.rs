@@ -9,6 +9,7 @@ pub mod media;
 pub mod menus;
 pub mod overlays;
 pub mod panels;
+pub mod peek;
 pub mod root;
 pub mod settings;
 pub mod sidebar;
