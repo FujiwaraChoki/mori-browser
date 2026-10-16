@@ -1072,11 +1072,6 @@ impl WebView {
 
     // ---- Lifetime ---------------------------------------------------------
 
-    /// Downloads this view started that are still running.
-    pub fn active_download_count(&self) -> usize {
-        self.0.active_downloads.borrow().len()
-    }
-
     /// Close the browser. Emits [`ViewEvent::Closed`] once Chromium is done.
     ///
     /// A view with running downloads is parked instead (hidden, muted,
