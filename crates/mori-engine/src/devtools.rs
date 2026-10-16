@@ -172,7 +172,7 @@ wrap_dev_tools_message_observer! {
             if let Some((name, payload)) = binding_call(message) {
                 // Mori's own channel (it may carry what the user typed):
                 // not for an attached frontend.
-                view.push(crate::ViewEvent::BindingCalled { name, payload });
+                view.push(crate::ViewEvent::BindingCalled { name, payload: crate::view::BindingPayload(payload) });
                 return 1;
             }
             let sink = view.devtools_sink.borrow();
@@ -216,6 +216,9 @@ mod tests {
         assert_eq!(binding_call(event), Some(("__mori".into(), r#"{"a":1}"#.into())));
         assert_eq!(binding_call(br#"{"id":4,"result":{"value":"Runtime.bindingCalled"}}"#), None);
         assert_eq!(binding_call(br#"{"method":"Page.loadEventFired","params":{}}"#), None);
+        // The payload can hold a password: never printed.
+        let payload = crate::view::BindingPayload("secret".into());
+        assert_eq!(format!("{payload:?}"), "BindingPayload(6 bytes)");
     }
 
     #[test]

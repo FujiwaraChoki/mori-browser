@@ -21,6 +21,7 @@ macro_rules! form_helpers_js {
   const NEWISH = /new|confirm|repeat|retype|again|verify|create|register|sign-?up|join/i;
   const CURRENTISH = /current|old|existing/i;
   const SIGNUP_FORM = /sign-?up|register|registration|join|create/i;
+  const NOT_SUBMIT = /show|hide|reveal|visib|toggle|forgot|cancel/i;
   const qsa = (root, sel) =>
     (root.nodeType === 9 ? Document.prototype : Element.prototype).querySelectorAll.call(root, sel);
   const attr = (el, name) => Element.prototype.getAttribute.call(el, name) || '';
@@ -28,10 +29,20 @@ macro_rules! form_helpers_js {
   // A field shown with "show password" keeps counting as a password field.
   const isPassword = (el) => isInput(el) && (el.type === 'password' || (el.__moriPw === true && el.type === 'text'));
   const isTextLike = (el) => isInput(el) && ['text', 'email', 'tel'].includes(el.type) && !isPassword(el);
+  // Shown means someone can see the field: not hidden by its own style or
+  // an ancestor's, and not parked off the page (`left: -9999px`), where a
+  // page could keep a form to be filled without the user noticing.
   const shown = (el) => {
     if (!el.isConnected || el.disabled) return false;
     const r = el.getBoundingClientRect();
     if (r.width < 4 || r.height < 4) return false;
+    if (r.right + scrollX <= 0 || r.bottom + scrollY <= 0) return false;
+    const root = document.documentElement;
+    if (root && (r.left + scrollX >= Math.max(root.scrollWidth, innerWidth)
+      || r.top + scrollY >= Math.max(root.scrollHeight, innerHeight))) return false;
+    if (el.checkVisibility && !el.checkVisibility({
+      opacityProperty: true, visibilityProperty: true, checkOpacity: true, checkVisibilityCSS: true,
+    })) return false;
     const s = getComputedStyle(el);
     return s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) > 0.05;
   };
@@ -209,7 +220,12 @@ pub const FORM_AGENT_SCRIPT: &str = concat!(
     }, 0);
   }, true);
   document.addEventListener('input', (e) => {
-    if (!e.isTrusted || typed || !focused || targetOf(e) !== focused) return;
+    if (!e.isTrusted) return;
+    const el = targetOf(e);
+    // Only a password the user typed (or pasted, or Mori filled) is offered
+    // for saving, never one the page put there itself.
+    if (isInput(el)) el.__moriTyped = true;
+    if (typed || !focused || el !== focused) return;
     typed = true;
     send({ t: 'typing' });
   }, true);
@@ -231,7 +247,10 @@ pub const FORM_AGENT_SCRIPT: &str = concat!(
     let ticks = 0;
     const timer = setInterval(() => {
       ticks += 1;
-      if (!fields.some((f) => f.isConnected && shown(f))) {
+      // Gone, and not just drawn again (an SPA showing its error).
+      const gone = !fields.some((f) => f.isConnected && shown(f))
+        && !inputsIn(document).some((x) => isPassword(x) && shown(x));
+      if (gone) {
         clearInterval(timer);
         send({ t: 'submitted' });
       } else if (ticks >= 20) {
@@ -239,7 +258,11 @@ pub const FORM_AGENT_SCRIPT: &str = concat!(
       }
     }, 500);
   };
-  const capture = (scope) => {
+  const capture = (scope, submitted) => {
+    // Enter or a click on a form the browser won't submit (a required field
+    // is empty, an address is malformed) isn't a sign-in.
+    if (!submitted && scope instanceof HTMLFormElement && !Element.prototype.hasAttribute.call(scope, 'novalidate')
+      && Element.prototype.matches.call(scope, ':invalid')) return;
     const c = classify(scope);
     const fields = c.current.concat(c.fresh);
     if (!fields.length) {
@@ -248,8 +271,9 @@ pub const FORM_AGENT_SCRIPT: &str = concat!(
       return;
     }
     if (c.fresh.length >= 2 && c.fresh[0].value !== c.fresh[1].value) return;
-    const password = (c.fresh[0] && c.fresh[0].value) || (c.current[0] && c.current[0].value) || '';
-    if (!password) return;
+    const field = c.fresh[0] || c.current[0];
+    const password = field.value || '';
+    if (!password || !(field.__moriTyped || field.__moriFilled)) return;
     const u = usernameFor(c.current[0] || c.fresh[0], scope);
     const username = u ? u.value : '';
     const key = username + '\n' + password;
@@ -261,7 +285,7 @@ pub const FORM_AGENT_SCRIPT: &str = concat!(
     watch(fields);
   };
   document.addEventListener('submit', (e) => {
-    if (e.isTrusted && e.target && e.target.tagName === 'FORM') capture(e.target);
+    if (e.isTrusted && e.target instanceof HTMLFormElement) capture(e.target, true);
   }, true);
   document.addEventListener('pointerdown', (e) => {
     if (e.isTrusted) lastUserInput = Date.now();
@@ -270,7 +294,7 @@ pub const FORM_AGENT_SCRIPT: &str = concat!(
     if (!e.isTrusted) return;
     lastUserInput = Date.now();
     const el = targetOf(e);
-    if (e.key === 'Enter' && isInput(el)) capture(el.form || scopeOf(el));
+    if (e.key === 'Enter' && isInput(el)) capture(el.form || scopeOf(el), false);
   }, true);
   document.addEventListener('click', (e) => {
     if (!e.isTrusted) return;
@@ -285,7 +309,11 @@ pub const FORM_AGENT_SCRIPT: &str = concat!(
     const button = el && el.closest
       ? el.closest('button,input[type=submit],input[type=image],input[type=button],[role=button]')
       : null;
-    if (button) capture(button.form || scopeOf(button));
+    // "Show password" and "Forgot password?" buttons don't sign in.
+    const label = button
+      ? [attr(button, 'aria-label'), attr(button, 'title'), attr(button, 'id'), (button.textContent || '').slice(0, 200)].join(' ')
+      : '';
+    if (button && !NOT_SUBMIT.test(label)) capture(button.form || scopeOf(button), false);
   }, true);
 })()"#
 );
@@ -323,6 +351,7 @@ pub fn fill_script(mode: FillMode, origin: &str, username: Option<&str>, passwor
 {helpers}
   const setValue = (el, value) => {{
     if (el.readOnly) return;
+    el.__moriFilled = true;
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, value);
     el.dispatchEvent(new Event('input', {{ bubbles: true, composed: true }}));
     el.dispatchEvent(new Event('change', {{ bubbles: true }}));
@@ -371,6 +400,31 @@ mod tests {
         assert!(FORM_AGENT_SCRIPT.contains(&format!("globalThis.{AGENT_BINDING}(")));
         assert!(FORM_AGENT_SCRIPT.contains("window.top !== window"), "main frame only");
         assert!(FORM_AGENT_SCRIPT.contains("e.isTrusted"), "user actions only");
+    }
+
+    #[test]
+    fn agent_offers_only_what_the_user_entered() {
+        // A form submitted by script with values the page set itself
+        // (`button.click()` still fires a trusted submit event) is no login.
+        assert!(FORM_AGENT_SCRIPT.contains("el.__moriTyped = true"));
+        assert!(FORM_AGENT_SCRIPT.contains("field.__moriTyped || field.__moriFilled"));
+        // Enter or a click on a form the browser refuses to submit.
+        assert!(FORM_AGENT_SCRIPT.contains("':invalid'"));
+        // An SPA that draws its login form again (wrong password) didn't
+        // sign the user in.
+        assert!(FORM_AGENT_SCRIPT.contains("&& !inputsIn(document).some((x) => isPassword(x) && shown(x))"));
+    }
+
+    #[test]
+    fn hidden_and_off_page_fields_dont_count() {
+        let pw = Secret::new("x".into());
+        let fill = fill_script(FillMode::Login, "https://a.test", None, &pw);
+        for script in [FORM_AGENT_SCRIPT, fill.expose()] {
+            assert!(script.contains("r.right + scrollX <= 0"), "parked off the page");
+            assert!(script.contains("el.checkVisibility"), "hidden by an ancestor");
+        }
+        // Fields Mori filled count as entered by the user.
+        assert!(fill.expose().contains("el.__moriFilled = true"));
     }
 
     #[test]

@@ -12,7 +12,10 @@ use std::{collections::HashMap, sync::mpsc, thread};
 
 use futures::channel::oneshot;
 use mori_core::passwords::{Secret, display_origin};
-use secret_service::{EncryptionType, Error, blocking::SecretService};
+use secret_service::{
+    EncryptionType, Error,
+    blocking::{Collection, SecretService},
+};
 use uuid::Uuid;
 
 /// Attribute holding the login's id.
@@ -86,9 +89,36 @@ pub fn describe(err: Error) -> String {
     }
 }
 
-/// Check that a collection exists to store passwords in.
+/// Check that the keyring answers. A keyring without a collection to
+/// store passwords in is fine: [`store`] asks the keyring to make one.
 pub fn probe(ss: &SecretService) -> Result<(), String> {
-    ss.get_any_collection().map(|_| ()).map_err(describe)
+    match ss.get_default_collection() {
+        Ok(_) | Err(Error::NoResult) => Ok(()),
+        Err(e) => Err(describe(e)),
+    }
+}
+
+/// The collection new passwords go into: the default one (the login
+/// keyring), else the first one that outlives the session, else a new
+/// default collection (the keyring asks the user to set its password).
+/// Never the in-memory `session` collection, which forgets everything at
+/// logout while `passwords.json` would still list the logins.
+fn target_collection<'a>(ss: &'a SecretService<'a>) -> Result<Collection<'a>, String> {
+    match ss.get_default_collection() {
+        Ok(collection) => return Ok(collection),
+        Err(Error::NoResult) => {}
+        Err(e) => return Err(describe(e)),
+    }
+    let session = ss.get_collection_by_alias("session").ok().map(|c| c.collection_path.clone());
+    let lasting = ss
+        .get_all_collections()
+        .map_err(describe)?
+        .into_iter()
+        .find(|c| Some(&c.collection_path) != session.as_ref());
+    match lasting {
+        Some(collection) => Ok(collection),
+        None => ss.create_collection("Login", "default").map_err(describe),
+    }
 }
 
 fn label(origin: &str, username: &str) -> String {
@@ -113,7 +143,7 @@ pub fn store(ss: &SecretService, id: Uuid, origin: &str, username: &str, secret:
         item.set_attributes(attrs).map_err(describe)?;
         return item.set_label(&label(origin, username)).map_err(describe);
     }
-    let collection = ss.get_any_collection().map_err(describe)?;
+    let collection = target_collection(ss)?;
     collection.ensure_unlocked().map_err(describe)?;
     collection
         .create_item(&label(origin, username), attrs, secret.expose().as_bytes(), true, "text/plain")

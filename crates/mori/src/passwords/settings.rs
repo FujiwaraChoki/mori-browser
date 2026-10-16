@@ -30,6 +30,8 @@ use crate::{
 const TEST_FILE_CHOOSER_ENV: &str = "MORI_TEST_FILE_CHOOSER";
 /// How long a revealed password stays visible.
 const REVEAL_TIME: Duration = Duration::from_secs(30);
+/// How long a copied password stays on the clipboard.
+const CLIPBOARD_TIME: Duration = Duration::from_secs(60);
 /// Biggest CSV file Mori reads.
 const MAX_IMPORT_BYTES: u64 = 16 * 1024 * 1024;
 
@@ -256,7 +258,8 @@ impl Browser {
         let icon_host = host.split(':').next().unwrap_or(&host).to_string();
         let fav = self.favicons.get(&icon_host);
         let page = self.passwords_ui.page.as_ref().expect("page exists while rendering it");
-        let revealed = page.revealed.get(&id).map(|s| s.expose().to_string());
+        // One line, even for a password with a line break in it (imports).
+        let revealed = page.revealed.get(&id).map(|s| s.expose().replace(['\r', '\n'], "\u{21b5}"));
         let editing = page.editing.as_ref().filter(|e| e.id == id).map(|e| (e.username.clone(), e.password.clone()));
         let deleting = page.confirm_delete == Some(id);
         let username: SharedString = if cred.username.is_empty() { "No username".into() } else { cred.username.clone().into() };
@@ -428,6 +431,21 @@ impl Browser {
                 Ok(Some(secret)) => {
                     cx.write_to_clipboard(ClipboardItem::new_string(secret.expose().to_string()));
                     this.toast("Password copied", ToastStyle::Success, None, cx);
+                    // Don't leave it there for whatever reads the clipboard
+                    // later, unless something else was copied since. (On
+                    // Wayland this only works while a Mori window has the
+                    // focus.)
+                    cx.spawn(async move |_, cx| {
+                        cx.background_executor().timer(CLIPBOARD_TIME).await;
+                        cx.update(|cx| {
+                            let mut current = cx.read_from_clipboard().and_then(|c| c.text()).unwrap_or_default();
+                            if current == secret.expose() {
+                                cx.write_to_clipboard(ClipboardItem::new_string(String::new()));
+                            }
+                            zeroize::Zeroize::zeroize(&mut current);
+                        });
+                    })
+                    .detach();
                 }
                 Ok(None) => this.toast("This password is no longer in your keyring", ToastStyle::Error, None, cx),
                 Err(e) => this.toast(e, ToastStyle::Error, None, cx),

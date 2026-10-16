@@ -9,14 +9,19 @@ const GROUP: usize = 6;
 const GROUPS: usize = 3;
 /// Length of the grouped form, `xxxxxx-xxxxxx-xxxxxx`.
 const GROUPED_LEN: usize = GROUP * GROUPS + GROUPS - 1;
+/// The shortest password worth suggesting.
+pub const MIN_LEN: usize = 8;
 
 /// A random password with lower- and uppercase letters and a digit, from
 /// the operating system's secure random source: `abcDef-ghi2kl-mnopqr` style
 /// (about 104 bits), or plain letters and digits when the field only takes
-/// `max_len` characters. `None` if the system has no random source.
+/// `max_len` characters. `None` if the system has no random source, or
+/// the field takes fewer than [`MIN_LEN`] characters (no strong password
+/// fits, and a longer one wouldn't be what the site stores).
 pub fn generate_password(max_len: Option<usize>) -> Option<Secret> {
     let len = match max_len {
-        Some(max) if max < GROUPED_LEN => max.max(4),
+        Some(max) if max < MIN_LEN => return None,
+        Some(max) if max < GROUPED_LEN => max,
         _ => GROUPED_LEN,
     };
     let grouped = len == GROUPED_LEN;
@@ -80,7 +85,9 @@ mod tests {
         let p = generate_password(Some(12)).unwrap();
         assert_eq!(p.expose().len(), 12);
         assert!(!p.expose().contains('-'));
-        assert_eq!(generate_password(Some(2)).unwrap().expose().len(), 4);
+        assert_eq!(generate_password(Some(8)).unwrap().expose().len(), 8);
+        assert_eq!(generate_password(Some(7)), None, "too short to be strong");
+        assert_eq!(generate_password(Some(2)), None);
         assert_eq!(generate_password(Some(200)).unwrap().expose().len(), GROUPED_LEN);
     }
 

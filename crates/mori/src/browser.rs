@@ -1054,6 +1054,7 @@ impl Browser {
 
     pub fn navigate(&mut self, id: TabId, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.typed_https.remove(&id);
+        self.passwords_user_navigated(id, cx);
         // A new address starts at the top, not at the old page's offset.
         self.pending_scroll.remove(&id);
         if self.settings_open && self.active_tab() == Some(id) {

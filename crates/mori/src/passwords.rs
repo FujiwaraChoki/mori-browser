@@ -43,8 +43,13 @@ pub use vault::VaultStatus;
 
 use crate::browser::{Browser, ToastStyle};
 
-/// How long after a submission a navigation still counts as its result.
-const SUBMIT_WINDOW: Duration = Duration::from_secs(60);
+/// How long after a submission a navigation (or an SPA's form going away)
+/// still counts as its result. Longer, and leaving a site after a sign-in
+/// that went nowhere would offer to save what was typed there.
+const SUBMIT_WINDOW: Duration = Duration::from_secs(20);
+/// A save offer survives page loads this soon after it was made (sign-ins
+/// that bounce through a redirect page); later ones drop it.
+const OFFER_GRACE: Duration = Duration::from_secs(5);
 /// How long the username of a two-step sign-in is remembered for its
 /// password step.
 const USERNAME_STEP_WINDOW: Duration = Duration::from_secs(600);
@@ -84,6 +89,7 @@ pub struct SaveOffer {
     pub kind: OfferKind,
     /// Bumped per offer, so the popover's username field is made afresh.
     pub serial: u64,
+    at: Instant,
 }
 
 /// Which popover hangs off the URL pill's key button.
@@ -320,6 +326,21 @@ impl Browser {
         cx.notify();
     }
 
+    /// The user sent tab `tab` somewhere else (typed an address, opened a
+    /// bookmark): a submission still waiting for its result went nowhere,
+    /// and the save offer is about the page being left.
+    pub fn passwords_user_navigated(&mut self, tab: TabId, cx: &mut Context<Self>) {
+        let Some(view) = tab_view(self, tab).map(|v| v.id()) else { return };
+        if !cx.has_global::<Passwords>() {
+            return;
+        }
+        if let Some(page) = Passwords::get(cx).pages.get_mut(&view) {
+            page.pending = None;
+            page.offer = None;
+            page.popover = None;
+        }
+    }
+
     /// The page in front: the popup while one is open, else the active tab.
     fn passwords_front_view(&self) -> Option<WebView> {
         match &self.popup {
@@ -362,6 +383,11 @@ impl Browser {
                 if page.popover == Some(PillPopover::Logins) {
                     page.popover = None;
                 }
+                // The offer belongs to the page the sign-in led to.
+                if page.offer.as_ref().is_some_and(|o| o.at.elapsed() > OFFER_GRACE) {
+                    page.offer = None;
+                    page.popover = None;
+                }
             }
             ViewEvent::AddressChanged(_) => {
                 let page = Passwords::get(cx).page_mut(id);
@@ -376,7 +402,7 @@ impl Browser {
                 }
             }
             ViewEvent::BindingCalled { name, payload } if name == AGENT_BINDING => {
-                let mut payload = std::mem::take(payload);
+                let mut payload = std::mem::take(&mut payload.0);
                 let report = parse_report(&payload);
                 zeroize::Zeroize::zeroize(&mut payload);
                 if let Some(report) = report {
@@ -517,7 +543,14 @@ impl Browser {
         let serial = p.next_serial;
         p.next_serial += 1;
         let page = p.page_mut(id);
-        page.offer = Some(SaveOffer { origin: s.origin, username: s.username, password: s.password, kind, serial });
+        page.offer = Some(SaveOffer {
+            origin: s.origin,
+            username: s.username,
+            password: s.password,
+            kind,
+            serial,
+            at: Instant::now(),
+        });
         page.popover = Some(PillPopover::Offer);
         page.dropdown = false;
         cx.notify();
@@ -650,7 +683,9 @@ impl Browser {
                     }
                 };
                 let Some(view_handle) = WebView::by_id(view) else { return };
-                let script = fill_script(FillMode::Login, &page_origin, Some(&c.username), &secret);
+                // A login saved without a username leaves the field alone.
+                let username = (!c.username.is_empty()).then_some(c.username.as_str());
+                let script = fill_script(FillMode::Login, &page_origin, username, &secret);
                 let weak = cx.entity().downgrade();
                 let async_cx = cx.to_async();
                 evaluate_in_agent_world(&view_handle, script, move |result| {
