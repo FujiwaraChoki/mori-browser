@@ -517,7 +517,10 @@ impl Browser {
         let space_id = space.id;
         // While a tab is dragged, an extra cell after the last tile pins it
         // at the end; drops on the grid's gaps do the same.
-        let end_cell = cx.has_active_drag().then(|| {
+        // Resize drags (sidebar edge, split divider) aren't tab drags.
+        let tab_drag = cx.has_active_drag()
+            && cx.active_drag_cursor_style() != Some(CursorStyle::ResizeColumn);
+        let end_cell = tab_drag.then(|| {
             div()
                 .id("pin-end")
                 .h(px(48.))

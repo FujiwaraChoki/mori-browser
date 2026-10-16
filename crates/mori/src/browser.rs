@@ -831,6 +831,8 @@ impl Browser {
 
     pub fn navigate(&mut self, id: TabId, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.typed_https.remove(&id);
+        // A new address starts at the top, not at the old page's offset.
+        self.pending_scroll.remove(&id);
         if self.settings_open && self.active_tab() == Some(id) {
             self.set_settings_open(false, window, cx);
         }
@@ -871,6 +873,16 @@ impl Browser {
             return;
         }
         if !force && self.ws.folder_of(id).is_some() {
+            // Unloading a split pane ends its pair; otherwise selecting the
+            // neighbour (often its partner) would load it straight back.
+            if self.ws.remove_split(id) && self.visible_split_member(id) {
+                self.split = None;
+                self.split_focused = false;
+                let visible = self.selected();
+                for (tab, live) in &self.live {
+                    live.view.set_hidden(Some(*tab) != visible);
+                }
+            }
             let was_selected = self.selected() == Some(id);
             let neighbor = self.ws.neighbor(id);
             self.unload(id, cx);

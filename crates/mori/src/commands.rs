@@ -113,11 +113,9 @@ pub fn available(browser: &Browser) -> Vec<CommandInfo> {
 pub fn run(b: &mut Browser, command: Command, window: &mut Window, cx: &mut Context<Browser>) {
     use Command::*;
     match command {
-        NewTab => {
-            let url = b.settings.new_tab_url().to_string();
-            b.new_tab_with_url(&url, window, cx);
-            b.open_launcher(LauncherMode::NewTab, window, cx);
-        }
+        // Like Ctrl+T: the tab is created when the launcher is submitted, so
+        // a "Homepage" new-tab setting doesn't leave an extra tab behind.
+        NewTab => b.open_launcher(LauncherMode::NewTab, window, cx),
         NewSpace => b.create_space(window, cx),
         NewFolderWithSelected => {
             let tabs = b.multi_select.clone();

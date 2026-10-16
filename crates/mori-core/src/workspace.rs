@@ -426,11 +426,16 @@ impl Workspace {
             let members: std::collections::HashSet<TabId> = space.ordered().into_iter().collect();
             space.splits.retain(|g| {
                 let [a, b] = g.tabs;
-                a != b
+                let valid = a != b
                     && members.contains(&a)
                     && members.contains(&b)
-                    && paired.insert(a)
-                    && paired.insert(b)
+                    && !paired.contains(&a)
+                    && !paired.contains(&b);
+                if valid {
+                    paired.insert(a);
+                    paired.insert(b);
+                }
+                valid
             });
         }
         self.closed.retain(|c| !known.contains(&c.record.id));
@@ -1376,6 +1381,21 @@ mod tests {
         space.splits.push(SplitGroup::new(ids[2], ids[0]));
         ws.repair();
         assert_eq!(ws.active().splits, vec![SplitGroup::new(ids[1], ids[2])]);
+    }
+
+    #[test]
+    fn repair_keeps_a_valid_pair_after_a_dropped_overlapping_one() {
+        let (mut ws, ids) = ws_with(4);
+        let space = ws.active_mut();
+        space.splits.push(SplitGroup::new(ids[0], ids[1]));
+        // Overlaps the first pair on ids[1]: dropped, and must not mark ids[2] as paired.
+        space.splits.push(SplitGroup::new(ids[2], ids[1]));
+        space.splits.push(SplitGroup::new(ids[2], ids[3]));
+        ws.repair();
+        assert_eq!(
+            ws.active().splits,
+            vec![SplitGroup::new(ids[0], ids[1]), SplitGroup::new(ids[2], ids[3])]
+        );
     }
 
     #[test]
