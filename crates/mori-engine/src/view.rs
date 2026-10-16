@@ -594,6 +594,11 @@ impl PartialEq for WebView {
 impl WebView {
     /// Create a new browser loading `url`. `size` is in logical pixels.
     pub fn new(url: &str, size: (i32, i32), scale: f32) -> WebView {
+        Self::new_in(url, size, scale, &crate::BrowsingContext::shared())
+    }
+
+    /// [`WebView::new`] in a particular browsing context (profile).
+    pub fn new_in(url: &str, size: (i32, i32), scale: f32, context: &crate::BrowsingContext) -> WebView {
         let inner = ViewInner::new(size, scale);
         let mut client = client::build_client(&inner);
         *inner.client.borrow_mut() = Some(client.clone());
@@ -603,6 +608,7 @@ impl WebView {
             ..Default::default()
         };
         let settings = client::browser_settings();
+        let mut request_context = context.request_context();
         inner.creating.set(true);
         let created = browser_host_create_browser(
             Some(&window_info),
@@ -610,7 +616,7 @@ impl WebView {
             Some(&CefString::from(url)),
             Some(&settings),
             None,
-            None,
+            request_context.as_mut(),
         );
         if created != 1 {
             log::error!("failed to create browser for {url}");
@@ -627,6 +633,13 @@ impl WebView {
 
     pub fn id(&self) -> ViewId {
         self.0.id
+    }
+
+    /// Whether the page runs in `context`; `None` until its browser exists.
+    /// Pages opened by a page (popups) share their opener's context.
+    pub fn in_context(&self, context: &crate::BrowsingContext) -> Option<bool> {
+        let current = self.0.host()?.request_context()?;
+        Some(context.matches(&current))
     }
 
     /// Look up a live view by id.

@@ -16,3 +16,4 @@ pub mod settings;
 pub mod sidebar;
 pub mod site_info;
 pub mod toasts;
+pub mod windows;

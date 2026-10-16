@@ -6,11 +6,15 @@ use mori_core::workspace::SpaceId;
 use crate::{
     browser::{Browser, Panel, RenameTarget, ToastStyle},
     ui::launcher::LauncherMode,
+    windows::WindowKind,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Command {
     NewTab,
+    NewWindow,
+    NewPrivateWindow,
+    MoveTabToNewWindow,
     NewSpace,
     NewFolderWithSelected,
     ReaderView,
@@ -61,6 +65,8 @@ pub fn available(browser: &Browser) -> Vec<CommandInfo> {
     };
     use Command::*;
     add(NewTab, "New Tab", "open blank", "plus", Some("secondary-t"));
+    add(NewWindow, "New Window", "browser", "app-window", Some("secondary-n"));
+    add(NewPrivateWindow, "New Private Window", "incognito", "hat-glasses", Some("secondary-shift-n"));
     add(ReaderView, "Reader View", "read article distraction", "book-open-text", Some("secondary-alt-r"));
     add(CaptureVisibleTab, "Capture Visible Tab", "screenshot image", "camera", None);
     add(BoostSite, "Boost This Site…", "css js customize", "zap", Some("secondary-shift-b"));
@@ -100,6 +106,9 @@ pub fn available(browser: &Browser) -> Vec<CommandInfo> {
         for space in browser.ws.spaces.iter().filter(|s| s.id != browser.ws.active_space) {
             add(MoveTabToSpace(space.id), &format!("Move Tab to {}", space.name), "space context", "arrow-right-left", None);
         }
+        if browser.kind == WindowKind::Normal {
+            add(MoveTabToNewWindow, "Move Tab to New Window", "window split off", "app-window", None);
+        }
     }
     if browser.settings.ai_integration_enabled {
         add(OpenAssistant, "Open Assistant", "ai chat codex agent", "sparkles", Some("secondary-shift-k"));
@@ -116,6 +125,13 @@ pub fn run(b: &mut Browser, command: Command, window: &mut Window, cx: &mut Cont
         // Like Ctrl+T: the tab is created when the launcher is submitted, so
         // a "Homepage" new-tab setting doesn't leave an extra tab behind.
         NewTab => b.open_launcher(LauncherMode::NewTab, window, cx),
+        NewWindow => window.dispatch_action(Box::new(crate::actions::NewWindow), cx),
+        NewPrivateWindow => window.dispatch_action(Box::new(crate::actions::NewPrivateWindow), cx),
+        MoveTabToNewWindow => {
+            if let Some(id) = b.selected() {
+                crate::windows::move_tab_to_window(id, None, cx);
+            }
+        }
         NewSpace => b.create_space(window, cx),
         NewFolderWithSelected => {
             let tabs = b.multi_select.clone();

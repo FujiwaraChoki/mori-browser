@@ -4,8 +4,8 @@
 //! lets the page see most shortcuts first: while a page has focus, a
 //! shortcut reaches it, and the browser action runs only if the page did not
 //! handle the key (no `preventDefault`). Only the [`RESERVED`] set (new or
-//! close tab, switching tabs and spaces, the address bar, quit, Escape) acts
-//! before the page. Unbound keys (Ctrl+A/C/V/X/Z, Tab) always go to the page.
+//! close tab or window, switching tabs and spaces, the address bar, quit,
+//! Escape) acts before the page. Unbound keys (Ctrl+A/C/V/X/Z, Tab) always go to the page.
 
 use gpui_kit::{App, KeyBinding, NoAction, actions};
 
@@ -13,6 +13,9 @@ actions!(
     mori,
     [
         NewTab,
+        NewWindow,
+        NewPrivateWindow,
+        CloseWindow,
         OpenLocation,
         CloseTab,
         ReopenClosedTab,
@@ -83,7 +86,10 @@ pub const SURFACE_CONTEXT: &str = "WebSurface";
 /// Chrome's reserved commands: pages can't trap the user in a tab.
 pub const RESERVED: &[&str] = &[
     "secondary-t",
+    "secondary-n",
+    "secondary-shift-n",
     "secondary-w",
+    "secondary-shift-w",
     "secondary-shift-t",
     "secondary-l",
     "alt-d",
@@ -129,6 +135,9 @@ fn browser_bindings() -> Vec<(&'static str, KeyBinding)> {
     }
     let mut list = bindings![
         "secondary-t" => NewTab,
+        "secondary-n" => NewWindow,
+        "secondary-shift-n" => NewPrivateWindow,
+        "secondary-shift-w" => CloseWindow,
         "secondary-l" => OpenLocation,
         "alt-d" => OpenLocation,
         "secondary-w" => CloseTab,

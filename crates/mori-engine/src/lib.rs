@@ -12,6 +12,7 @@
 mod app;
 mod appearance;
 mod client;
+mod context;
 mod devtools;
 mod downloads;
 mod drag;
@@ -28,6 +29,7 @@ use std::{
 use anyhow::{Context as _, Result, bail};
 use cef::{args::Args, *};
 
+pub use context::BrowsingContext;
 pub use devtools::Sink as DevToolsSink;
 pub use appearance::{reapply_color_scheme, set_color_scheme};
 pub use downloads::{
@@ -59,18 +61,29 @@ pub struct EngineConfig {
 }
 
 static INITIALIZED: AtomicBool = AtomicBool::new(false);
-/// Command-line URLs from relaunches of the app, waiting for the UI.
-static RELAUNCHES: std::sync::Mutex<Vec<Vec<String>>> = std::sync::Mutex::new(Vec::new());
+/// Command lines of relaunches of the app, waiting for the UI.
+static RELAUNCHES: std::sync::Mutex<Vec<Relaunch>> = std::sync::Mutex::new(Vec::new());
 
-pub(crate) fn push_relaunch(urls: Vec<String>) {
+/// A later `mori` launch that Chromium's process singleton handed to the
+/// running instance.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Relaunch {
+    /// URL (or file) arguments; empty means "just bring Mori forward".
+    pub urls: Vec<String>,
+    /// `--new-window`: open a new browser window.
+    pub new_window: bool,
+    /// `--private-window`: open a new private window.
+    pub private_window: bool,
+}
+
+pub(crate) fn push_relaunch(relaunch: Relaunch) {
     if let Ok(mut q) = RELAUNCHES.lock() {
-        q.push(urls);
+        q.push(relaunch);
     }
 }
 
-/// Relaunches since the last call; each entry is that launch's URL
-/// arguments (possibly empty, meaning "just bring the window forward").
-pub fn take_relaunches() -> Vec<Vec<String>> {
+/// Relaunches since the last call, oldest first.
+pub fn take_relaunches() -> Vec<Relaunch> {
     RELAUNCHES.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default()
 }
 /// Milliseconds since the UNIX epoch at which CEF asked to be pumped next,
@@ -112,6 +125,7 @@ pub fn initialize(config: &EngineConfig) -> Result<InitOutcome> {
     }
     let resources = resources_dir().context("locating CEF resources")?;
     std::fs::create_dir_all(&config.profile_dir).ok();
+    context::set_root(config.profile_dir.clone());
     std::fs::create_dir_all(&config.downloads_dir).ok();
     downloads::set_downloads_dir(config.downloads_dir.clone());
 

@@ -10,7 +10,7 @@
 use std::{collections::HashMap, rc::Rc, time::Duration};
 
 use gpui_kit::*;
-use mori_engine::{DownloadUpdate, ViewEvent, ViewId, WebView};
+use mori_engine::{DownloadUpdate, Relaunch, ViewEvent, ViewId, WebView};
 
 use crate::web_surface::WebSurface;
 
@@ -21,7 +21,7 @@ struct Route {
     on_events: EventHandler,
 }
 
-type RelaunchHandler = Rc<dyn Fn(Vec<String>, &mut App)>;
+type RelaunchHandler = Rc<dyn Fn(Relaunch, &mut App)>;
 type DownloadHandler = Rc<dyn Fn(Vec<DownloadUpdate>, &mut App)>;
 
 #[derive(Default)]
@@ -53,8 +53,8 @@ impl EngineHub {
         }
     }
 
-    /// Called with the URL arguments of each later `mori` launch.
-    pub fn on_relaunch(cx: &mut App, handler: impl Fn(Vec<String>, &mut App) + 'static) {
+    /// Called with the command line of each later `mori` launch.
+    pub fn on_relaunch(cx: &mut App, handler: impl Fn(Relaunch, &mut App) + 'static) {
         cx.default_global::<EngineHub>().on_relaunch = Some(Rc::new(handler));
     }
 
@@ -94,8 +94,8 @@ impl EngineHub {
                 if !relaunches.is_empty() {
                     cx.update(|cx| {
                         if let Some(handler) = cx.global::<EngineHub>().on_relaunch.clone() {
-                            for urls in relaunches {
-                                handler(urls, cx);
+                            for relaunch in relaunches {
+                                handler(relaunch, cx);
                             }
                         }
                     });
