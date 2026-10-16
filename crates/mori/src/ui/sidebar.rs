@@ -904,6 +904,14 @@ impl Browser {
             (black().opacity(0.25), black().opacity(0.6))
         };
         let hover = if t.dark { white().opacity(0.45) } else { black().opacity(0.42) };
+        // Zen spaces its dots 32px apart; with more spaces they close up to
+        // fit between the buttons before the row starts to scroll.
+        let width = self.sidebar_drag.unwrap_or(self.settings.clamped_sidebar_width());
+        let buttons = if ai { 3. } else { 2. };
+        let room = width - buttons * f32::from(button);
+        let pitch = (room / self.ws.spaces.len().max(1) as f32).clamp(20., 32.);
+        let chip = px(pitch.min(24.));
+        let gap = px((pitch - 24.).max(0.));
         let chips: Vec<AnyElement> = if self.ws.spaces.len() < 2 {
             Vec::new()
         } else {
@@ -928,7 +936,7 @@ impl Browser {
                     div()
                         .id(("space-chip", i))
                         .group("space-chip")
-                        .size(px(24.))
+                        .size(chip)
                         .flex()
                         .flex_none()
                         .items_center()
@@ -994,7 +1002,7 @@ impl Browser {
                     .flex_1()
                     .min_w_0()
                     .justify_center()
-                    .gap(px(8.))
+                    .gap(gap)
                     .overflow_x_scroll()
                     .children(chips),
             )
