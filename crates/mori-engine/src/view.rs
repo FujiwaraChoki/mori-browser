@@ -460,6 +460,7 @@ pub(crate) fn note_download(view: &Rc<ViewInner>, id: DownloadId, running: bool)
         active.is_empty()
     };
     if idle && view.parked.replace(false) {
+        log::debug!("downloads of parked view {:?} settled; closing it", view.id);
         view.close_browser_now();
     }
 }
@@ -1093,6 +1094,7 @@ impl WebView {
         crate::drag::cancel(&self.0);
         crate::devtools::set_sink(&self.0, None);
         if !self.0.active_downloads.borrow().is_empty() {
+            log::debug!("parking view {:?} until its downloads finish", self.0.id);
             self.0.parked.set(true);
             self.0.keep_alive();
             self.set_hidden(true);

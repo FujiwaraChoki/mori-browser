@@ -687,6 +687,7 @@ wrap_life_span_handler! {
 
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
             let Some(view) = self.view.upgrade() else { return };
+            log::debug!("view {:?} closed", view.id);
             view.closed.set(true);
             view.creating.set(false);
             view.fail_pending("view closed");
