@@ -61,7 +61,7 @@ impl WebSurface {
             stale: Vec::new(),
             popup: None,
             cursor: CursorKind::Arrow,
-            corner_radius: px(10.),
+            corner_radius: crate::theme::metrics::CARD_RADIUS,
             bounds: Bounds::default(),
             pressed: None,
             hovered: false,

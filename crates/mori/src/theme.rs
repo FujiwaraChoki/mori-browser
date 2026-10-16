@@ -5,7 +5,7 @@
 //! global, and mirrors them into GPUI Component's theme so stock inputs and
 //! menus match the chrome.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use gpui_kit::{component::Theme as KitTheme, component::ThemeMode, *};
 use mori_core::theme::{self as core_theme, GradientTheme, Palette, Rgba};
@@ -26,11 +26,73 @@ pub mod metrics {
     pub const TEXT_CAPTION: Pixels = px(10.);
     pub const TEXT_TITLE: Pixels = px(15.);
 
-    pub const SIDEBAR_DEFAULT: f32 = 256.;
-    pub const SIDEBAR_MIN: f32 = 200.;
-    pub const SIDEBAR_MAX: f32 = 420.;
+    pub const SIDEBAR_DEFAULT: f32 = mori_core::settings::SIDEBAR_DEFAULT_WIDTH;
+    pub const SIDEBAR_MIN: f32 = mori_core::settings::SIDEBAR_MIN_WIDTH;
+    pub const SIDEBAR_MAX: f32 = mori_core::settings::SIDEBAR_MAX_WIDTH;
     pub const CARD_INSET: Pixels = px(8.);
-    pub const ROW_HEIGHT: Pixels = px(34.);
+    /// The web card's corner radius (Zen: ~6px, borderless).
+    pub const CARD_RADIUS: Pixels = px(6.);
+
+    /// Sidebar content inset from the window edge (address pill, pinned grid).
+    pub const SIDEBAR_INSET: Pixels = px(7.);
+    /// Extra inset of tab rows relative to the pill.
+    pub const ROW_INSET: Pixels = px(2.);
+    pub const ROW_HEIGHT: Pixels = px(36.);
+    pub const ROW_GAP: Pixels = px(4.);
+    pub const ROW_RADIUS: Pixels = px(8.);
+    pub const PILL_HEIGHT: Pixels = px(34.);
+    pub const TOOLBAR_BUTTON: Pixels = px(30.);
+    pub const FAVICON: Pixels = px(16.);
+}
+
+/// The desktop's interface font, resolved once at startup.
+pub struct UiFont {
+    /// Family name as installed (after fontconfig substitution).
+    pub family: SharedString,
+    /// The interface font size: tab titles and sidebar rows (11pt = 14.67px).
+    pub size: Pixels,
+}
+
+impl UiFont {
+    /// Address pill text (Zen: ~15.4px at 11pt).
+    pub fn url_size(&self) -> Pixels {
+        self.size * 1.05
+    }
+
+    /// Space label above the tab list (Zen: 13px bold at 11pt).
+    pub fn label_size(&self) -> Pixels {
+        self.size * 0.886
+    }
+}
+
+/// The system UI font: GNOME's `font-name` setting, resolved through
+/// fontconfig so user substitutions apply exactly as they do for GTK apps
+/// (Zen); `sans-serif` when the setting is unavailable.
+pub fn ui_font() -> &'static UiFont {
+    static FONT: OnceLock<UiFont> = OnceLock::new();
+    FONT.get_or_init(|| {
+        let output = |cmd: &str, args: &[&str]| {
+            std::process::Command::new(cmd)
+                .args(args)
+                .output()
+                .ok()
+                .filter(|o| o.status.success())
+                .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        };
+        let (requested, points) = output("gsettings", &["get", "org.gnome.desktop.interface", "font-name"])
+            .as_deref()
+            .and_then(core_theme::parse_font_description)
+            .unwrap_or_else(|| ("sans-serif".into(), core_theme::DEFAULT_UI_FONT_POINTS));
+        let family = output("fc-match", &["-f", "%{family}", &requested])
+            .as_deref()
+            .and_then(core_theme::first_font_family)
+            .unwrap_or_else(|| ".SystemUIFont".into());
+        log::info!("UI font: {family} {points}pt (requested {requested})");
+        UiFont {
+            family: family.into(),
+            size: px(core_theme::points_to_px(points)),
+        }
+    })
 }
 
 pub fn hsla(c: Rgba) -> Hsla {
@@ -108,30 +170,84 @@ impl Tokens {
         }
     }
 
-    // ---- Tab surface tokens (Theme.swift "tab surface") -------------------
+    // ---- Sidebar surface tokens (Zen) ---------------------------------------
+    // Translucent so a space's gradient wash shows through.
 
     pub fn tab_selected(&self) -> Hsla {
         if self.dark {
-            white().opacity(0.18)
+            white().opacity(0.17)
         } else {
-            white().opacity(0.85)
+            white().opacity(0.72)
         }
+    }
+
+    /// The selected row's lift in light mode (dark rows sit flat, as in Zen).
+    pub fn tab_selected_shadow(&self) -> Vec<BoxShadow> {
+        if self.dark {
+            return Vec::new();
+        }
+        vec![BoxShadow {
+            color: black().opacity(0.08),
+            offset: point(px(0.), px(1.)),
+            blur_radius: px(2.),
+            spread_radius: px(0.),
+            inset: false,
+        }]
     }
 
     pub fn tab_hover(&self) -> Hsla {
         if self.dark {
-            white().opacity(0.10)
+            white().opacity(0.07)
+        } else {
+            black().opacity(0.05)
+        }
+    }
+
+    /// Resting fill of the address pill and the pinned tiles.
+    pub fn tile_rest(&self) -> Hsla {
+        if self.dark {
+            white().opacity(0.12)
         } else {
             black().opacity(0.07)
         }
     }
 
-    pub fn tile_rest(&self) -> Hsla {
+    pub fn tile_hover(&self) -> Hsla {
         if self.dark {
-            white().opacity(0.06)
+            white().opacity(0.17)
         } else {
-            black().opacity(0.05)
+            black().opacity(0.10)
         }
+    }
+
+    /// Hairlines between sidebar sections.
+    pub fn sidebar_separator(&self) -> Hsla {
+        if self.dark {
+            white().opacity(0.09)
+        } else {
+            black().opacity(0.10)
+        }
+    }
+
+    /// `layer` composited over the plain sidebar, for overlays that must
+    /// match a translucent surface exactly (title fade-outs). `None` while a
+    /// gradient wash is showing, because the sidebar is not one colour then.
+    pub fn opaque_on_sidebar(&self, layer: Hsla) -> Option<Hsla> {
+        if !self.gradient.is_none() {
+            return None;
+        }
+        let (top, bottom) = (layer.to_rgb(), self.sidebar.to_rgb());
+        let a = top.a;
+        let mix = |t: f32, b: f32| t * a + b * (1.0 - a);
+        Some(
+            Rgba32 {
+                r: mix(top.r, bottom.r),
+                g: mix(top.g, bottom.g),
+                b: mix(top.b, bottom.b),
+                a: 1.0,
+            }
+            .into(),
+        )
     }
 
     pub fn ghost_hover(&self) -> Hsla {
@@ -142,16 +258,35 @@ impl Tokens {
         self.foreground.opacity(0.09)
     }
 
+    /// Outline of menus, the launcher and other floating surfaces.
+    pub fn popover_border(&self) -> Hsla {
+        if self.dark {
+            white().opacity(0.16)
+        } else {
+            black().opacity(0.10)
+        }
+    }
+
+    /// Divider lines inside popovers.
+    pub fn popover_separator(&self) -> Hsla {
+        if self.dark {
+            white().opacity(0.08)
+        } else {
+            black().opacity(0.08)
+        }
+    }
+
     pub fn shadow_alpha(&self, light: f32, dark: f32) -> f32 {
         if self.dark { dark } else { light }
     }
 
-    /// Card-style drop shadow (`Shadow.card`).
+    /// The web card's drop shadow: barely there on dark, a soft halo on light.
     pub fn card_shadow(&self) -> Vec<BoxShadow> {
+        let (alpha, y, blur) = if self.dark { (0.25, 1., 4.) } else { (0.10, 0., 10.) };
         vec![BoxShadow {
-            color: black().opacity(self.shadow_alpha(0.12, 0.40)),
-            offset: point(px(0.), px(2.)),
-            blur_radius: px(8.),
+            color: black().opacity(alpha),
+            offset: point(px(0.), px(y)),
+            blur_radius: px(blur),
             spread_radius: px(0.),
             inset: false,
         }]
@@ -227,8 +362,13 @@ pub fn apply(
     }
     let tokens = Tokens::from_palette(&palette, dark, gradient.clone());
 
+    // Pages follow the chrome, so dark-aware sites (and their favicons)
+    // render dark while Mori is dark.
+    mori_engine::set_color_scheme(dark);
+
     KitTheme::change(if dark { ThemeMode::Dark } else { ThemeMode::Light }, window, cx);
     let kit = KitTheme::global_mut(cx);
+    kit.font_family = ui_font().family.clone();
     kit.font_size = px(13.);
     kit.radius = metrics::RADIUS_MD;
     kit.radius_lg = metrics::RADIUS;

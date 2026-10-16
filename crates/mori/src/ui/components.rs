@@ -25,10 +25,12 @@ pub fn icon_button(
     cx: &App,
 ) -> Stateful<Div> {
     let t = cx.tokens();
-    let fg = if enabled {
-        t.sidebar_foreground.opacity(0.85)
-    } else {
-        t.sidebar_foreground.opacity(0.35)
+    // Zen's toolbar greys: #B9B9B9 / #5F5F5F on dark, #69696C / #AEAEB0 on light.
+    let fg = match (enabled, t.dark) {
+        (true, true) => t.sidebar_foreground.opacity(0.72),
+        (true, false) => t.sidebar_foreground.opacity(0.66),
+        (false, true) => t.sidebar_foreground.opacity(0.30),
+        (false, false) => t.sidebar_foreground.opacity(0.35),
     };
     let mut el = div()
         .id(id)
@@ -38,7 +40,7 @@ pub fn icon_button(
         .justify_center()
         .size(size)
         .rounded(metrics::RADIUS)
-        .child(icon(icon_name, (size * 0.57).round(), fg));
+        .child(icon(icon_name, (size * 0.53).round(), fg));
     if enabled {
         el = el
             .cursor_pointer()
@@ -48,19 +50,60 @@ pub fn icon_button(
     el
 }
 
-/// A tab's favicon, or a globe when it has none.
+/// A tab's favicon, or a globe when it has none. Icons that would vanish
+/// into the sidebar (a black logo on dark chrome, a white one on light) sit
+/// on a small contrasting plate, as Arc draws them.
 pub fn favicon(image: Option<Arc<RenderImage>>, size: Pixels, dimmed: bool, cx: &App) -> AnyElement {
     let t = cx.tokens();
     match image {
-        Some(image) => img(image)
-            .size(size)
-            .flex_none()
-            .rounded(px(3.))
-            .opacity(if dimmed { 0.5 } else { 1.0 })
-            .into_any_element(),
+        Some(image) => {
+            let plate = needs_plate(&image, t).then(|| {
+                if t.dark { white().opacity(0.88) } else { black().opacity(0.72) }
+            });
+            let opacity = if dimmed { 0.5 } else { 1.0 };
+            match plate {
+                Some(plate) => div()
+                    .size(size)
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(4.))
+                    .bg(plate)
+                    .opacity(opacity)
+                    .child(img(image).size((size * 0.75).round()).flex_none())
+                    .into_any_element(),
+                None => img(image)
+                    .size(size)
+                    .flex_none()
+                    .rounded(px(3.))
+                    .opacity(opacity)
+                    .into_any_element(),
+            }
+        }
         None => icon("globe", size, t.sidebar_foreground.opacity(if dimmed { 0.35 } else { 0.6 }))
             .into_any_element(),
     }
+}
+
+/// Whether `image` lacks contrast against the sidebar, cached per image and
+/// scheme (icons are tiny, but this runs every frame).
+fn needs_plate(image: &RenderImage, t: &crate::theme::Tokens) -> bool {
+    use std::{cell::RefCell, collections::HashMap};
+    thread_local! {
+        static CACHE: RefCell<HashMap<(ImageId, bool), bool>> = RefCell::new(HashMap::new());
+    }
+    let key = (image.id, t.dark);
+    if let Some(hit) = CACHE.with(|c| c.borrow().get(&key).copied()) {
+        return hit;
+    }
+    let bg = t.sidebar.to_rgb();
+    let bg = mori_core::theme::Rgba::rgb(bg.r, bg.g, bg.b);
+    let low = image
+        .as_bytes(0)
+        .is_some_and(|bytes| mori_core::theme::favicon_needs_plate(bytes, true, bg));
+    CACHE.with(|c| c.borrow_mut().insert(key, low));
+    low
 }
 
 /// A keyboard shortcut rendered as key caps.
@@ -98,7 +141,7 @@ pub fn popover_surface(cx: &App) -> Div {
         .bg(t.popover)
         .rounded(metrics::RADIUS_POPOVER)
         .border_1()
-        .border_color(t.border.opacity(0.6))
+        .border_color(t.popover_border())
         .shadow(t.popover_shadow())
         .text_color(t.foreground)
         .text_size(metrics::TEXT_BASE)

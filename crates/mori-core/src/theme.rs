@@ -212,28 +212,29 @@ pub struct Palette {
 }
 
 impl Palette {
-    /// The light base palette.
+    /// The light base palette. Surfaces and text are neutral greys sampled
+    /// from Zen Browser's light theme (window #E9E9E9, text #1D1F22).
     pub fn light() -> Palette {
-        let fg = Rgba::oklch(0.165, 0.018, 248.5103);
+        let fg = Rgba::hex(0x1D1F22);
         let primary = Rgba::oklch(0.645, 0.11, 241.2);
         Palette {
-            background: Rgba::hex(0xF7F7F7),
+            background: Rgba::hex(0xE9E9E9),
             foreground: fg,
             card: Rgba::oklch(0.985, 0.0015, 220.0),
-            popover: Rgba::oklch(0.998, 0.0008, 240.0),
+            popover: Rgba::hex(0xFBFBFB),
             primary,
-            primary_foreground: Rgba::oklch(1.0, 0.0, 0.0),
+            primary_foreground: Rgba::WHITE,
             secondary: fg,
-            secondary_foreground: Rgba::oklch(1.0, 0.0, 0.0),
-            muted: Rgba::oklch(0.935, 0.002, 245.0),
-            muted_foreground: Rgba::oklch(0.48, 0.012, 248.5103),
+            secondary_foreground: Rgba::WHITE,
+            muted: Rgba::oklch(0.935, 0.0, 0.0),
+            muted_foreground: Rgba::hex(0x5A5C5E),
             accent: Rgba::hex(0xEDEDED),
             accent_foreground: primary,
             destructive: Rgba::oklch(0.635, 0.24, 28.0),
             border: Rgba::oklch(0.92, 0.0, 0.0),
             input: Rgba::hex(0xEDEDED),
             ring: Rgba::oklch(0.55, 0.0, 0.0),
-            sidebar: Rgba::hex(0xEBEBEB),
+            sidebar: Rgba::hex(0xE9E9E9),
             sidebar_foreground: fg,
             sidebar_primary: primary,
             sidebar_accent: Rgba::hex(0xFFFFFF),
@@ -244,29 +245,32 @@ impl Palette {
         }
     }
 
-    /// The dark base palette (neutral chrome is chroma-0).
+    /// The dark base palette: Zen Browser's neutral (chroma-0) greys, a
+    /// #131313 window, a #2B2B2B empty card, and near-black popovers.
     pub fn dark() -> Palette {
-        let fg = Rgba::hex(0xE8EAED);
+        let fg = Rgba::hex(0xEEEEEF);
         let primary = Rgba::oklch(0.62, 0.13, 241.5);
         Palette {
-            background: Rgba::hex(0x222222),
+            background: Rgba::hex(0x131313),
             foreground: fg,
-            card: Rgba::oklch(0.36, 0.0, 0.0),
-            popover: Rgba::oklch(0.3, 0.0, 0.0),
+            card: Rgba::hex(0x2B2B2B),
+            popover: Rgba::hex(0x1B1B1D),
             primary,
-            primary_foreground: Rgba::oklch(0.28, 0.008, 235.0),
+            // White on the accent, as Zen and Arc draw it (APCA Lc ≈ 65,
+            // where the old dark navy only reached ≈ 38).
+            primary_foreground: Rgba::WHITE,
             secondary: fg,
             secondary_foreground: Rgba::oklch(0.3, 0.0, 0.0),
             muted: Rgba::oklch(0.36, 0.0, 0.0),
-            muted_foreground: Rgba::hex(0xAEB6BF),
+            muted_foreground: Rgba::hex(0xA0A1A2),
             accent: Rgba::oklch(0.42, 0.0, 0.0),
             accent_foreground: primary,
             destructive: Rgba::oklch(0.62, 0.22, 27.0),
             border: Rgba::oklch(0.45, 0.0, 0.0),
             input: Rgba::oklch(0.4, 0.02, 240.0),
             ring: Rgba::oklch(0.6, 0.0, 0.0),
-            sidebar: Rgba::hex(0x151515),
-            sidebar_foreground: Rgba::hex(0xF1F3F5),
+            sidebar: Rgba::hex(0x131313),
+            sidebar_foreground: Rgba::hex(0xF2F2F3),
             sidebar_primary: Rgba::oklch(0.6, 0.12, 241.0),
             sidebar_accent: Rgba::hex(0x2A2A2A),
             sidebar_border: Rgba::oklch(0.48, 0.0, 0.0),
@@ -679,6 +683,134 @@ pub fn grain_noise_tile() -> Vec<u8> {
         .collect()
 }
 
+/// WCAG contrast ratio between two opaque colours (1…21).
+pub fn contrast_ratio(a: Rgba, b: Rgba) -> f32 {
+    let (la, lb) = (a.luminance(), b.luminance());
+    (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
+}
+
+/// Contrast a favicon pixel needs to count as visible on the sidebar.
+const FAVICON_VISIBLE_CONTRAST: f32 = 2.0;
+/// Share of the icon that must be visible before it can go without a plate.
+const FAVICON_VISIBLE_SHARE: f64 = 0.12;
+
+/// Whether a favicon would disappear into `background` and needs a backing
+/// plate, as Arc gives black logos on a dark sidebar. An icon passes when a
+/// real part of it (by coverage) stands out, so a white tile with a dark
+/// glyph is fine on light chrome, while an all-black mark on dark chrome is
+/// not. `pixels` is 4 bytes per pixel with alpha last, in BGRA order when
+/// `bgra` is set and RGBA otherwise.
+pub fn favicon_needs_plate(pixels: &[u8], bgra: bool, background: Rgba) -> bool {
+    let (mut visible, mut total) = (0.0f64, 0.0f64);
+    for px in pixels.as_chunks::<4>().0 {
+        let a = px[3] as f32 / 255.0;
+        if a <= 0.0 {
+            continue;
+        }
+        let (r, b) = if bgra { (px[2], px[0]) } else { (px[0], px[2]) };
+        let color = Rgba::rgb(r as f32 / 255.0, px[1] as f32 / 255.0, b as f32 / 255.0);
+        // What the eye sees: the pixel composited over the sidebar.
+        let shown = background.mix(color, a);
+        if contrast_ratio(shown, background) >= FAVICON_VISIBLE_CONTRAST {
+            visible += a as f64;
+        }
+        total += a as f64;
+    }
+    total > 0.0 && visible / total < FAVICON_VISIBLE_SHARE
+}
+
+/// A stable, legible tile colour for a site without a favicon: the host's
+/// hash picks a hue, saturation and lightness stay fixed so white letters
+/// always read on it.
+pub fn monogram_color(host: &str) -> Rgba {
+    // FNV-1a: stable across runs and platforms, unlike `DefaultHasher`.
+    let hash = host.bytes().fold(0x811C_9DC5u32, |h, b| (h ^ b as u32).wrapping_mul(0x0100_0193));
+    Rgba::from_hsl((hash % 360) as f32, 0.45, 0.38)
+}
+
+/// The letter shown on a monogram tile: the host's first letter after a
+/// leading "www.", uppercased.
+pub fn monogram_letter(host: &str) -> Option<char> {
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    host.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_ascii_uppercase())
+}
+
+/// Row lengths for a grid of `count` tiles at most `max_columns` wide that
+/// leaves no holes: rows are as even as possible (5 → 3 + 2, 6 → 3 + 3,
+/// 9 → 3 + 3 + 3) and every tile in a row stretches to fill it.
+pub fn balanced_rows(count: usize, max_columns: usize) -> Vec<usize> {
+    if count == 0 || max_columns == 0 {
+        return Vec::new();
+    }
+    let rows = count.div_ceil(max_columns);
+    let (base, extra) = (count / rows, count % rows);
+    (0..rows).map(|i| base + usize::from(i < extra)).collect()
+}
+
+// ---------------------------------------------------------------------------
+// System UI font
+// ---------------------------------------------------------------------------
+
+/// The desktop's interface font size when none is configured (GNOME's 11pt).
+pub const DEFAULT_UI_FONT_POINTS: f32 = 11.0;
+
+/// Style and weight words Pango accepts after the family in a font
+/// description ("Noto Sans Semi-Bold Italic 10").
+const PANGO_STYLE_WORDS: &[&str] = &[
+    "normal", "regular", "roman", "italic", "oblique", "thin", "hairline", "ultra-light",
+    "extra-light", "light", "semi-light", "demi-light", "book", "medium", "semi-bold",
+    "demi-bold", "bold", "ultra-bold", "extra-bold", "heavy", "black", "ultra-heavy",
+    "extra-heavy", "condensed", "semi-condensed", "ultra-condensed", "extra-condensed",
+    "expanded", "semi-expanded", "ultra-expanded", "extra-expanded", "small-caps",
+];
+
+/// Split a GTK/Pango font description, as `gsettings get
+/// org.gnome.desktop.interface font-name` prints it (`'Adwaita Sans 11'`),
+/// into the family and its size in points. Style words are dropped; a
+/// missing size yields [`DEFAULT_UI_FONT_POINTS`]. `None` when no family is
+/// left.
+pub fn parse_font_description(desc: &str) -> Option<(String, f32)> {
+    let desc = desc.trim().trim_matches(|c| c == '\'' || c == '"').trim();
+    let mut words: Vec<&str> = desc.split_whitespace().collect();
+    let mut points = DEFAULT_UI_FONT_POINTS;
+    if let Some(last) = words.last() {
+        // Pango sizes are points, or absolute pixels with a "px" suffix.
+        let (number, px) = match last.strip_suffix("px") {
+            Some(n) => (n, true),
+            None => (*last, false),
+        };
+        if let Ok(v) = number.parse::<f32>()
+            && v.is_finite()
+            && v > 0.0
+        {
+            points = if px { v * 72.0 / 96.0 } else { v };
+            words.pop();
+        }
+    }
+    while let Some(last) = words.last() {
+        if PANGO_STYLE_WORDS.contains(&last.to_ascii_lowercase().as_str()) {
+            words.pop();
+        } else {
+            break;
+        }
+    }
+    let family = words.join(" ").trim_end_matches(',').trim().to_string();
+    (!family.is_empty()).then_some((family, points))
+}
+
+/// The first family in a fontconfig family list (`fc-match -f %{family}`
+/// may print "Noto Sans,Noto Sans Display").
+pub fn first_font_family(list: &str) -> Option<String> {
+    let first = list.lines().next()?.split(',').next()?.trim();
+    (!first.is_empty()).then(|| first.to_string())
+}
+
+/// Points to logical pixels at the CSS/GTK reference density (96 dpi), so
+/// 11pt is 14.67px.
+pub fn points_to_px(points: f32) -> f32 {
+    points * 96.0 / 72.0
+}
+
 // ---------------------------------------------------------------------------
 // Presets
 // ---------------------------------------------------------------------------
@@ -1025,6 +1157,110 @@ mod tests {
         assert_eq!(dots[1].rgb.to_u32(), 0x0000FF);
         assert!(harmony_dots(&primary, Harmony::Floating).is_empty());
         assert_eq!(Harmony::SplitComplementary.dot_count(), 3);
+    }
+
+    #[test]
+    fn base_palettes_are_neutral_zen_greys() {
+        let neutral = |c: Rgba| c.r == c.g && c.g == c.b;
+        let dark = Palette::dark();
+        assert_eq!(dark.sidebar.to_u32(), 0x131313);
+        assert_eq!(dark.background.to_u32(), 0x131313);
+        assert_eq!(dark.card.to_u32(), 0x2B2B2B);
+        assert_eq!(dark.muted_foreground.to_u32(), 0xA0A1A2);
+        assert!(dark.popover.luminance() < 0.02, "popovers are near-black");
+        assert!(neutral(dark.sidebar) && neutral(dark.card));
+
+        let light = Palette::light();
+        assert_eq!(light.sidebar.to_u32(), 0xE9E9E9);
+        assert_eq!(light.foreground.to_u32(), 0x1D1F22);
+        assert_eq!(light.muted_foreground.to_u32(), 0x5A5C5E);
+        assert!(neutral(light.sidebar));
+    }
+
+    #[test]
+    fn accent_text_is_white_on_base_palettes() {
+        for p in [Palette::dark(), Palette::light()] {
+            assert_eq!(p.primary_foreground, Rgba::WHITE);
+            assert!(p.primary.luminance() < 0.35, "accent dark enough for white text");
+        }
+    }
+
+    #[test]
+    fn favicon_plates_only_for_icons_that_vanish() {
+        let dark = Palette::dark().sidebar;
+        let light = Palette::light().sidebar;
+        let px = |rgba: [u8; 4], n: usize| rgba.repeat(n);
+        // A black mark on transparency (GitHub's light-scheme favicon).
+        let black_mark = [px([0, 0, 0, 255], 32), px([0, 0, 0, 0], 32)].concat();
+        assert!(favicon_needs_plate(&black_mark, true, dark));
+        assert!(!favicon_needs_plate(&black_mark, true, light));
+        // The same mark in white: fine on dark, gone on light.
+        let white_mark = [px([255, 255, 255, 255], 32), px([0, 0, 0, 0], 32)].concat();
+        assert!(!favicon_needs_plate(&white_mark, true, dark));
+        assert!(favicon_needs_plate(&white_mark, true, light));
+        // A white tile with a dark glyph (Wikipedia) reads on light chrome.
+        let tile = [px([255, 255, 255, 255], 48), px([20, 20, 20, 255], 16)].concat();
+        assert!(!favicon_needs_plate(&tile, true, light));
+        // An opaque orange tile (Hacker News) reads everywhere.
+        let orange = px([0x00, 0x66, 0xFF, 0xFF], 16); // BGRA #FF6600
+        assert!(!favicon_needs_plate(&orange, true, dark));
+        assert!(!favicon_needs_plate(&orange, true, light));
+        assert!(!favicon_needs_plate(&[0, 0, 0, 0], true, dark));
+        assert!((contrast_ratio(Rgba::WHITE, Rgba::BLACK) - 21.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn grid_rows_have_no_holes() {
+        assert_eq!(balanced_rows(0, 4), Vec::<usize>::new());
+        assert_eq!(balanced_rows(1, 4), vec![1]);
+        assert_eq!(balanced_rows(2, 4), vec![2]);
+        assert_eq!(balanced_rows(4, 4), vec![4]);
+        assert_eq!(balanced_rows(5, 4), vec![3, 2]);
+        assert_eq!(balanced_rows(6, 4), vec![3, 3]);
+        assert_eq!(balanced_rows(7, 4), vec![4, 3]);
+        assert_eq!(balanced_rows(9, 4), vec![3, 3, 3]);
+        for n in 1..40 {
+            let rows = balanced_rows(n, 4);
+            assert_eq!(rows.iter().sum::<usize>(), n);
+            assert!(rows.iter().all(|&r| (1..=4).contains(&r)));
+            assert!(rows.iter().max().unwrap() - rows.iter().min().unwrap() <= 1);
+        }
+    }
+
+    #[test]
+    fn monograms() {
+        assert_eq!(monogram_letter("www.example.com"), Some('E'));
+        assert_eq!(monogram_letter("github.com"), Some('G'));
+        assert_eq!(monogram_letter(""), None);
+        assert_eq!(monogram_color("github.com"), monogram_color("github.com"));
+        assert_ne!(monogram_color("github.com"), monogram_color("gitlab.com"));
+        for i in 0..500 {
+            let host = format!("site{i}.example");
+            assert!(contrast_ratio(Rgba::WHITE, monogram_color(&host)) >= 3.0, "{host}");
+        }
+    }
+
+    #[test]
+    fn font_descriptions() {
+        assert_eq!(
+            parse_font_description("'Adwaita Sans 11'"),
+            Some(("Adwaita Sans".into(), 11.0))
+        );
+        assert_eq!(
+            parse_font_description("Noto Sans Semi-Bold Italic 10.5"),
+            Some(("Noto Sans".into(), 10.5))
+        );
+        assert_eq!(
+            parse_font_description("Cantarell"),
+            Some(("Cantarell".into(), DEFAULT_UI_FONT_POINTS))
+        );
+        assert_eq!(parse_font_description("Inter, 16px"), Some(("Inter".into(), 12.0)));
+        assert_eq!(parse_font_description("'Bold 12'"), None);
+        assert_eq!(parse_font_description("  "), None);
+
+        assert_eq!(first_font_family("Noto Sans,Noto Sans Display\n"), Some("Noto Sans".into()));
+        assert_eq!(first_font_family(""), None);
+        assert!((points_to_px(11.0) - 14.666_667).abs() < 1e-4);
     }
 
     #[test]
