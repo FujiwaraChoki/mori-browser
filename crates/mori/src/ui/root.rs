@@ -29,6 +29,8 @@ impl Browser {
             self.close_menu(window, cx);
         } else if self.boost_editor.is_some() {
             self.boost_editor = None;
+        } else if self.space_editor.is_some() {
+            self.close_space_editor(window, cx);
         } else if self.peek.is_some() {
             self.close_peek(window, cx);
         } else if self.popup.is_some() {
@@ -577,6 +579,7 @@ impl Render for Browser {
             None
         };
         let boost = self.boost_editor.clone();
+        let space_editor = self.space_editor.clone();
 
         div()
             .id("mori-root")
@@ -674,6 +677,8 @@ impl Render for Browser {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &NewSpace, window, cx| this.create_space(window, cx)))
+            .on_action(cx.listener(|this, _: &NextSpace, window, cx| this.step_space(1, window, cx)))
+            .on_action(cx.listener(|this, _: &PrevSpace, window, cx| this.step_space(-1, window, cx)))
             .on_action(cx.listener(|this, _: &CloseSplit, _, cx| this.close_split(cx)))
             .on_action(cx.listener(|this, _: &Dismiss, window, cx| this.dismiss(window, cx)))
             .on_action(cx.listener(|this, _: &Quit, _, cx| this.quit(cx)))
@@ -704,6 +709,7 @@ impl Render for Browser {
             .children(popup)
             .children(overlay_toasts)
             .children(boost.map(|b| b.into_any_element()))
+            .children(space_editor.map(|e| e.into_any_element()))
             .children(launcher.map(|l| l.into_any_element()))
             .children(menu)
     }

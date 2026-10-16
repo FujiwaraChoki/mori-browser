@@ -144,9 +144,10 @@ pub enum ToastAction {
         closed: Box<ClosedTab>,
         entry: uuid::Uuid,
     },
+    /// Undo "Clear": reopen every tab it archived, dropping their entries.
+    UndoArchiveMany(Vec<(ClosedTab, Option<uuid::Uuid>)>),
     UndoDeleteSpace(Box<(DeletedSpace, Vec<Route>)>),
     UndoClearHistory(Box<HistoryStore>),
-    Unpin(TabId),
     OpenDownloads,
     /// Show a file in the file manager.
     Reveal(PathBuf),
@@ -272,6 +273,14 @@ pub struct Browser {
     /// Pending auto-hide of the floating sidebar; dropping it cancels.
     sidebar_hide: Option<Task<()>>,
     pub sidebar_drag: Option<f32>,
+    /// A horizontal swipe over the sidebar (switches spaces).
+    pub sidebar_swipe: crate::ui::sidebar::SidebarSwipe,
+    /// The last space change, which the sidebar contents slide for.
+    pub space_slide: crate::ui::sidebar::SpaceSlide,
+    /// The space editor (name, icon, theme), open after creating a space
+    /// or from a space's menu.
+    pub space_editor: Option<Entity<crate::ui::space_editor::SpaceEditor>>,
+    space_editor_events: Option<Subscription>,
     pub multi_select: Vec<TabId>,
     /// A blank tab made for the address bar ("New Tab in Folder", "New Tab
     /// Below") and the tab selected before it: dismissing the address bar
@@ -376,6 +385,10 @@ impl Browser {
             sidebar_peek: false,
             sidebar_hide: None,
             sidebar_drag: None,
+            sidebar_swipe: Default::default(),
+            space_slide: Default::default(),
+            space_editor: None,
+            space_editor_events: None,
             multi_select: Vec::new(),
             pending_blank: None,
             assistant: None,
@@ -601,6 +614,16 @@ impl Browser {
                     self.select_tab(tab, window, cx);
                 }
             }
+            ToastAction::UndoArchiveMany(archived) => {
+                // Reverse order puts every tab back at its old index. One
+                // reopened from Library > Archive meanwhile stays as it is.
+                for (closed, entry) in archived.into_iter().rev() {
+                    if entry.is_none_or(|e| self.archive.remove(e).is_some()) {
+                        self.ws.restore_tab(closed);
+                    }
+                }
+                self.schedule_save(cx);
+            }
             ToastAction::UndoDeleteSpace(deleted) => {
                 let (deleted, routes) = *deleted;
                 let space = self.ws.restore_space(deleted);
@@ -615,10 +638,6 @@ impl Browser {
             }
             ToastAction::UndoClearHistory(cleared) => {
                 self.history.restore(*cleared);
-                self.schedule_save(cx);
-            }
-            ToastAction::Unpin(tab) => {
-                self.ws.unpin(tab);
                 self.schedule_save(cx);
             }
             ToastAction::OpenDownloads => self.panel = Some(Panel::Downloads),
@@ -818,6 +837,7 @@ impl Browser {
             }
         }
         if previous_space != self.ws.active_space {
+            self.note_space_change(previous_space, self.ws.active_space);
             self.apply_theme(Some(window), cx);
         }
         self.settings_open = false;
@@ -864,7 +884,7 @@ impl Browser {
     /// Give keyboard focus to the active page (the focused split pane or the
     /// selected tab), or to the window when it shows no page.
     pub fn focus_selected_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.launcher.is_some() || self.rename.is_some() {
+        if self.launcher.is_some() || self.rename.is_some() || self.space_editor.is_some() {
             return;
         }
         if self.settings_open {
@@ -913,6 +933,7 @@ impl Browser {
             || self.settings_open
             || self.menu.is_some()
             || self.boost_editor.is_some()
+            || self.space_editor.is_some()
             || self.peek.is_some()
             || self.popup.is_some()
             || !self.dialogs.is_empty()
@@ -938,7 +959,10 @@ impl Browser {
             cx.defer_in(window, move |this, window, cx| {
                 let still_blank = this.selected() == Some(id)
                     && this.ws.tab(id).is_some_and(|t| Self::is_internal(&t.url));
-                let busy = this.launcher.is_some() || this.rename.is_some() || this.settings_open;
+                let busy = this.launcher.is_some()
+                    || this.rename.is_some()
+                    || this.space_editor.is_some()
+                    || this.settings_open;
                 if still_blank && !busy {
                     this.open_launcher(LauncherMode::NewTab, window, cx);
                 }
@@ -1057,8 +1081,8 @@ impl Browser {
         if self.settings_open && self.active_tab() == Some(id) {
             self.set_settings_open(false, window, cx);
         }
+        self.ws.set_url(id, url);
         if let Some(t) = self.ws.tab_mut(id) {
-            t.url = url.to_string();
             t.scroll_y = 0.0;
         }
         // A credentials or certificate question about the old page is moot.
@@ -1083,43 +1107,18 @@ impl Browser {
         cx.notify();
     }
 
-    /// Close (or, per Mori rules, keep) a tab. `force` is used by the close
-    /// button and menu, which really close pinned/foldered tabs too.
+    /// Close a tab. Without `force` (Ctrl+W, middle-click) a favorite or
+    /// pinned tab is only unloaded and reset to its pinned page, and a tab
+    /// in a multi-selection closes the whole selection; `force` (the close
+    /// button, the menu) really closes it.
     pub fn close_tab(&mut self, id: TabId, force: bool, window: &mut Window, cx: &mut Context<Self>) {
-        if !force && self.ws.is_pinned(id) {
-            self.toast(
-                "Pinned tab stays put",
-                ToastStyle::Info,
-                Some(("Unpin".into(), ToastAction::Unpin(id))),
-                cx,
-            );
+        if !force && self.multi_select.len() > 1 && self.multi_select.contains(&id) {
+            let ids = std::mem::take(&mut self.multi_select);
+            self.close_selection(ids, window, cx);
             return;
         }
-        if !force && self.ws.folder_of(id).is_some() {
-            // Unloading a split pane ends its pair; otherwise selecting the
-            // neighbour (often its partner) would load it straight back.
-            if self.ws.remove_split(id) && self.visible_split_member(id) {
-                self.split = None;
-                self.split_focused = false;
-                let visible = self.selected();
-                for (tab, live) in &self.live {
-                    live.view.set_hidden(Some(*tab) != visible);
-                }
-            }
-            let was_selected = self.selected() == Some(id);
-            let neighbor = self.ws.neighbor(id);
-            self.unload(id, cx);
-            if was_selected {
-                match neighbor {
-                    Some(n) => self.select_tab(n, window, cx),
-                    None => {
-                        self.open_blank_tab(window, cx);
-                    }
-                }
-            } else {
-                self.focus_selected_page(window, cx);
-            }
-            self.toast("Unloaded — kept in folder", ToastStyle::Info, None, cx);
+        if !force && self.ws.is_saved(id) {
+            self.unload_saved_tab(id, window, cx);
             return;
         }
         // Let the page run its beforeunload handler (it may ask "Leave
@@ -1196,6 +1195,135 @@ impl Browser {
         cx.notify();
     }
 
+    /// Ctrl+W on a favorite or pinned tab (Zen's "reset, unload, switch"):
+    /// it goes back to its pinned page and its page is unloaded, but the
+    /// row stays. If it was on screen, the next tab is shown.
+    pub fn unload_saved_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        // Unloading a split pane ends its pair; otherwise selecting the
+        // neighbour (often its partner) would load it straight back.
+        if self.ws.remove_split(id) && self.visible_split_member(id) {
+            self.split = None;
+            self.split_focused = false;
+            let visible = self.selected();
+            for (tab, live) in &self.live {
+                live.view.set_hidden(Some(*tab) != visible);
+            }
+        }
+        let was_selected = self.selected() == Some(id);
+        let neighbor = self.ws.neighbor(id);
+        self.unload(id, cx);
+        if let Some(url) = self.ws.reset_to_pinned(id) {
+            self.restore_pinned_title(id, &url);
+        }
+        if was_selected {
+            match neighbor {
+                Some(n) => self.select_tab(n, window, cx),
+                None => {
+                    self.open_blank_tab(window, cx);
+                }
+            }
+        } else {
+            self.focus_selected_page(window, cx);
+        }
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    /// "Back to pinned page": a favorite or pinned tab that navigated away
+    /// returns to its pinned address.
+    pub fn reset_pinned_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(url) = self.ws.reset_to_pinned(id) else { return };
+        self.restore_pinned_title(id, &url);
+        // An unloaded row just points home again; it loads when selected.
+        if self.live.contains_key(&id) || self.selected() == Some(id) {
+            self.navigate(id, &url, window, cx);
+        }
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    /// The title a tab reset to its pinned page shows until it loads: the
+    /// page's title from history, if it was visited.
+    fn restore_pinned_title(&mut self, id: TabId, url: &str) {
+        let title = self
+            .history
+            .entries
+            .iter()
+            .find(|e| omnibox::same_page(&e.url, url))
+            .map(|e| e.title.clone())
+            .unwrap_or_default();
+        if let Some(t) = self.ws.tab_mut(id) {
+            t.title = title;
+        }
+    }
+
+    /// Ctrl+W on a multi-selection: loose tabs close (one Undo for all),
+    /// favorites and pinned tabs unload and go back to their pinned page.
+    /// The tab shown afterwards is picked outside the selection first, so
+    /// no page is loaded only to be closed again.
+    pub fn close_selection(&mut self, ids: Vec<TabId>, window: &mut Window, cx: &mut Context<Self>) {
+        let on_screen = self.selected().filter(|s| ids.contains(s));
+        let fallback = on_screen.and_then(|s| self.ws.neighbor_skipping(s, &ids));
+        let (saved, loose): (Vec<TabId>, Vec<TabId>) = ids.into_iter().partition(|t| self.ws.is_saved(*t));
+        for id in saved {
+            // Its pair ends, so showing the fallback can't bring it back.
+            self.ws.remove_split(id);
+            self.unload(id, cx);
+            if let Some(url) = self.ws.reset_to_pinned(id) {
+                self.restore_pinned_title(id, &url);
+            }
+        }
+        let closed: Vec<ClosedTab> = loose
+            .into_iter()
+            .filter_map(|id| self.take_tab(id, true, cx))
+            .collect();
+        self.toast_closed(closed, cx);
+        match (on_screen, fallback) {
+            (Some(_), Some(next)) => self.select_tab(next, window, cx),
+            (Some(_), None) => {
+                self.open_blank_tab(window, cx);
+            }
+            (None, _) => self.focus_selected_page(window, cx),
+        }
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    /// Arc's and Zen's "Clear": archive every tab below the divider (the
+    /// space's loose tabs), with one Undo that brings them all back.
+    pub fn clear_today(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let ids = self.ws.active().loose.clone();
+        self.archive_tabs(ids, window, cx);
+    }
+
+    /// Archive several loose tabs at once, with one Undo for all of them.
+    /// Favorites and pinned tabs are left alone.
+    pub fn archive_tabs(&mut self, ids: Vec<TabId>, window: &mut Window, cx: &mut Context<Self>) {
+        let ids: Vec<TabId> = ids.into_iter().filter(|t| !self.ws.is_saved(*t)).collect();
+        if ids.is_empty() {
+            return;
+        }
+        let was_selected = self.selected().is_some_and(|s| ids.contains(&s));
+        let mut archived = Vec::new();
+        for id in ids {
+            let entry = self
+                .ws
+                .tab(id)
+                .and_then(|t| self.archive.add(&t.url, &t.title, t.favicon_url.clone()));
+            if let Some(closed) = self.take_tab(id, false, cx) {
+                archived.push((closed, entry));
+            }
+        }
+        let n = archived.len();
+        self.toast(
+            format!("Archived {n} tab{}", if n == 1 { "" } else { "s" }),
+            ToastStyle::Info,
+            Some(("Undo".into(), ToastAction::UndoArchiveMany(archived))),
+            cx,
+        );
+        self.after_tabs_closed(was_selected, window, cx);
+    }
+
     /// Close several tabs with one toast whose Undo brings them all back.
     pub fn close_tabs(&mut self, ids: Vec<TabId>, window: &mut Window, cx: &mut Context<Self>) {
         let was_selected = self.selected().is_some_and(|s| ids.contains(&s));
@@ -1203,8 +1331,17 @@ impl Browser {
             .into_iter()
             .filter_map(|id| self.take_tab(id, true, cx))
             .collect();
+        if closed.is_empty() {
+            return;
+        }
+        self.toast_closed(closed, cx);
+        self.after_tabs_closed(was_selected, window, cx);
+    }
+
+    /// "Closed …" with an Undo for tabs just closed together.
+    fn toast_closed(&mut self, closed: Vec<ClosedTab>, cx: &mut Context<Self>) {
         match closed.len() {
-            0 => return,
+            0 => {}
             1 => {
                 let title: String = closed[0].record.display_title().chars().take(40).collect();
                 let closed = closed.into_iter().next().map(Box::new);
@@ -1222,7 +1359,6 @@ impl Browser {
                 cx,
             ),
         }
-        self.after_tabs_closed(was_selected, window, cx);
     }
 
     pub fn reopen_closed_tab(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1304,7 +1440,7 @@ impl Browser {
     /// Close a tab into the archive, with an Undo that reopens it and drops
     /// the archive entry again.
     pub fn archive_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ws.is_pinned(id) {
+        if self.ws.is_saved(id) {
             return;
         }
         let entry = self
@@ -1336,6 +1472,23 @@ impl Browser {
 
     pub fn toggle_pin(&mut self, id: TabId, cx: &mut Context<Self>) {
         self.ws.toggle_pin(id);
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    /// Add a tab to the favorites shared by every space, or take a
+    /// favorite out (back to the top of the space's tabs).
+    pub fn toggle_favorite(&mut self, id: TabId, cx: &mut Context<Self>) {
+        if self.ws.is_favorite(id) {
+            self.ws.unpin(id);
+        } else if !self.ws.add_favorite(id) {
+            self.toast(
+                format!("Favorites hold up to {} tabs", mori_core::workspace::MAX_FAVORITES),
+                ToastStyle::Info,
+                None,
+                cx,
+            );
+        }
         self.schedule_save(cx);
         cx.notify();
     }
@@ -1427,9 +1580,11 @@ impl Browser {
     // ---- Spaces --------------------------------------------------------------
 
     pub fn switch_space(&mut self, space: SpaceId, window: &mut Window, cx: &mut Context<Self>) {
+        let from = self.ws.active_space;
         if !self.ws.switch_space(space) {
             return;
         }
+        self.note_space_change(from, space);
         self.apply_theme(Some(window), cx);
         let target = self
             .ws
@@ -1445,11 +1600,90 @@ impl Browser {
         cx.notify();
     }
 
+    /// The sidebar contents slide in from the side the new space sits on
+    /// in the switcher.
+    fn note_space_change(&mut self, from: SpaceId, to: SpaceId) {
+        let index = |id: SpaceId| self.ws.spaces.iter().position(|s| s.id == id);
+        if let (Some(a), Some(b)) = (index(from), index(to))
+            && a != b
+        {
+            self.space_slide = crate::ui::sidebar::SpaceSlide {
+                serial: self.space_slide.serial + 1,
+                direction: if b > a { 1. } else { -1. },
+            };
+        }
+    }
+
+    /// Create a space (with its own symbol and colours), switch to it, and
+    /// open the space editor to name and style it.
     pub fn create_space(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let name = self.ws.next_space_name();
+        let previous = self.ws.active_space;
         let id = self.ws.create_space(name);
         self.switch_space(id, window, cx);
-        self.begin_rename(RenameTarget::Space(id), window, cx);
+        self.open_space_editor(id, Some(previous), window, cx);
+    }
+
+    /// Open the space editor for `space`. `cancel_to` marks a space just
+    /// created: the editor offers to cancel it, which removes it again and
+    /// goes back to that space.
+    pub fn open_space_editor(
+        &mut self,
+        space: SpaceId,
+        cancel_to: Option<SpaceId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use crate::ui::space_editor::{SpaceEditor, SpaceEditorEvent};
+        let Some(s) = self.ws.space(space).cloned() else { return };
+        self.menu = None;
+        self.rename = None;
+        if self.ws.active_space != space {
+            self.switch_space(space, window, cx);
+        }
+        self.close_launcher(window, cx);
+        let editor = cx.new(|cx| SpaceEditor::new(&s, cancel_to.is_some(), window, cx));
+        let sub = cx.subscribe_in(&editor, window, move |this, _, ev: &SpaceEditorEvent, window, cx| match ev {
+            SpaceEditorEvent::Changed(update) => {
+                if let Some(s) = this.ws.space_mut(update.id) {
+                    if !update.name.trim().is_empty() {
+                        s.name = update.name.trim().to_string();
+                    }
+                    s.symbol = update.symbol.clone();
+                    s.theme = update.theme.clone();
+                }
+                this.apply_theme(Some(window), cx);
+                this.schedule_save(cx);
+                cx.notify();
+            }
+            SpaceEditorEvent::Done => this.close_space_editor(window, cx),
+            SpaceEditorEvent::Discard(id) => {
+                let id = *id;
+                this.close_space_editor(window, cx);
+                // A new space the user cancelled goes again, with the blank
+                // tab it opened.
+                let ids = this.ws.space(id).map(|s| s.ordered()).unwrap_or_default();
+                for tab in &ids {
+                    this.unload(*tab, cx);
+                }
+                if this.ws.delete_space(id).is_some() {
+                    let back = cancel_to.filter(|s| this.ws.space(*s).is_some()).unwrap_or(this.ws.active_space);
+                    this.switch_space(back, window, cx);
+                    this.schedule_save(cx);
+                }
+            }
+        });
+        self.space_editor_events = Some(sub);
+        self.space_editor = Some(editor);
+        cx.notify();
+    }
+
+    pub fn close_space_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.space_editor.take().is_some() {
+            self.space_editor_events = None;
+            self.focus_selected_page(window, cx);
+            cx.notify();
+        }
     }
 
     /// Delete a space with all its tabs; the toast's Undo brings it back
@@ -1485,8 +1719,14 @@ impl Browser {
     /// Move a tab to another space. If it was the selected tab, a neighbour
     /// in the current space takes over (or a fresh new tab if it was alone).
     pub fn move_tab_to_space(&mut self, tab: TabId, space: SpaceId, window: &mut Window, cx: &mut Context<Self>) {
-        let on_screen = self.visible_tabs().contains(&Some(tab));
-        self.ws.move_to_space(tab, space);
+        self.move_tabs_to_space(vec![tab], space, window, cx);
+    }
+
+    /// Move tabs (in order) to the end of another space's tabs.
+    pub fn move_tabs_to_space(&mut self, tabs: Vec<TabId>, space: SpaceId, window: &mut Window, cx: &mut Context<Self>) {
+        let visible = self.visible_tabs();
+        let on_screen = tabs.iter().any(|t| visible.contains(&Some(*t)));
+        self.ws.move_tabs_to_space(&tabs, space);
         if on_screen {
             match self.ws.selected().or_else(|| self.ws.active().visible().first().copied()) {
                 Some(next) => self.select_tab(next, window, cx),
@@ -2295,11 +2535,8 @@ impl Browser {
             let Some(ev) = self.on_page_event(PageOwner::Tab(id), ev, window, cx) else { continue };
             match ev {
                 ViewEvent::AddressChanged(url) => {
-                    if let Some(t) = self.ws.tab_mut(id) {
-                        if t.url != url {
-                            t.scroll_y = 0.0;
-                        }
-                        t.url = url.clone();
+                    if self.ws.tab(id).is_some() {
+                        self.ws.set_url(id, &url);
                         save = true;
                     }
                     if let Some(live) = self.live.get_mut(&id) {

@@ -12,7 +12,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use mori_core::{
     page_actions::{self, MediaAction},
-    workspace::{SpaceId, TabId, TabRecord},
+    workspace::{FolderId, MAX_FAVORITES, MAX_FOLDER_DEPTH, Slot, Space, SpaceId, TabId, TabRecord},
 };
 
 use crate::{
@@ -68,8 +68,8 @@ pub enum Entry {
     },
     /// A row drawn by the caller, `height` px tall; the menu stays open.
     Custom { height: f32, render: CustomRow },
-    /// The space glyph picker: every symbol, the current one marked.
-    Icons { space: SpaceId, current: String },
+    /// A folder's glyph picker, the current one marked.
+    FolderIcons { folder: FolderId, current: String },
 }
 
 impl Entry {
@@ -79,8 +79,8 @@ impl Entry {
             Entry::Header(_) | Entry::Note(_) => HEADER_HEIGHT,
             Entry::Item { .. } | Entry::Switch { .. } => ITEM_HEIGHT,
             Entry::Custom { height, .. } => *height,
-            Entry::Icons { .. } => {
-                let rows = crate::ui::sidebar::SPACE_SYMBOLS.len().div_ceil(ICON_COLUMNS);
+            Entry::FolderIcons { .. } => {
+                let rows = crate::ui::sidebar::FOLDER_SYMBOLS.len().div_ceil(ICON_COLUMNS);
                 rows as f32 * ICON_CELL + 8.
             }
         }
@@ -168,49 +168,32 @@ fn entries(b: &Browser, kind: &MenuKind) -> Vec<Entry> {
     match kind {
         MenuKind::Web { tab, info } => web_entries(b, *tab, info),
         MenuKind::Tab(id) => tab_entries(b, *id),
-        MenuKind::Folder(fid) => {
-            let fid = *fid;
-            vec![
-                item("New Tab in Folder", "plus", move |b, w, cx| {
-                    let url = b.settings.new_tab_url().to_string();
-                    let previous = b.selected();
-                    let id = b.new_tab_with_url(&url, w, cx);
-                    if let Some((space, f)) = b.ws.find_folder(fid) {
-                        let end = f.tab_ids.len();
-                        b.ws.move_tab(id, space, mori_core::workspace::Slot::Folder(fid, end));
-                    }
-                    b.open_launcher_for_blank(id, previous, w, cx);
-                }),
-                item("Rename Folder", "pencil", move |b, w, cx| {
-                    b.begin_rename(RenameTarget::Folder(fid), w, cx)
-                }),
-                Entry::Separator,
-                item("Delete Folder", "trash", move |b, _, cx| {
-                    b.ws.delete_folder(fid);
-                    b.schedule_save(cx);
-                })
-                .destructive(),
-            ]
-        }
+        MenuKind::Folder(fid) => folder_entries(b, *fid),
         MenuKind::Space(sid) => {
             let sid = *sid;
-            let current = b.ws.space(sid).map(|s| s.symbol.clone()).unwrap_or_default();
+            let index = b.ws.spaces.iter().position(|s| s.id == sid).unwrap_or(0);
+            let count = b.ws.spaces.len();
             vec![
+                item("Edit Space…", "palette", move |b, w, cx| b.open_space_editor(sid, None, w, cx)),
                 item("Rename Space", "pencil", move |b, w, cx| {
                     b.switch_space(sid, w, cx);
                     b.begin_rename(RenameTarget::Space(sid), w, cx);
                 }),
-                item("Edit Theme…", "palette", move |b, w, cx| {
-                    b.switch_space(sid, w, cx);
-                    b.show_settings(SettingsCategory::Appearance, w, cx);
-                }),
                 Entry::Separator,
-                Entry::Header("Icon".into()),
-                Entry::Icons { space: sid, current },
+                item("Move Left", "arrow-left", move |b, _, cx| {
+                    b.ws.move_space(sid, index.saturating_sub(1));
+                    b.schedule_save(cx);
+                })
+                .enabled(index > 0),
+                item("Move Right", "arrow-right", move |b, _, cx| {
+                    b.ws.move_space(sid, index + 2);
+                    b.schedule_save(cx);
+                })
+                .enabled(index + 1 < count),
                 Entry::Separator,
                 cmd("New Space", "layers", Command::NewSpace),
                 item("Delete Space", "trash", move |b, w, cx| b.delete_space(sid, w, cx))
-                    .enabled(b.ws.spaces.len() > 1)
+                    .enabled(count > 1)
                     .destructive(),
             ]
         }
@@ -277,13 +260,147 @@ fn entries(b: &Browser, kind: &MenuKind) -> Vec<Entry> {
     }
 }
 
+/// "Outer › Inner" for a nested folder.
+fn folder_path(space: &Space, folder: FolderId) -> String {
+    space
+        .folder_trail(folder)
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" › ")
+}
+
+fn folder_entries(b: &Browser, fid: FolderId) -> Vec<Entry> {
+    let Some((space, folder)) = b.ws.find_folder(fid) else { return Vec::new() };
+    let depth = b.ws.space(space).and_then(|s| s.folder_depth(fid)).unwrap_or(1);
+    let expanded = folder.is_expanded;
+    vec![
+        item("New Tab in Folder", "plus", move |b, w, cx| {
+            let url = b.settings.new_tab_url().to_string();
+            let previous = b.selected();
+            let id = b.new_tab_with_url(&url, w, cx);
+            if let Some((space, _)) = b.ws.find_folder(fid) {
+                b.ws.move_tab(id, space, Slot::Folder(fid, usize::MAX));
+            }
+            b.open_launcher_for_blank(id, previous, w, cx);
+        }),
+        item("New Subfolder", "folder-plus", move |b, w, cx| {
+            if let Some((space, _)) = b.ws.find_folder(fid)
+                && let Some(sub) = b.ws.create_folder_at(space, Some(fid), usize::MAX, "New Folder", &[])
+            {
+                b.begin_rename(RenameTarget::Folder(sub), w, cx);
+                b.schedule_save(cx);
+            }
+        })
+        .enabled(depth < MAX_FOLDER_DEPTH),
+        item("Rename Folder", "pencil", move |b, w, cx| b.begin_rename(RenameTarget::Folder(fid), w, cx)),
+        item(if expanded { "Collapse Folder" } else { "Expand Folder" }, "chevrons-down-up", move |b, _, cx| {
+            b.ws.update_folder(fid, |f| f.is_expanded = !f.is_expanded);
+            b.schedule_save(cx);
+        }),
+        Entry::Separator,
+        Entry::Header("Icon".into()),
+        Entry::FolderIcons {
+            folder: fid,
+            current: folder.symbol.clone(),
+        },
+        Entry::Separator,
+        item("Ungroup Folder", "folder-open", move |b, _, cx| {
+            b.ws.ungroup_folder(fid);
+            b.schedule_save(cx);
+        }),
+        item("Delete Folder", "trash", move |b, _, cx| {
+            b.ws.delete_folder(fid);
+            b.toast("Folder deleted — its tabs moved below the divider", ToastStyle::Info, None, cx);
+            b.schedule_save(cx);
+        })
+        .destructive(),
+    ]
+}
+
+/// The menu of a tab that is part of a multi-selection: actions on all of
+/// them at once.
+fn selection_entries(b: &Browser) -> Vec<Entry> {
+    let ids = b.ws.in_sidebar_order(&b.multi_select);
+    let n = ids.len();
+    let all_favorites = ids.iter().all(|t| b.ws.is_favorite(*t));
+    let all_pinned = ids.iter().all(|t| b.ws.is_pinned(*t));
+    let loose: Vec<TabId> = ids.iter().copied().filter(|t| !b.ws.is_saved(*t)).collect();
+    let mut v = vec![Entry::Header(format!("{n} Tabs Selected").into())];
+    let group = ids.clone();
+    v.push(item(if all_pinned { "Unpin Tabs" } else { "Pin Tabs" }, "pin", move |b, _, cx| {
+        let space = b.ws.active_space;
+        if all_pinned {
+            b.ws.move_tabs(&group, space, Slot::Loose(0));
+        } else {
+            b.ws.move_tabs(&group, space, Slot::Pinned(usize::MAX));
+        }
+        b.multi_select.clear();
+        b.schedule_save(cx);
+    }));
+    let group = ids.clone();
+    v.push(item(
+        if all_favorites { "Remove from Favorites" } else { "Add to Favorites" },
+        "star",
+        move |b, _, cx| {
+            let space = b.ws.active_space;
+            let ok = if all_favorites {
+                b.ws.move_tabs(&group, space, Slot::Loose(0))
+            } else {
+                b.ws.move_tabs(&group, space, Slot::Favorite(usize::MAX))
+            };
+            if !ok {
+                b.toast(format!("Favorites hold up to {MAX_FAVORITES} tabs"), ToastStyle::Info, None, cx);
+            }
+            b.multi_select.clear();
+            b.schedule_save(cx);
+        },
+    ));
+    let group = ids.clone();
+    v.push(item("Group into New Folder", "folder-plus", move |b, w, cx| b.new_folder(group.clone(), w, cx)));
+    for s in b.ws.spaces.iter().filter(|s| s.id != b.ws.active_space) {
+        let (sid, group) = (s.id, ids.clone());
+        v.push(item(format!("Move to {}", s.name), "arrow-right-left", move |b, w, cx| {
+            b.move_tabs_to_space(group.clone(), sid, w, cx);
+            b.multi_select.clear();
+        }));
+    }
+    v.push(Entry::Separator);
+    let archive = loose.clone();
+    v.push(
+        item(format!("Archive {} Tabs", archive.len()), "archive", move |b, w, cx| {
+            b.multi_select.clear();
+            b.archive_tabs(archive.clone(), w, cx);
+        })
+        .enabled(!loose.is_empty()),
+    );
+    v.push(
+        item(format!("Close {n} Tabs"), "x", move |b, w, cx| {
+            let group = std::mem::take(&mut b.multi_select);
+            b.close_tabs(group, w, cx);
+        })
+        .destructive(),
+    );
+    v.push(item("Clear Selection", "square-dashed", |b, _, cx| {
+        b.multi_select.clear();
+        cx.notify();
+    }));
+    v
+}
+
 fn tab_entries(b: &Browser, id: TabId) -> Vec<Entry> {
     let Some(record) = b.ws.tab(id) else { return Vec::new() };
+    if b.multi_select.len() > 1 && b.multi_select.contains(&id) {
+        return selection_entries(b);
+    }
     let pinned = b.ws.is_pinned(id);
+    let favorite = b.ws.is_favorite(id);
+    let saved = pinned || favorite;
     let in_folder = b.ws.folder_of(id);
     let is_web = record.url.starts_with("http");
     let selected = b.selected() == Some(id);
     let live = b.live.contains_key(&id);
+    let away = saved && record.left_pinned_url();
     let url = record.url.clone();
     let title = record.display_title().to_string();
 
@@ -307,9 +424,22 @@ fn tab_entries(b: &Browser, id: TabId) -> Vec<Entry> {
             b.toggle_mute(id, cx)
         }));
     }
-    v.push(item(if pinned { "Unpin Tab" } else { "Pin Tab" }, "pin", move |b, _, cx| {
-        b.toggle_pin(id, cx)
+    if away {
+        v.push(item("Back to Pinned Page", "undo-2", move |b, w, cx| b.reset_pinned_tab(id, w, cx)));
+        v.push(item("Replace Pinned URL with Current", "pin", move |b, _, cx| {
+            b.ws.replace_pinned_url(id);
+            b.toast("This page is the pinned one now", ToastStyle::Success, None, cx);
+            b.schedule_save(cx);
+        }));
+    }
+    v.push(item(if favorite { "Remove from Favorites" } else { "Add to Favorites" }, "star", move |b, _, cx| {
+        b.toggle_favorite(id, cx)
     }));
+    if !favorite {
+        v.push(item(if pinned { "Unpin Tab" } else { "Pin Tab" }, "pin", move |b, _, cx| {
+            b.toggle_pin(id, cx)
+        }));
+    }
     v.push(item("Duplicate Tab", "copy", move |b, w, cx| b.duplicate_tab(id, w, cx)));
     if is_web {
         let (u, t) = (url.clone(), title.clone());
@@ -338,34 +468,28 @@ fn tab_entries(b: &Browser, id: TabId) -> Vec<Entry> {
         }
     }
     let space = b.ws.active();
-    for folder in &space.folders {
+    for (folder, depth) in space.all_folders() {
         if Some(folder.id) == in_folder {
             continue;
         }
         let (fid, sid) = (folder.id, space.id);
-        v.push(item(format!("Add to {}", folder.name), "folder-input", move |b, _, cx| {
-            let end = b.ws.space(sid).and_then(|s| s.folder(fid)).map(|f| f.tab_ids.len()).unwrap_or(0);
-            b.ws.move_tab(id, sid, mori_core::workspace::Slot::Folder(fid, end));
+        // Nested folders read as a path: "Work › Docs".
+        let path = folder_path(space, fid);
+        let label = if depth > 1 { path } else { folder.name.clone() };
+        v.push(item(format!("Add to {label}"), "folder-input", move |b, _, cx| {
+            b.ws.move_tab(id, sid, Slot::Folder(fid, usize::MAX));
             b.schedule_save(cx);
         }));
     }
     v.push(item("Select All Tabs", "list-checks", |b, _, cx| {
-        b.multi_select = b.ws.active().visible();
+        b.multi_select = b.ws.visible_in(b.ws.active_space);
         cx.notify();
     }));
-    if b.multi_select.len() >= 2 && b.multi_select.contains(&id) {
-        let n = b.multi_select.len();
-        v.push(item(format!("New Folder with {n} Selected Tabs"), "folder-plus", |b, w, cx| {
-            let tabs = b.multi_select.clone();
-            b.new_folder(tabs, w, cx);
-        }));
-    } else {
-        v.push(item("New Folder with Tab", "folder-plus", move |b, w, cx| b.new_folder(vec![id], w, cx)));
-    }
+    v.push(item("New Folder with Tab", "folder-plus", move |b, w, cx| b.new_folder(vec![id], w, cx)));
     if in_folder.is_some() {
         v.push(item("Remove from Folder", "folder-output", move |b, _, cx| {
             let sid = b.ws.active_space;
-            b.ws.move_tab(id, sid, mori_core::workspace::Slot::Loose(0));
+            b.ws.move_tab(id, sid, Slot::Pinned(usize::MAX));
             b.schedule_save(cx);
         }));
     }
@@ -397,15 +521,20 @@ fn tab_entries(b: &Browser, id: TabId) -> Vec<Entry> {
     }
 
     v.push(Entry::Separator);
-    if live && !selected {
+    if live && !selected && !saved {
         v.push(item("Sleep Tab", "moon", move |b, _, cx| b.sleep_tab(id, cx)));
     }
-    v.push(item("Archive Tab", "archive", move |b, w, cx| b.archive_tab(id, w, cx)).enabled(!pinned));
+    if saved && (live || away) {
+        // Ctrl+W on a pinned tab: back to its page, unloaded, row kept.
+        v.push(item("Unload Tab", "minus", move |b, w, cx| b.unload_saved_tab(id, w, cx)).shortcut("secondary-w"));
+    }
+    v.push(item("Archive Tab", "archive", move |b, w, cx| b.archive_tab(id, w, cx)).enabled(!saved));
     v.push(item("Close Other Tabs", "x", move |b, w, cx| b.close_other_tabs(id, w, cx)));
     if b.ws.active().loose.contains(&id) {
         v.push(item("Close Tabs Below", "x", move |b, w, cx| b.close_tabs_below(id, w, cx)));
     }
-    v.push(item("Close Tab", "x", move |b, w, cx| b.close_tab(id, true, w, cx)).shortcut("secondary-w"));
+    let close = item("Close Tab", "x", move |b, w, cx| b.close_tab(id, true, w, cx));
+    v.push(if saved { close } else { close.shortcut("secondary-w") });
     v.push(
         cmd("Reopen Closed Tab", "rotate-ccw", Command::ReopenClosedTab)
             .shortcut("secondary-shift-t")
@@ -826,7 +955,7 @@ impl Browser {
                     )
                     .on_click(cx.listener(move |this, _, window, cx| handler(this, window, cx)))
                     .into_any_element(),
-                Entry::Icons { space, current } => self.render_icon_grid(space, &current, cx),
+                Entry::FolderIcons { folder, current } => self.render_icon_grid(folder, &current, cx),
                 Entry::Item {
                     label,
                     icon: ic,
@@ -914,13 +1043,13 @@ impl Browser {
         )
     }
 
-    fn render_icon_grid(&self, space: SpaceId, current: &str, cx: &mut Context<Self>) -> AnyElement {
+    fn render_icon_grid(&self, folder: FolderId, current: &str, cx: &mut Context<Self>) -> AnyElement {
         let t = cx.tokens().clone();
-        let cells = crate::ui::sidebar::SPACE_SYMBOLS.iter().enumerate().map(|(i, symbol)| {
+        let cells = crate::ui::sidebar::FOLDER_SYMBOLS.iter().enumerate().map(|(i, symbol)| {
             let symbol: &'static str = symbol;
             let active = symbol == current;
             div()
-                .id(("space-icon", i))
+                .id(("folder-icon", i))
                 .size(px(ICON_CELL - 2.))
                 .flex()
                 .items_center()
@@ -931,9 +1060,7 @@ impl Browser {
                 .when(!active, |s| s.hover(|s| s.bg(t.foreground.opacity(0.08))))
                 .child(icon(symbol, px(15.), if active { t.foreground } else { t.foreground.opacity(0.75) }))
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    if let Some(s) = this.ws.space_mut(space) {
-                        s.symbol = symbol.to_string();
-                    }
+                    this.ws.update_folder(folder, |f| f.symbol = symbol.to_string());
                     this.close_menu(window, cx);
                     this.schedule_save(cx);
                 }))

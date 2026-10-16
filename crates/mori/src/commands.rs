@@ -83,7 +83,7 @@ pub fn available(browser: &Browser) -> Vec<CommandInfo> {
         add(NewFolderWithSelected, &format!("New Folder with {n} Selected Tabs"), "group", "folder-plus", None);
     }
     if let Some(id) = browser.selected() {
-        let pinned = browser.ws.is_pinned(id);
+        let pinned = browser.ws.is_saved(id);
         let url = browser.ws.tab(id).map(|t| t.url.clone()).unwrap_or_default();
         let bookmarked = browser.bookmarks.contains(&url);
         add(CopyUrl, "Copy URL", "link clipboard", "link", Some("secondary-shift-c"));

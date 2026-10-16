@@ -145,6 +145,9 @@ mod tests {
         for symbol in crate::ui::sidebar::SPACE_SYMBOLS {
             names.push(("SPACE_SYMBOLS".into(), symbol.to_string()));
         }
+        for symbol in crate::ui::sidebar::FOLDER_SYMBOLS {
+            names.push(("FOLDER_SYMBOLS".into(), symbol.to_string()));
+        }
         for symbol in mori_core::workspace::NEW_SPACE_SYMBOLS {
             // New spaces must get a symbol the space editor offers too.
             assert!(crate::ui::sidebar::SPACE_SYMBOLS.contains(&symbol), "{symbol} not in SPACE_SYMBOLS");
