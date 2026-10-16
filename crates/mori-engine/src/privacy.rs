@@ -9,7 +9,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, LazyLock, Mutex, RwLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicI32, Ordering},
     },
 };
 
@@ -239,10 +239,33 @@ pub fn can_block_third_party_cookies() -> bool {
         .is_some_and(|c| c.can_set_preference(Some(&CefString::from(COOKIE_CONTROLS_PREF))) == 1)
 }
 
-/// Block (or allow again) cookies of other sites embedded in pages.
-/// Returns whether Chromium accepted the change.
+/// The last third-party cookie choice (0: none made yet, else the
+/// `CookieControlsMode` wanted), for contexts created after it.
+static COOKIE_CHOICE: AtomicI32 = AtomicI32::new(0);
+
+/// Block (or allow again) cookies of other sites embedded in pages of
+/// `context`. Contexts created later get the same choice once Chromium has
+/// set them up. Returns whether Chromium accepted the change.
 pub fn set_block_third_party_cookies(context: &BrowsingContext, on: bool) -> bool {
+    COOKIE_CHOICE.store(if on { BLOCK_THIRD_PARTY } else { ALLOW_THIRD_PARTY }, Ordering::Relaxed);
     let Some(context) = context.cef_context() else { return false };
+    set_cookie_controls(&context, on)
+}
+
+/// A new request context is ready: give it the third-party cookie choice.
+pub(crate) fn on_context_initialized(context: &RequestContext) {
+    match COOKIE_CHOICE.load(Ordering::Relaxed) {
+        BLOCK_THIRD_PARTY => {
+            set_cookie_controls(context, true);
+        }
+        ALLOW_THIRD_PARTY => {
+            set_cookie_controls(context, false);
+        }
+        _ => {}
+    }
+}
+
+fn set_cookie_controls(context: &RequestContext, on: bool) -> bool {
     let name = CefString::from(COOKIE_CONTROLS_PREF);
     let wanted = if on { BLOCK_THIRD_PARTY } else { ALLOW_THIRD_PARTY };
     if context.preference(Some(&name)).is_some_and(|v| v.int() == wanted) {

@@ -176,17 +176,15 @@ impl Browser {
         }
     }
 
-    /// A profile's context was opened: give it Mori's permission and
-    /// third-party cookie choices once per run.
+    /// A profile's context was opened: give it Mori's permission choices
+    /// once per run. (The engine gives new contexts the third-party cookie
+    /// choice itself, once Chromium has set them up.)
     pub(crate) fn prepare_profile_context(&self, context: &BrowsingContext) {
         let Some(dir) = context.dir_name() else { return };
         if !PREPARED_PROFILES.with(|p| p.borrow_mut().insert(dir.to_string())) {
             return;
         }
         self.apply_permission_settings(context);
-        if engine::can_block_third_party_cookies() {
-            engine::set_block_third_party_cookies(context, self.settings.block_third_party_cookies);
-        }
     }
 
     /// Push Do Not Track and third-party cookie choices to Chromium, and

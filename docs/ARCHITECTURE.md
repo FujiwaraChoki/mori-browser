@@ -101,6 +101,15 @@ spaces in `mori_core::profiles`), or an in-memory context shared by the open
 private windows. Little Mori opens its page in the profile of the space
 "Open in …" would take it to.
 
+Privacy choices that Chromium keeps per context follow the same split: a
+normal window's permission decisions, third-party cookie choice, cookie and
+cache clearing go to the default context and every profile's (a profile
+gets the remembered permissions when its context first opens, and the
+cookie choice once Chromium has set it up); a private window's go to its
+own context. The page bridge records a permission answer in the asking
+page's own context. The content blocker is process-wide, so its site
+exceptions are one store every window shares.
+
 ## Mori 2: SwiftUI on Chromium (macOS)
 
 Mori 2 is a native macOS browser chrome embedded in the Chromium `chrome` target.

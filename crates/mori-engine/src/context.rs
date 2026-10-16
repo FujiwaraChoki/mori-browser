@@ -26,6 +26,20 @@ thread_local! {
     static PERSISTENT: RefCell<HashMap<String, RequestContext>> = RefCell::new(HashMap::new());
 }
 
+// Applies Mori's settings that live in a context's preferences once
+// Chromium has set the new context up (before that they can't be set).
+wrap_request_context_handler! {
+    struct ContextReady;
+
+    impl RequestContextHandler {
+        fn on_request_context_initialized(&self, request_context: Option<&mut RequestContext>) {
+            if let Some(context) = request_context {
+                crate::privacy::on_context_initialized(context);
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 enum Kind {
     Default,
@@ -68,7 +82,7 @@ impl BrowsingContext {
             persist_session_cookies: true as _,
             ..Default::default()
         };
-        let ctx = request_context_create_context(Some(&settings), None)?;
+        let ctx = request_context_create_context(Some(&settings), Some(&mut ContextReady::new()))?;
         PERSISTENT.with(|p| p.borrow_mut().insert(dir_name.to_string(), ctx.clone()));
         Some(BrowsingContext(Kind::Persistent(dir_name.to_string(), ctx)))
     }
@@ -78,7 +92,8 @@ impl BrowsingContext {
         // An empty cache path makes Chromium create an off-the-record
         // profile of its own for this context.
         let settings = RequestContextSettings::default();
-        request_context_create_context(Some(&settings), None).map(|c| BrowsingContext(Kind::Private(c)))
+        request_context_create_context(Some(&settings), Some(&mut ContextReady::new()))
+            .map(|c| BrowsingContext(Kind::Private(c)))
     }
 
     pub fn is_private(&self) -> bool {
