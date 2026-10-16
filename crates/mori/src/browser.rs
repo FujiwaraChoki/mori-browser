@@ -1047,11 +1047,16 @@ impl Browser {
                 let sub = cx.subscribe_in(&bar, window, |this, _, ev: &FindBarEvent, window, cx| {
                     let Some(view) = this.selected_view() else { return };
                     match ev {
-                        FindBarEvent::Search { text, forward, next } => {
+                        FindBarEvent::Search {
+                            text,
+                            forward,
+                            next,
+                            match_case,
+                        } => {
                             if text.is_empty() {
                                 view.stop_finding(true);
                             } else {
-                                view.find(text, *forward, false, *next);
+                                view.find(text, *forward, *match_case, *next);
                             }
                         }
                         FindBarEvent::Close => this.close_find(window, cx),

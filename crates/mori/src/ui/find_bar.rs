@@ -1,5 +1,6 @@
 //! Find-in-page bar, pinned to the top-right of the web card.
 
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     component::input::{Escape, Input, InputEvent, InputState},
     *,
@@ -11,7 +12,12 @@ use crate::{
 };
 
 pub enum FindBarEvent {
-    Search { text: String, forward: bool, next: bool },
+    Search {
+        text: String,
+        forward: bool,
+        next: bool,
+        match_case: bool,
+    },
     Close,
 }
 
@@ -22,6 +28,7 @@ pub struct FindBar {
     /// Whether the current query already asked Chromium to select its first
     /// match (a new search only highlights; see [`FindBar::set_results`]).
     primed: bool,
+    match_case: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -31,18 +38,7 @@ impl FindBar {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Find in page"));
         let sub = cx.subscribe_in(&input, window, |this, _, ev: &InputEvent, _, cx| match ev {
-            InputEvent::Change => {
-                let text = this.text(cx);
-                this.count = 0;
-                this.active = 0;
-                this.primed = false;
-                cx.emit(FindBarEvent::Search {
-                    text,
-                    forward: true,
-                    next: false,
-                });
-                cx.notify();
-            }
+            InputEvent::Change => this.search(cx),
             InputEvent::PressEnter { shift, .. } => this.step(!*shift, cx),
             _ => {}
         });
@@ -51,8 +47,23 @@ impl FindBar {
             count: 0,
             active: 0,
             primed: false,
+            match_case: false,
             _subscriptions: vec![sub],
         }
+    }
+
+    /// Start a new search for the current text.
+    fn search(&mut self, cx: &mut Context<Self>) {
+        self.count = 0;
+        self.active = 0;
+        self.primed = false;
+        cx.emit(FindBarEvent::Search {
+            text: self.text(cx),
+            forward: true,
+            next: false,
+            match_case: self.match_case,
+        });
+        cx.notify();
     }
 
     /// Keep `subscription` (the owner's handler for this bar's events) alive
@@ -80,6 +91,7 @@ impl FindBar {
                 text,
                 forward,
                 next: true,
+                match_case: self.match_case,
             });
         }
     }
@@ -151,6 +163,32 @@ impl Render for FindBar {
                             .text_size(metrics::TEXT_LABEL)
                             .text_color(t.muted_foreground)
                             .child(label),
+                    )
+                    .child(
+                        div()
+                            .id("find-match-case")
+                            .h(px(22.))
+                            .px(px(5.))
+                            .flex()
+                            .items_center()
+                            .rounded(metrics::RADIUS_MD)
+                            .text_size(metrics::TEXT_LABEL)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .cursor_pointer()
+                            .text_color(if self.match_case { t.foreground } else { t.muted_foreground })
+                            .when(self.match_case, |s| s.bg(t.primary.opacity(0.25)))
+                            .when(!self.match_case, |s| s.hover(|s| s.bg(t.ghost_hover())))
+                            .tooltip(|window, cx| {
+                                gpui_kit::component::tooltip::Tooltip::new("Match Case").build(window, cx)
+                            })
+                            .child("Aa")
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.match_case = !this.match_case;
+                                if !this.text(cx).is_empty() {
+                                    this.search(cx);
+                                }
+                                cx.notify();
+                            })),
                     )
                     .child(div().w(px(1.)).h(px(18.)).bg(t.border))
                     .child(

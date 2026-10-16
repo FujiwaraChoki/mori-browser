@@ -342,6 +342,10 @@ fn tab_entries(b: &Browser, id: TabId) -> Vec<Entry> {
             b.schedule_save(cx);
         }));
     }
+    v.push(item("Select All Tabs", "list-checks", |b, _, cx| {
+        b.multi_select = b.ws.active().visible();
+        cx.notify();
+    }));
     if b.multi_select.len() >= 2 && b.multi_select.contains(&id) {
         let n = b.multi_select.len();
         v.push(item(format!("New Folder with {n} Selected Tabs"), "folder-plus", |b, w, cx| {
