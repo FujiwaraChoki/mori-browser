@@ -74,8 +74,7 @@ pub enum DropTarget {
     Space(SpaceId),
 }
 
-/// The symbol new spaces start with; the switcher draws it as a plain dot.
-pub const DEFAULT_SPACE_SYMBOL: &str = "circle";
+pub use mori_core::workspace::DEFAULT_SPACE_SYMBOL;
 
 /// Space glyphs offered in the space editor (Lucide icon names).
 pub const SPACE_SYMBOLS: [&str; 24] = [
@@ -299,6 +298,9 @@ impl Browser {
             Some(icon("triangle-alert", px(14.), t.status_warning))
         } else if host.is_empty() {
             Some(icon("search", px(14.), muted))
+        } else if is_web {
+            // Secure page: a quiet lock that opens site info.
+            Some(icon("lock", px(13.), muted))
         } else {
             None
         };
@@ -341,7 +343,34 @@ impl Browser {
             .on_click(cx.listener(|this, _, window, cx| {
                 this.open_launcher(LauncherMode::Address, window, cx)
             }))
-            .children(lead)
+            .child(crate::ui::menus::anchor_probe(crate::ui::site_info::OMNIBOX_ANCHOR))
+            // The leading icon opens site info (connection, permissions, zoom).
+            .when_some(lead, |s, lead| {
+                s.child(
+                    div()
+                        .id("site-info")
+                        .flex_none()
+                        .size(px(20.))
+                        .mx(px(-2.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(metrics::RADIUS_MD)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(t.ghost_hover()))
+                        .child(lead)
+                        .when(is_web, |s| {
+                            s.on_click(cx.listener(|this, ev: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                this.menu = Some(OpenMenu {
+                                    kind: MenuKind::SiteInfo,
+                                    position: ev.position(),
+                                });
+                                cx.notify();
+                            }))
+                        }),
+                )
+            })
             .child(
                 div()
                     .flex_1()
@@ -453,7 +482,7 @@ impl Browser {
             .child(match renaming {
                 Some(input) => div()
                     .flex_1()
-                    .child(Input::new(&input).appearance(false).bordered(false))
+                    .child(rename_input(&input, font.label_size(), FontWeight::BOLD, cx))
                     .into_any_element(),
                 None => div()
                     .flex_1()
@@ -682,7 +711,7 @@ impl Browser {
             .child(match renaming {
                 Some(input) => div()
                     .flex_1()
-                    .child(Input::new(&input).appearance(false).bordered(false))
+                    .child(rename_input(&input, crate::theme::ui_font().size, FontWeight::SEMIBOLD, cx))
                     .into_any_element(),
                 None => div()
                     .flex_1()
@@ -791,14 +820,21 @@ impl Browser {
         let t = cx.tokens().clone();
         let space = self.ws.active().clone();
         let space_id = space.id;
+        // While Ctrl+T's bar is open the row reads as the tab being created.
+        let creating = self
+            .launcher
+            .as_ref()
+            .is_some_and(|l| l.read(cx).mode() == LauncherMode::NewTab);
+        let new_tab_fg = if creating { t.sidebar_foreground } else { t.muted_foreground };
         let new_tab = h_flex()
             .id("new-tab-row")
             .h(metrics::ROW_HEIGHT)
             .pl(px(7.))
             .gap(px(10.))
             .rounded(metrics::ROW_RADIUS)
-            .text_color(t.muted_foreground)
-            .hover(|s| s.bg(t.tab_hover()))
+            .text_color(new_tab_fg)
+            .when(creating, |s| s.bg(t.tab_selected()))
+            .when(!creating, |s| s.hover(|s| s.bg(t.tab_hover())))
             .cursor_pointer()
             .child(
                 div()
@@ -807,7 +843,7 @@ impl Browser {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(icon("plus", px(13.), t.muted_foreground)),
+                    .child(icon("plus", px(13.), new_tab_fg)),
             )
             .child("New Tab")
             .on_click(cx.listener(|this, _, window, cx| this.open_launcher(LauncherMode::NewTab, window, cx)))
@@ -898,7 +934,7 @@ impl Browser {
         let title_el: AnyElement = match renaming {
             Some(input) => div()
                 .flex_1()
-                .child(Input::new(&input).appearance(false).bordered(false))
+                .child(rename_input(&input, crate::theme::ui_font().size, FontWeight::NORMAL, cx))
                 .into_any_element(),
             None => match fade {
                 Some((base, hover)) => div()
@@ -1098,6 +1134,7 @@ impl Browser {
         let active = self.ws.active_space;
         let ai = self.settings.ai_integration_enabled;
         let ai_open = self.assistant_visible;
+        let menu_closed = self.menu.is_none();
         let button = metrics::TOOLBAR_BUTTON;
         // Zen's switcher: a dot per space (an icon when the user picked one),
         // the active one brighter; hidden while there is only one space.
@@ -1143,6 +1180,8 @@ impl Browser {
                     div()
                         .id(("space-chip", i))
                         .group("space-chip")
+                        .relative()
+                        .child(crate::ui::menus::anchor_probe(crate::ui::menus::space_chip_anchor(id)))
                         .size(chip)
                         .flex()
                         .flex_none()
@@ -1152,9 +1191,12 @@ impl Browser {
                         .hover(|s| s.bg(t.tab_hover()))
                         .cursor_pointer()
                         .child(glyph)
-                        .tooltip({
-                            let name: SharedString = s.name.clone().into();
-                            move |window, cx| gpui_kit::component::tooltip::Tooltip::new(name.clone()).build(window, cx)
+                        // A space's menu opens over its chip; its tooltip mustn't cover it.
+                        .when(menu_closed, |chip| {
+                            chip.tooltip({
+                                let name: SharedString = s.name.clone().into();
+                                move |window, cx| gpui_kit::component::tooltip::Tooltip::new(name.clone()).build(window, cx)
+                            })
                         })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             if this.ws.active_space == id {
@@ -1223,6 +1265,8 @@ impl Browser {
                     .items_center()
                     .justify_center()
                     .rounded(metrics::RADIUS)
+                    .relative()
+                    .child(crate::ui::menus::anchor_probe(crate::ui::menus::NEW_MENU_ANCHOR))
                     .cursor_pointer()
                     .hover(|s| s.bg(t.ghost_hover()))
                     .active(|s| s.bg(t.ghost_pressed()))
@@ -1283,6 +1327,27 @@ fn window_drag_area(id: &'static str) -> Stateful<Div> {
                 window.start_window_move();
             }
         })
+}
+
+/// An inline rename field that sits exactly where its label was: no padding,
+/// the label's size and weight, and a thin accent underline while editing.
+fn rename_input(
+    input: &Entity<gpui_kit::component::input::InputState>,
+    size: Pixels,
+    weight: FontWeight,
+    cx: &App,
+) -> impl IntoElement {
+    let t = cx.tokens();
+    let field = Input::new(input)
+        .appearance(false)
+        .bordered(false)
+        .focus_bordered(false)
+        .px_0()
+        .py_0()
+        .text_size(size)
+        .font_weight(weight);
+    // `Input::h` only sizes multi-line inputs; the style height applies here.
+    div().border_b_1().border_color(t.primary.opacity(0.6)).child(Styled::h(field, size + px(6.)))
 }
 
 /// Minimize / maximize / close buttons, shown only when Mori draws its own

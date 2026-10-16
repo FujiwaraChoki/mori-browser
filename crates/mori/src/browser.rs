@@ -22,9 +22,10 @@ use mori_core::{
     navigation,
     omnibox::{self, Resolved},
     persist::Saver,
-    prompts::{Decision, PromptQueue, SitePermissions},
+    prompts::PromptQueue,
     routes::{Route, RouteStore},
     settings::Settings,
+    site_permissions::{Decision, SitePermissionStore},
     util::host_of,
     workspace::{
         ClosedTab, DeletedSpace, FolderId, Slot, SpaceId, TabId, TabRecord, Workspace,
@@ -33,7 +34,7 @@ use mori_core::{
 };
 use mori_engine::{
     AuthRequest, CertificateError, ContextMenuInfo, DialogKind, DownloadId, JsDialog,
-    PermissionKind, PermissionRequest, ViewEvent, WebView, keys::KeyInput,
+    PermissionRequest, ViewEvent, WebView, keys::KeyInput,
 };
 
 use crate::{
@@ -160,7 +161,15 @@ pub struct Toast {
     pub text: SharedString,
     pub style: ToastStyle,
     pub action: Option<(SharedString, ToastAction)>,
+    /// Playing its exit animation; removed shortly after.
+    pub leaving: bool,
+    /// Bumped when a keyed toast is updated in place, so the timer of its
+    /// earlier text doesn't dismiss the new one.
+    serial: u64,
 }
+
+/// How long a toast takes to fade out before it is removed.
+pub const TOAST_EXIT: Duration = Duration::from_millis(160);
 
 /// A right-click menu currently on screen.
 #[derive(Clone, Debug)]
@@ -171,6 +180,8 @@ pub enum MenuKind {
     Space(SpaceId),
     Sidebar,
     NewMenu,
+    /// Connection, permissions and zoom for the selected page (URL pill).
+    SiteInfo,
 }
 
 #[derive(Clone, Debug)]
@@ -211,6 +222,7 @@ pub struct Browser {
     pub archive: ArchiveStore,
     pub routes: RouteStore,
     pub boosts: BoostStore,
+    pub site_permissions: SitePermissionStore,
     pub favicons: Favicons,
 
     pub live: HashMap<TabId, LiveTab>,
@@ -234,7 +246,6 @@ pub struct Browser {
     pub launcher: Option<Entity<Launcher>>,
     launcher_events: Option<Subscription>,
     pub find_bar: Option<Entity<FindBar>>,
-    find_events: Option<Subscription>,
     pub menu: Option<OpenMenu>,
     pub panel: Option<Panel>,
     pub settings_open: bool,
@@ -245,8 +256,9 @@ pub struct Browser {
     pub auth_prompts: PromptQueue<PageOwner, PendingAuth>,
     pub permissions: PromptQueue<PageOwner, PermissionRequest>,
     pub cert_errors: PromptQueue<PageOwner, CertificateError>,
-    /// Allow/Block answers given this session.
-    site_permissions: SitePermissions<PermissionKind>,
+    /// When the user last Alt+clicked in the window; a page's Peek request
+    /// (PEEK_LINK_SCRIPT) is only honoured right after one.
+    pub alt_click_at: Option<Instant>,
     pub rename: Option<(RenameTarget, Entity<gpui_kit::component::input::InputState>)>,
     rename_events: Option<Subscription>,
     pub boost_editor: Option<Entity<crate::ui::boost_editor::BoostEditor>>,
@@ -319,6 +331,7 @@ impl Browser {
             archive: ArchiveStore::load(&data_dir),
             routes: RouteStore::load(&data_dir),
             boosts: BoostStore::load(&data_dir),
+            site_permissions: SitePermissionStore::load(&data_dir),
             favicons: Favicons::new(data_dir.join("favicons")),
             ws,
             settings,
@@ -336,7 +349,6 @@ impl Browser {
             launcher: None,
             launcher_events: None,
             find_bar: None,
-            find_events: None,
             menu: None,
             panel: None,
             settings_open: false,
@@ -346,7 +358,7 @@ impl Browser {
             auth_prompts: PromptQueue::default(),
             permissions: PromptQueue::default(),
             cert_errors: PromptQueue::default(),
-            site_permissions: SitePermissions::default(),
+            alt_click_at: None,
             rename: None,
             rename_events: None,
             boost_editor: None,
@@ -440,7 +452,9 @@ impl Browser {
     /// Queue every store that changed since its last save. Serializing
     /// happens here; the atomic writes run on the saver's own thread.
     pub fn save_now(&mut self) {
-        use mori_core::{archive, bookmarks, boosts, downloads, history, routes, settings, workspace, zoom};
+        use mori_core::{
+            archive, bookmarks, boosts, downloads, history, routes, settings, site_permissions, workspace, zoom,
+        };
         let saver = &mut self.saver;
         let session = if self.ephemeral_session {
             Ok(false)
@@ -457,6 +471,10 @@ impl Browser {
             ("boosts", saver.stage(boosts::BOOSTS_FILE, &self.boosts)),
             ("downloads", saver.stage(downloads::DOWNLOADS_FILE, &self.downloads)),
             ("zoom", saver.stage(zoom::ZOOM_FILE, &self.zoom)),
+            (
+                "site permissions",
+                saver.stage(site_permissions::SITE_PERMISSIONS_FILE, &self.site_permissions),
+            ),
         ];
         for (what, result) in results {
             if let Err(e) = result {
@@ -492,23 +510,51 @@ impl Browser {
     ) {
         let id = self.next_toast;
         self.next_toast += 1;
-        let ttl = if action.is_some() {
-            Duration::from_secs(5)
-        } else {
-            Duration::from_millis(2400)
-        };
+        let expires = action.is_some();
         self.toasts.push(Toast {
             id,
             text: text.into(),
             style,
             action,
+            leaving: false,
+            serial: 0,
         });
         if self.toasts.len() > 3 {
             self.toasts.remove(0);
         }
         cx.notify();
+        self.expire_toast(id, 0, expires, cx);
+    }
+
+    /// Dismiss toast `id` after its display time, unless it was updated in
+    /// place (its serial changed) meanwhile.
+    pub(crate) fn expire_toast(&mut self, id: u64, serial: u64, has_action: bool, cx: &mut Context<Self>) {
+        let ttl = if has_action {
+            Duration::from_secs(5)
+        } else {
+            Duration::from_millis(2400)
+        };
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(ttl).await;
+            this.update(cx, |this, cx| {
+                if this.toasts.iter().any(|t| t.id == id && t.serial == serial) {
+                    this.dismiss_toast(id, cx);
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Fade a toast out, then remove it.
+    pub fn dismiss_toast(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(toast) = self.toasts.iter_mut().find(|t| t.id == id && !t.leaving) else {
+            return;
+        };
+        toast.leaving = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(TOAST_EXIT).await;
             this.update(cx, |this, cx| {
                 this.toasts.retain(|t| t.id != id);
                 cx.notify();
@@ -516,11 +562,6 @@ impl Browser {
             .ok();
         })
         .detach();
-    }
-
-    pub fn dismiss_toast(&mut self, id: u64, cx: &mut Context<Self>) {
-        self.toasts.retain(|t| t.id != id);
-        cx.notify();
     }
 
     pub fn run_toast_action(
@@ -740,6 +781,7 @@ impl Browser {
     pub fn select_tab(&mut self, id: TabId, window: &mut Window, cx: &mut Context<Self>) {
         let previous_space = self.ws.active_space;
         let previous = [self.selected(), self.split];
+        let previous_selected = previous[0];
         let (left, right) = match self.ws.split_of(id) {
             Some(pair) => (pair.tabs[0], Some(pair.tabs[1])),
             None => (id, None),
@@ -785,8 +827,13 @@ impl Browser {
                 self.capture_scroll(tab, cx);
             }
         }
-        if let Some(find) = &self.find_bar {
-            find.update(cx, |f, cx| f.reset_results(cx));
+        if let Some(find) = &self.find_bar
+            && previous_selected != Some(id)
+        {
+            if let Some(prev) = previous_selected.and_then(|p| self.live.get(&p)) {
+                prev.view.stop_finding(true);
+            }
+            find.update(cx, |f, cx| f.rerun(cx));
         }
         self.focus_selected_page(window, cx);
         self.schedule_save(cx);
@@ -1516,7 +1563,7 @@ impl Browser {
                 .map(|t| omnibox::display_url(&t.url))
                 .unwrap_or_default(),
         };
-        let candidates = crate::ui::launcher::candidates(self, mode);
+        let candidates = crate::ui::launcher::candidates(self);
         let launcher = cx.new(|cx| Launcher::new(mode, prefill, candidates, window, cx));
         let sub = cx.subscribe_in(&launcher, window, |this, _, ev: &LauncherEvent, window, cx| {
             this.on_launcher_event(ev, window, cx);
@@ -1649,21 +1696,26 @@ impl Browser {
             Some(bar) => bar.clone(),
             None => {
                 let bar = cx.new(|cx| FindBar::new(window, cx));
-                // One subscription per bar: re-opening must not add another.
                 let sub = cx.subscribe_in(&bar, window, |this, _, ev: &FindBarEvent, window, cx| {
                     let Some(view) = this.selected_view() else { return };
                     match ev {
-                        FindBarEvent::Search { text, forward, next } => {
+                        FindBarEvent::Search {
+                            text,
+                            forward,
+                            next,
+                            match_case,
+                        } => {
                             if text.is_empty() {
                                 view.stop_finding(true);
                             } else {
-                                view.find(text, *forward, false, *next);
+                                view.find(text, *forward, *match_case, *next);
                             }
                         }
                         FindBarEvent::Close => this.close_find(window, cx),
                     }
                 });
-                self.find_events = Some(sub);
+                // The bar owns its handler, so Ctrl+F again never adds another.
+                bar.update(cx, |b, _| b.hold(sub));
                 self.find_bar = Some(bar.clone());
                 bar
             }
@@ -1871,6 +1923,13 @@ impl Browser {
     }
 
     pub fn peek_url(&mut self, url: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let size = self.peek_view_size(window, cx);
+        let view = WebView::new(url, size, window.scale_factor());
+        self.peek_view(view, url, window, cx);
+    }
+
+    /// Show an already-created view (e.g. a shift-clicked link) in Peek.
+    pub fn peek_view(&mut self, view: WebView, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(old) = self.peek.take() {
             EngineHub::unregister(cx, old.view.id());
             old.view.close();
@@ -1878,9 +1937,10 @@ impl Browser {
             self.forget_prompts(PageOwner::Peek);
             self.sync_page_modals(cx);
         }
-        let (w, h) = self.card_size(window);
-        let size = ((w as f32 * 0.74).min(1000.) as i32, (h as f32 * 0.82).min(820.) as i32 - 46);
-        let view = WebView::new(url, size, window.scale_factor());
+        self.menu = None;
+        self.launcher = None;
+        self.launcher_events = None;
+        view.set_hidden(false);
         let surface = cx.new(|cx| WebSurface::new(view.clone(), cx));
         let surface_events = self.watch_surface(&surface, cx);
         let weak = cx.entity().downgrade();
@@ -1916,9 +1976,8 @@ impl Browser {
         }
     }
 
-    /// Turn the peeked page into a real tab in the active space.
-    pub fn promote_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(peek) = self.peek.take() else { return };
+    /// Move the peeked page into a new tab after the current one.
+    fn adopt_peek(&mut self, peek: Peek, window: &mut Window, cx: &mut Context<Self>) -> TabId {
         EngineHub::unregister(cx, peek.view.id());
         let url = peek.view.url();
         let mut record = TabRecord::new(url.clone());
@@ -1927,7 +1986,6 @@ impl Browser {
             Some(opener) => self.ws.add_child_tab(record, opener, None),
             None => self.ws.add_new_tab(record),
         };
-        self.ws.select(id);
         self.dialogs.reassign(PageOwner::Peek, PageOwner::Tab(id));
         self.auth_prompts.reassign(PageOwner::Peek, PageOwner::Tab(id));
         self.permissions.reassign(PageOwner::Peek, PageOwner::Tab(id));
@@ -1945,8 +2003,24 @@ impl Browser {
             self.history.record(&page, &peek.title);
             self.apply_boost(id);
         }
+        id
+    }
+
+    /// Turn the peeked page into a real tab in the active space.
+    pub fn promote_peek(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(peek) = self.peek.take() else { return };
+        let id = self.adopt_peek(peek, window, cx);
         self.select_tab(id, window, cx);
         self.sync_page_modals(cx);
+    }
+
+    /// Turn the peeked page into a tab shown beside the current one.
+    pub fn peek_to_split(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(peek) = self.peek.take() else { return };
+        let id = self.adopt_peek(peek, window, cx);
+        self.open_split(id, window, cx);
+        self.focus_selected_page(window, cx);
+        self.schedule_save(cx);
     }
 
     fn on_peek_events(&mut self, events: Vec<ViewEvent>, window: &mut Window, cx: &mut Context<Self>) {
@@ -2228,6 +2302,7 @@ impl Browser {
                     if let Some(live) = self.live.get_mut(&id) {
                         live.blank_popup = false;
                         live.view.execute_js(mori_core::scripts::CLIPBOARD_BRIDGE_SCRIPT);
+                        live.view.execute_js(mori_core::page_actions::PEEK_LINK_SCRIPT);
                     }
                     self.apply_site_zoom(id);
                     self.check_media_soon(id, cx);
@@ -2267,11 +2342,17 @@ impl Browser {
                     url,
                     disposition,
                     features,
-                    ..
+                    user_gesture,
                 } => {
                     use mori_engine::Disposition as D;
+                    // A window.open that asked for a size floats over its opener.
                     if popups::wants_window(disposition, features) {
                         self.open_popup_window(id, view, url, features, window, cx);
+                        continue;
+                    }
+                    // Shift+click ("new window") previews the link in Peek.
+                    if disposition == D::Window && user_gesture {
+                        self.peek_view(view, &url, window, cx);
                         continue;
                     }
                     let background = disposition == D::BackgroundTab;
@@ -2312,17 +2393,18 @@ impl Browser {
                     }
                 }
                 ViewEvent::PrintRequested => self.offer_print(ToastAction::PrintTab(id), cx),
-                ViewEvent::FindResult { count, active, .. } => {
+                ViewEvent::FindResult { count, active, final_update } => {
                     // Intermediate updates report ordinal 0; keep the last real one.
                     if let Some(live) = self.live.get_mut(&id) {
                         live.find_count = count;
                         if active > 0 || count == 0 {
                             live.find_active = active;
                         }
-                        let active = live.find_active;
-                        if let Some(bar) = &self.find_bar {
-                            bar.update(cx, |b, cx| b.set_results(count, active, cx));
-                        }
+                    }
+                    if self.active_tab() == Some(id)
+                        && let Some(bar) = &self.find_bar
+                    {
+                        bar.update(cx, |b, cx| b.set_results(count, active, final_update, cx));
                     }
                 }
                 ViewEvent::ContextMenu(info) => {
@@ -2356,8 +2438,19 @@ impl Browser {
                         self.live.remove(&id);
                     }
                 }
-                ViewEvent::ConsoleMessage { .. }
-                | ViewEvent::Created
+                // Alt+click on a link in the visible page (PEEK_LINK_SCRIPT).
+                ViewEvent::ConsoleMessage { message, .. } => {
+                    // Any page can log the marker, so only act on it right
+                    // after a real Alt+click; otherwise it would open
+                    // previews without a user gesture (a popup-blocker bypass).
+                    if self.visible_tabs().contains(&Some(id))
+                        && let Some(url) = mori_core::page_actions::peek_request(&message)
+                        && self.alt_click_at.take().is_some_and(|t| t.elapsed() < Duration::from_secs(2))
+                    {
+                        self.peek_url(&url, window, cx);
+                    }
+                }
+                ViewEvent::Created
                 | ViewEvent::Painted
                 | ViewEvent::PopupWidgetChanged
                 | ViewEvent::CursorChanged(_)
@@ -2595,10 +2688,11 @@ impl Browser {
     }
 
     fn on_permission_request(&mut self, owner: PageOwner, req: PermissionRequest, cx: &mut Context<Self>) {
-        match self.site_permissions.decide(&req.origin, &req.kinds) {
-            Some(decision) => {
+        // A remembered answer for every kind asked skips the prompt.
+        match remembered_permission(&self.site_permissions, &req) {
+            Some(allow) => {
                 if let Some(view) = self.owner_view(owner) {
-                    view.resolve_permission(req.id, decision == Decision::Allow);
+                    view.resolve_permission(req.id, allow);
                 }
             }
             None => self.permissions.push(owner, req),
@@ -2606,22 +2700,29 @@ impl Browser {
         cx.notify();
     }
 
+    /// Answer a permission prompt and remember the answer for the site.
     pub fn resolve_permission(&mut self, id: mori_engine::PermissionId, allow: bool, cx: &mut Context<Self>) {
         let Some((owner, req)) = self.permissions.take(|r| r.id == id) else { return };
         let decision = if allow { Decision::Allow } else { Decision::Block };
-        self.site_permissions.record(&req.origin, &req.kinds, decision);
+        for key in req.kinds.iter().filter_map(|k| crate::ui::site_info::permission_key(*k)) {
+            self.site_permissions.set(&req.origin, key, decision);
+        }
         if let Some(view) = self.owner_view(owner) {
             view.resolve_permission(id, allow);
         }
-        // Other requests from the same site this answer covers.
-        while let Some((owner, other)) = self.permissions.take(|r| {
-            self.site_permissions.decide(&r.origin, &r.kinds).is_some()
-        }) {
-            if let Some(view) = self.owner_view(owner) {
-                let allow = self.site_permissions.decide(&other.origin, &other.kinds) == Some(Decision::Allow);
+        // Other waiting requests this answer now covers.
+        let store = &self.site_permissions;
+        while let Some((owner, other)) = self.permissions.take(|r| remembered_permission(store, r).is_some()) {
+            let allow = remembered_permission(store, &other) == Some(true);
+            let view = match owner {
+                PageOwner::Tab(id) => self.live.get(&id).map(|l| l.view.clone()),
+                PageOwner::Peek => self.peek.as_ref().map(|p| p.view.clone()),
+            };
+            if let Some(view) = view {
                 view.resolve_permission(other.id, allow);
             }
         }
+        self.schedule_save(cx);
         cx.notify();
     }
 
@@ -2838,4 +2939,19 @@ impl Browser {
         self.save_and_flush();
         cx.quit();
     }
+}
+
+/// The remembered answer to `req` (`Some(true)` allow, `Some(false)` block),
+/// or `None` when the user must be asked: a kind Mori can't remember, or a
+/// kind without an answer yet.
+fn remembered_permission(
+    store: &mori_core::site_permissions::SitePermissionStore,
+    req: &PermissionRequest,
+) -> Option<bool> {
+    let keys: Option<Vec<&str>> = req
+        .kinds
+        .iter()
+        .map(|k| crate::ui::site_info::permission_key(*k))
+        .collect();
+    keys.and_then(|keys| store.answer(&req.origin, &keys))
 }

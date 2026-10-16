@@ -85,8 +85,11 @@ fn default_folder_symbol() -> String {
     "folder".into()
 }
 
+/// The symbol a space starts with; the switcher draws it as a plain dot.
+pub const DEFAULT_SPACE_SYMBOL: &str = "circle";
+
 fn default_space_symbol() -> String {
-    "circle".into()
+    DEFAULT_SPACE_SYMBOL.into()
 }
 
 /// Symbols (Lucide names) handed to new spaces in turn, so every space is

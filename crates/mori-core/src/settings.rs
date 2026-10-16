@@ -139,6 +139,8 @@ pub struct Settings {
     pub new_tab_behavior: NewTabBehavior,
     pub search_engine: SearchEngine,
     pub custom_search_template: String,
+    /// Ask the search engine for completions while typing in the launcher.
+    pub search_suggestions: bool,
     pub ai_integration_enabled: bool,
     pub appearance: Appearance,
     pub show_sidebar_on_launch: bool,
@@ -160,6 +162,7 @@ impl Default for Settings {
             new_tab_behavior: NewTabBehavior::Homepage,
             search_engine: SearchEngine::Google,
             custom_search_template: "https://www.example.com/search?q={query}".into(),
+            search_suggestions: true,
             ai_integration_enabled: true,
             appearance: Appearance::System,
             show_sidebar_on_launch: true,

@@ -9,8 +9,12 @@ use std::collections::HashMap;
 
 /// Total rows the launcher shows, including the fixed first/last rows.
 pub const MAX_ROWS: usize = 8;
-/// History entries offered when the query is empty.
+/// Open tabs offered when the query is empty (most recently used first).
+pub const IDLE_TABS: usize = 4;
+/// Top sites (history by [`frecency`]) offered when the query is empty.
 pub const IDLE_HISTORY: usize = 8;
+/// Half-life of a visit's weight in [`frecency`], in days.
+pub const FRECENCY_HALF_LIFE_DAYS: f64 = 7.0;
 
 /// Where a launcher row comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -46,6 +50,8 @@ pub struct Candidate {
     pub keywords: String,
     /// UNIX seconds; newer wins ties.
     pub recency: f64,
+    /// How often the page was visited (history); 0 when unknown.
+    pub visits: u32,
 }
 
 /// A candidate with its final rank (`score + bonus`).
@@ -60,7 +66,9 @@ pub struct Ranked {
 /// The query is split on spaces; every token must match either the title or
 /// the secondary text. Per token, the best of the title score and the
 /// secondary score − 25 counts: prefix 400, word-boundary 340, substring 260,
-/// in-order subsequence (tokens of ≥ 3 chars) 180. The result is the
+/// and — for the title only — in-order subsequence (tokens of ≥ 3 chars)
+/// 180. URLs are noisy, so scattered letters in them never match, and a
+/// single character only matches at the start of a word. The result is the
 /// (integer) average across tokens; `None` if any token misses.
 pub fn score(query: &str, title: &str, secondary: &str) -> Option<f32> {
     let query = query.to_lowercase();
@@ -72,14 +80,14 @@ pub fn score(query: &str, title: &str, secondary: &str) -> Option<f32> {
     let secondary = secondary.to_lowercase();
     let mut total: u32 = 0;
     for token in &tokens {
-        let t = token_score(token, &title);
-        let s = token_score(token, &secondary).map(|v| v.saturating_sub(25));
+        let t = token_score(token, &title, true);
+        let s = token_score(token, &secondary, false).map(|v| v.saturating_sub(25));
         total += t.max(s)?;
     }
     Some((total / tokens.len() as u32) as f32)
 }
 
-fn token_score(needle: &str, haystack: &str) -> Option<u32> {
+fn token_score(needle: &str, haystack: &str, subsequence: bool) -> Option<u32> {
     if needle.is_empty() || haystack.is_empty() {
         return None;
     }
@@ -87,9 +95,9 @@ fn token_score(needle: &str, haystack: &str) -> Option<u32> {
         Some(400)
     } else if has_word_boundary_match(needle, haystack) {
         Some(340)
-    } else if haystack.contains(needle) {
+    } else if needle.chars().nth(1).is_some() && haystack.contains(needle) {
         Some(260)
-    } else if needle.chars().count() >= 3 && is_subsequence(needle, haystack) {
+    } else if subsequence && needle.chars().count() >= 3 && is_subsequence(needle, haystack) {
         Some(180)
     } else {
         None
@@ -110,9 +118,19 @@ fn is_subsequence(needle: &str, haystack: &str) -> bool {
     needle.chars().all(|c| hay.any(|h| h == c))
 }
 
+/// A URL as matched: without its scheme and a leading `www.`, so the query
+/// "h" doesn't prefix-match every `https://` address.
+pub fn match_url(url: &str) -> &str {
+    let rest = match url.find("://") {
+        Some(i) => &url[i + 3..],
+        None => url,
+    };
+    rest.strip_prefix("www.").unwrap_or(rest)
+}
+
 fn secondary_text(c: &Candidate) -> String {
     match (
-        c.url.as_deref().filter(|u| !u.is_empty()),
+        c.url.as_deref().filter(|u| !u.is_empty()).map(match_url),
         c.keywords.is_empty(),
     ) {
         (Some(url), true) => url.to_string(),
@@ -121,10 +139,18 @@ fn secondary_text(c: &Candidate) -> String {
     }
 }
 
+/// How strongly a page counts as a "top site": its visit count, halved for
+/// every [`FRECENCY_HALF_LIFE_DAYS`] since the last visit.
+pub fn frecency(visits: u32, age_secs: f64) -> f64 {
+    let age_days = age_secs.max(0.0) / 86_400.0;
+    visits.max(1) as f64 * 0.5f64.powf(age_days / FRECENCY_HALF_LIFE_DAYS)
+}
+
 /// Rank candidates for `query`, best first, at most `limit`.
 ///
-/// - Empty query: only tabs and the [`IDLE_HISTORY`] most recent history
-///   entries, ordered by kind bonus (tabs first) then recency.
+/// - Empty query: the [`IDLE_TABS`] most recent tabs, then the
+///   [`IDLE_HISTORY`] top sites (history by [`frecency`], measured from the
+///   newest visit among them).
 /// - Otherwise every kind is matched with [`score`] plus its
 ///   [`ItemKind::bonus`]. Commands with a query under 3 characters need ≥ 2
 ///   characters and a title prefix match, and score at most 240.
@@ -140,26 +166,29 @@ pub fn rank(query: &str, candidates: Vec<Candidate>, limit: usize) -> Vec<Candid
 /// [`rank`], keeping each row's final rank value.
 pub fn rank_with_scores(query: &str, candidates: Vec<Candidate>, limit: usize) -> Vec<Ranked> {
     let q = query.trim().to_lowercase();
-    let mut ranked: Vec<Ranked> = if q.is_empty() {
-        idle_candidates(candidates)
+    if q.is_empty() {
+        // Already in display order; only collapse duplicates.
+        let mut ranked: Vec<Ranked> = idle_candidates(candidates)
             .into_iter()
             .map(|c| Ranked {
                 rank: c.kind.bonus(),
                 candidate: c,
             })
-            .collect()
-    } else {
-        candidates
-            .into_iter()
-            .filter_map(|c| {
-                let s = match_candidate(&q, &c)?;
-                Some(Ranked {
-                    rank: s + c.kind.bonus(),
-                    candidate: c,
-                })
+            .collect();
+        dedupe(&mut ranked);
+        ranked.truncate(limit);
+        return ranked;
+    }
+    let mut ranked: Vec<Ranked> = candidates
+        .into_iter()
+        .filter_map(|c| {
+            let s = match_candidate(&q, &c)?;
+            Some(Ranked {
+                rank: s + c.kind.bonus(),
+                candidate: c,
             })
-            .collect()
-    };
+        })
+        .collect();
 
     sort_ranked(&mut ranked);
     dedupe(&mut ranked);
@@ -168,13 +197,20 @@ pub fn rank_with_scores(query: &str, candidates: Vec<Candidate>, limit: usize) -
 }
 
 fn idle_candidates(candidates: Vec<Candidate>) -> Vec<Candidate> {
-    let (mut history, rest): (Vec<_>, Vec<_>) = candidates
+    let (mut history, mut tabs): (Vec<_>, Vec<_>) = candidates
         .into_iter()
         .filter(|c| matches!(c.kind, ItemKind::Tab | ItemKind::History))
         .partition(|c| c.kind == ItemKind::History);
-    history.sort_by(|a, b| b.recency.total_cmp(&a.recency));
+    tabs.sort_by(|a, b| b.recency.total_cmp(&a.recency));
+    tabs.truncate(IDLE_TABS);
+    let now = history.iter().map(|c| c.recency).fold(f64::MIN, f64::max);
+    history.sort_by(|a, b| {
+        frecency(b.visits, now - b.recency)
+            .total_cmp(&frecency(a.visits, now - a.recency))
+            .then(b.recency.total_cmp(&a.recency))
+    });
     history.truncate(IDLE_HISTORY);
-    rest.into_iter().chain(history).collect()
+    tabs.into_iter().chain(history).collect()
 }
 
 fn match_candidate(q: &str, c: &Candidate) -> Option<f32> {
@@ -229,6 +265,7 @@ mod tests {
             url: url.map(Into::into),
             keywords: String::new(),
             recency,
+            visits: 1,
         }
     }
 
@@ -382,5 +419,49 @@ mod tests {
             1,
         );
         assert_eq!(limited.len(), 1);
+    }
+
+    #[test]
+    fn idle_caps_tabs_and_orders_top_sites_by_frecency() {
+        let day = 86_400.0;
+        let mut cands: Vec<Candidate> = (0..6)
+            .map(|i| cand(ItemKind::Tab, &format!("t{i}"), Some(&format!("https://t{i}.com")), i as f64))
+            .collect();
+        let visited = |title: &str, visits: u32, recency: f64| Candidate {
+            visits,
+            ..cand(ItemKind::History, title, Some(&format!("https://{title}.com")), recency)
+        };
+        cands.push(visited("today", 1, 60.0 * day));
+        cands.push(visited("often", 20, 46.0 * day));
+        cands.push(visited("stale", 50, 0.0));
+        let titles: Vec<_> = rank("", cands, 100).into_iter().map(|c| c.title).collect();
+        // Four newest tabs, then: 20 visits two weeks ago (5.0) > today (1.0)
+        // > 50 visits two months ago (≈ 0.13).
+        assert_eq!(titles, ["t5", "t4", "t3", "t2", "often", "today", "stale"]);
+    }
+
+    #[test]
+    fn frecency_decays() {
+        assert_eq!(frecency(4, 0.0), 4.0);
+        assert_eq!(frecency(4, 7.0 * 86_400.0), 2.0);
+        assert_eq!(frecency(0, 0.0), 1.0, "a recorded page counts once");
+        assert_eq!(frecency(2, -5.0), 2.0, "future timestamps don't boost");
+    }
+
+    #[test]
+    fn urls_match_without_scheme_and_scattered_letters() {
+        assert_eq!(match_url("https://www.github.com/x"), "github.com/x");
+        assert_eq!(match_url("file:///tmp/a"), "/tmp/a");
+        assert_eq!(match_url("example.com"), "example.com");
+        let cands = vec![
+            cand(ItemKind::History, "Rust book", Some("https://www.google.com/search?q=rust+lang+book"), 1.0),
+            cand(ItemKind::History, "Alpha Beta Charlie", Some("https://x.com"), 1.0),
+            cand(ItemKind::History, "Home", Some("https://h.example"), 1.0),
+        ];
+        let titles: Vec<_> = rank("abc", cands.clone(), 10).into_iter().map(|c| c.title).collect();
+        assert_eq!(titles, ["Alpha Beta Charlie"], "subsequence only counts in titles");
+        // "h" doesn't prefix-match every https:// URL.
+        let titles: Vec<_> = rank("h", cands, 10).into_iter().map(|c| c.title).collect();
+        assert_eq!(titles, ["Home"]);
     }
 }

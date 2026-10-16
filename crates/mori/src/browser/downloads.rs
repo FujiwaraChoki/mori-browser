@@ -186,8 +186,20 @@ impl Browser {
         action: Option<(SharedString, ToastAction)>,
         cx: &mut Context<Self>,
     ) {
-        if let Some(old) = self.keyed_toasts.remove(key) {
-            self.toasts.retain(|t| t.id != old);
+        // Update the toast already on screen in place (no new entrance
+        // animation), restarting its display time.
+        if let Some(&old) = self.keyed_toasts.get(key)
+            && let Some(toast) = self.toasts.iter_mut().find(|t| t.id == old && !t.leaving)
+        {
+            toast.text = text.into();
+            toast.style = style;
+            let has_action = action.is_some();
+            toast.action = action;
+            toast.serial += 1;
+            let serial = toast.serial;
+            cx.notify();
+            self.expire_toast(old, serial, has_action, cx);
+            return;
         }
         self.toast(text, style, action, cx);
         if let Some(toast) = self.toasts.last() {

@@ -1070,6 +1070,9 @@ wrap_context_menu_handler! {
             );
             let mut suggestions = CefStringList::new();
             params.dictionary_suggestions(Some(&mut suggestions));
+            let media: cef::sys::cef_context_menu_media_state_flags_t = params.media_state_flags().into();
+            use cef::sys::cef_context_menu_media_state_flags_t as M;
+            let media_has = |f: M| media.0 & f.0 != 0;
             let info = ContextMenuInfo {
                 x: params.xcoord(),
                 y: params.ycoord(),
@@ -1088,6 +1091,11 @@ wrap_context_menu_handler! {
                 can_select_all: has(E::CM_EDITFLAG_CAN_SELECT_ALL),
                 misspelled_word: non_empty(userfree(&params.misspelled_word())),
                 suggestions: suggestions.into_iter().map(|s| s.to_string()).collect(),
+                media_paused: media_has(M::CM_MEDIAFLAG_PAUSED),
+                media_muted: media_has(M::CM_MEDIAFLAG_MUTED),
+                media_loop: media_has(M::CM_MEDIAFLAG_LOOP),
+                media_controls: media_has(M::CM_MEDIAFLAG_CONTROLS),
+                media_has_audio: media_has(M::CM_MEDIAFLAG_HAS_AUDIO),
             };
             view.push(ViewEvent::ContextMenu(info));
         }

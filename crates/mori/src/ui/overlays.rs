@@ -1,4 +1,4 @@
-//! Page-level overlays: JavaScript dialogs, permission prompts, and Peek.
+//! Page-level overlays: JavaScript dialogs and permission prompts.
 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{component::input::Input, *};
@@ -7,7 +7,7 @@ use mori_engine::{DialogKind, PermissionKind};
 use crate::{
     browser::{Browser, PageOwner},
     theme::{ActiveTokens, metrics},
-    ui::components::{favicon, h_flex, icon, icon_button, popover_surface, text_button, v_flex},
+    ui::components::{h_flex, icon, popover_surface, text_button, v_flex},
 };
 
 fn permission_label(kind: PermissionKind) -> &'static str {
@@ -344,100 +344,6 @@ impl Browser {
                                         this.resolve_certificate_error(id, false, cx)
                                     }),
                                 )),
-                        ),
-                )
-                .into_any_element(),
-        )
-    }
-
-    pub fn render_peek(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let peek = self.peek.as_ref()?;
-        let t = cx.tokens().clone();
-        let host = mori_core::util::host_of(&peek.url);
-        let fav = host.as_deref().and_then(|h| self.favicons.get(h));
-        let title = if peek.title.is_empty() { peek.url.clone() } else { peek.title.clone() };
-        let url = mori_core::omnibox::display_url(&peek.url);
-        let surface = peek.surface.clone();
-        let copy_url = peek.url.clone();
-        let prompts = self.render_page_prompts(PageOwner::Peek, cx);
-        Some(
-            div()
-                .absolute()
-                .inset_0()
-                .occlude()
-                .bg(black().opacity(0.32))
-                .flex()
-                .items_center()
-                .justify_center()
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(|this, _, window, cx| this.close_peek(window, cx)),
-                )
-                .child(
-                    v_flex()
-                        .w(relative(0.74))
-                        .max_w(px(1000.))
-                        .h(relative(0.82))
-                        .max_h(px(820.))
-                        .rounded(metrics::RADIUS)
-                        .bg(t.card)
-                        .border_1()
-                        .border_color(t.border.opacity(0.7))
-                        .shadow(t.overlay_shadow())
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(
-                            h_flex()
-                                .h(px(46.))
-                                .flex_none()
-                                .px_3()
-                                .gap_2()
-                                .child(favicon(fav, px(16.), false, cx))
-                                .child(
-                                    v_flex()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .child(
-                                            div()
-                                                .truncate()
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .child(title),
-                                        )
-                                        .child(
-                                            div()
-                                                .truncate()
-                                                .text_size(metrics::TEXT_SMALL)
-                                                .text_color(t.muted_foreground)
-                                                .child(url),
-                                        ),
-                                )
-                                .child(icon_button("peek-copy", "link", px(28.), true, cx).on_click(
-                                    cx.listener(move |this, _, _, cx| {
-                                        cx.write_to_clipboard(ClipboardItem::new_string(copy_url.clone()));
-                                        this.toast(
-                                            "Copied URL",
-                                            crate::browser::ToastStyle::Success,
-                                            None,
-                                            cx,
-                                        );
-                                    }),
-                                ))
-                                .child(
-                                    text_button("peek-open", "Open in Space", true, cx).on_click(
-                                        cx.listener(|this, _, window, cx| this.promote_peek(window, cx)),
-                                    ),
-                                )
-                                .child(icon_button("peek-close", "x", px(28.), true, cx).on_click(
-                                    cx.listener(|this, _, window, cx| this.close_peek(window, cx)),
-                                )),
-                        )
-                        .child(
-                            div()
-                                .relative()
-                                .flex_1()
-                                .min_h_0()
-                                .p(px(1.))
-                                .child(surface)
-                                .children(prompts),
                         ),
                 )
                 .into_any_element(),

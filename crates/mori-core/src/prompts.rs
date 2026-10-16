@@ -1,14 +1,11 @@
 //! Rules for the questions pages ask the user: JavaScript dialogs,
-//! credential prompts and permission requests.
+//! credential prompts and permission requests. Remembered permission
+//! answers live in [`crate::site_permissions`].
 //!
 //! Every pending prompt belongs to one page (its owner). The chrome shows the
 //! oldest prompt of the page on screen and must answer exactly that prompt,
 //! by id, never simply the oldest prompt overall: a background page's
 //! request must not be granted by a click aimed at the foreground page.
-
-use std::collections::HashMap;
-
-use url::Url;
 
 /// Pending prompts in arrival order, each tagged with the page that asked.
 #[derive(Debug)]
@@ -68,58 +65,6 @@ impl<O: Copy + PartialEq, T> PromptQueue<O, T> {
 
     pub fn iter(&self) -> impl Iterator<Item = &(O, T)> {
         self.items.iter()
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Decision {
-    Allow,
-    Block,
-}
-
-/// The user's Allow/Block answers per site for the current session, so a
-/// page that asks again (or reloads) is not prompted over and over. Not
-/// persisted: a mistaken answer is forgotten on restart.
-#[derive(Debug)]
-pub struct SitePermissions<K> {
-    decisions: HashMap<(String, K), Decision>,
-}
-
-impl<K> Default for SitePermissions<K> {
-    fn default() -> Self {
-        Self { decisions: HashMap::new() }
-    }
-}
-
-/// `scheme://host[:port]`, lowercased; the unit permissions are granted to.
-pub fn origin_key(url: &str) -> Option<String> {
-    let parsed = Url::parse(url.trim()).ok()?;
-    let origin = parsed.origin();
-    origin.is_tuple().then(|| origin.ascii_serialization())
-}
-
-impl<K: Copy + Eq + std::hash::Hash> SitePermissions<K> {
-    /// The remembered answer for a request of `kinds` from `origin`: Block
-    /// if any kind was blocked, Allow if every kind was allowed, otherwise
-    /// `None` (ask).
-    pub fn decide(&self, origin: &str, kinds: &[K]) -> Option<Decision> {
-        let origin = origin_key(origin)?;
-        let mut all_allowed = !kinds.is_empty();
-        for kind in kinds {
-            match self.decisions.get(&(origin.clone(), *kind)) {
-                Some(Decision::Block) => return Some(Decision::Block),
-                Some(Decision::Allow) => {}
-                None => all_allowed = false,
-            }
-        }
-        all_allowed.then_some(Decision::Allow)
-    }
-
-    pub fn record(&mut self, origin: &str, kinds: &[K], decision: Decision) {
-        let Some(origin) = origin_key(origin) else { return };
-        for kind in kinds {
-            self.decisions.insert((origin.clone(), *kind), decision);
-        }
     }
 }
 
@@ -199,36 +144,5 @@ mod tests {
         assert_eq!(certificate_error_text(-202).0, "NET::ERR_CERT_AUTHORITY_INVALID");
         assert_eq!(certificate_error_text(-201).0, "NET::ERR_CERT_DATE_INVALID");
         assert_eq!(certificate_error_text(-999).0, "NET::ERR_CERT_INVALID");
-    }
-
-    #[test]
-    fn origins_normalise() {
-        assert_eq!(
-            origin_key("HTTPS://Maps.Example.com/a?b").as_deref(),
-            Some("https://maps.example.com")
-        );
-        assert_eq!(
-            origin_key("http://127.0.0.1:8080/").as_deref(),
-            Some("http://127.0.0.1:8080")
-        );
-        assert_eq!(origin_key("about:blank"), None);
-        assert_eq!(origin_key("garbage"), None);
-    }
-
-    #[test]
-    fn remembers_answers_per_origin_and_kind() {
-        let mut p = SitePermissions::default();
-        assert_eq!(p.decide("https://a.com", &["camera"]), None);
-        p.record("https://a.com/call", &["camera", "mic"], Decision::Allow);
-        assert_eq!(p.decide("https://a.com/other", &["camera"]), Some(Decision::Allow));
-        assert_eq!(p.decide("https://a.com", &["camera", "mic"]), Some(Decision::Allow));
-        // A new kind still asks; another site still asks.
-        assert_eq!(p.decide("https://a.com", &["camera", "geo"]), None);
-        assert_eq!(p.decide("https://b.com", &["camera"]), None);
-        // Any blocked kind blocks the whole request.
-        p.record("https://a.com", &["geo"], Decision::Block);
-        assert_eq!(p.decide("https://a.com", &["camera", "geo"]), Some(Decision::Block));
-        assert_eq!(p.decide("https://a.com", &[]), None);
-        assert_eq!(p.decide("not a url", &["camera"]), None);
     }
 }
