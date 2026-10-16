@@ -6,7 +6,7 @@ use gpui_kit::{
     component::input::{Input, InputState},
     *,
 };
-use mori_engine::DownloadState;
+use mori_core::downloads::{DownloadRecord, DownloadState};
 
 use crate::{
     browser::{Browser, Panel},
@@ -58,90 +58,15 @@ impl Browser {
 
     fn render_downloads(&mut self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let t = cx.tokens().clone();
+        let now = mori_core::paths::now();
         let rows: Vec<AnyElement> = self
             .downloads
             .iter()
             .enumerate()
-            .map(|(i, d)| {
-                let status = match d.state {
-                    DownloadState::InProgress => {
-                        let total = if d.total > 0 {
-                            format!(" of {}", format_bytes(d.total))
-                        } else {
-                            String::new()
-                        };
-                        format!("{}{total} — {}/s", format_bytes(d.received), format_bytes(d.speed))
-                    }
-                    DownloadState::Paused => "Paused".into(),
-                    DownloadState::Complete => format!("Completed — {}", format_bytes(d.received)),
-                    DownloadState::Canceled => "Canceled".into(),
-                    DownloadState::Interrupted => "Failed".into(),
-                };
-                let fraction = if d.percent >= 0 { d.percent as f32 / 100.0 } else { 0.3 };
-                let in_progress = d.state == DownloadState::InProgress;
-                let path = d.path.clone();
-                let id = d.id;
-                h_flex()
-                    .id(("download", i))
-                    .group("download-row")
-                    .gap_3()
-                    .px_3()
-                    .py_2()
-                    .rounded(metrics::RADIUS_LG)
-                    .hover(|s| s.bg(t.ghost_hover()))
-                    .child(icon(
-                        if d.state == DownloadState::Complete { "file-check" } else { "file-down" },
-                        px(20.),
-                        t.muted_foreground,
-                    ))
-                    .child(
-                        v_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_1()
-                            .child(div().truncate().font_weight(FontWeight::MEDIUM).child(d.filename.clone()))
-                            .when(in_progress, |s| {
-                                s.child(
-                                    div()
-                                        .h(px(4.))
-                                        .rounded_full()
-                                        .bg(t.foreground.opacity(0.08))
-                                        .child(
-                                            div()
-                                                .h_full()
-                                                .rounded_full()
-                                                .bg(t.primary)
-                                                .w(relative(fraction)),
-                                        ),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .text_size(metrics::TEXT_SMALL)
-                                    .text_color(t.muted_foreground)
-                                    .child(status),
-                            ),
-                    )
-                    .child(if in_progress {
-                        icon_button(("dl-cancel", i), "x", px(24.), true, cx)
-                            .on_click(move |_, _, _| mori_engine::cancel_download(id))
-                            .into_any_element()
-                    } else {
-                        let p = path.clone();
-                        icon_button(("dl-reveal", i), "folder-open", px(24.), true, cx)
-                            .on_click(move |_, _, _| reveal(&p))
-                            .into_any_element()
-                    })
-                    .on_click(move |ev: &ClickEvent, _, _| {
-                        if ev.click_count() == 2 {
-                            open_path(&path);
-                        }
-                    })
-                    .into_any_element()
-            })
+            .map(|(i, d)| self.render_download_row(i, d, now, cx))
             .collect();
         let empty = rows.is_empty();
-        let dir = dirs::download_dir().unwrap_or_default();
+        let dir = self.downloads_dir.clone();
         v_flex()
             .w(px(360.))
             .max_h(px(420.))
@@ -174,6 +99,143 @@ impl Browser {
                     })
                     .children(rows),
             )
+    }
+
+    fn render_download_row(&self, i: usize, d: &DownloadRecord, now: f64, cx: &mut Context<Self>) -> AnyElement {
+        let t = cx.tokens().clone();
+        let host = mori_core::util::host_of(&d.url).unwrap_or_default();
+        let missing = d.state == DownloadState::Complete && !d.path.exists();
+        let dot = |a: String, b: &str| if b.is_empty() { a } else { format!("{a} · {b}") };
+        let of_total = || {
+            if d.total > 0 {
+                format!("{} of {}", format_bytes(d.received), format_bytes(d.total))
+            } else {
+                format_bytes(d.received)
+            }
+        };
+        let status = match d.state {
+            DownloadState::InProgress => format!("{} — {}/s", of_total(), format_bytes(d.speed)),
+            DownloadState::Paused => format!("Paused — {}", of_total()),
+            DownloadState::Complete if missing => dot("Deleted".into(), &host),
+            DownloadState::Complete => {
+                let when = d.finished_at.map(|f| relative_time(f, now)).unwrap_or_default();
+                dot(dot(format_bytes(d.received.max(d.total)), &host), &when)
+            }
+            DownloadState::Canceled => dot("Canceled".into(), &host),
+            DownloadState::Interrupted => dot("Failed".into(), &host),
+        };
+        let active = d.state.is_active();
+        let fraction = d.fraction();
+        let id = d.id;
+        let path = d.path.clone();
+        let file_icon = if matches!(d.state, DownloadState::Canceled | DownloadState::Interrupted) || missing {
+            "file-x"
+        } else if active {
+            "file-down"
+        } else {
+            file_icon(&d.filename)
+        };
+
+        let mut actions = h_flex().gap_0p5().flex_none();
+        match d.state {
+            DownloadState::InProgress => {
+                actions = actions
+                    .child(icon_button(("dl-pause", i), "pause", px(24.), true, cx).on_click(
+                        cx.listener(move |this, _, _, _| this.pause_download(id)),
+                    ))
+                    .child(icon_button(("dl-cancel", i), "x", px(24.), true, cx).on_click(
+                        cx.listener(move |this, _, _, _| this.cancel_download(id)),
+                    ));
+            }
+            DownloadState::Paused => {
+                actions = actions
+                    .child(icon_button(("dl-resume", i), "play", px(24.), true, cx).on_click(
+                        cx.listener(move |this, _, _, _| this.resume_download(id)),
+                    ))
+                    .child(icon_button(("dl-cancel", i), "x", px(24.), true, cx).on_click(
+                        cx.listener(move |this, _, _, _| this.cancel_download(id)),
+                    ));
+            }
+            DownloadState::Complete if !missing => {
+                let p = path.clone();
+                actions = actions.child(
+                    icon_button(("dl-reveal", i), "folder-open", px(24.), true, cx)
+                        .on_click(move |_, _, _| reveal(&p)),
+                );
+            }
+            DownloadState::Canceled | DownloadState::Interrupted => {
+                actions = actions.child(icon_button(("dl-retry", i), "rotate-cw", px(24.), true, cx).on_click(
+                    cx.listener(move |this, _, window, cx| this.retry_download(id, window, cx)),
+                ));
+            }
+            DownloadState::Complete => {}
+        }
+        if !active {
+            actions = actions.child(
+                div()
+                    .invisible()
+                    .group_hover("download-row", |s| s.visible())
+                    .child(icon_button(("dl-remove", i), "trash-2", px(24.), true, cx).on_click(
+                        cx.listener(move |this, _, _, cx| this.remove_download(id, cx)),
+                    )),
+            );
+        }
+
+        h_flex()
+            .id(("download", i))
+            .group("download-row")
+            .gap_3()
+            .px_3()
+            .py_2()
+            .rounded(metrics::RADIUS_LG)
+            .hover(|s| s.bg(t.ghost_hover()))
+            .when(d.state == DownloadState::Complete && !missing, |s| s.cursor_pointer())
+            .child(icon(file_icon, px(20.), t.muted_foreground))
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .gap_1()
+                    .child(
+                        div()
+                            .truncate()
+                            .font_weight(FontWeight::MEDIUM)
+                            .when(missing, |s| s.text_color(t.muted_foreground).line_through())
+                            .child(d.filename.clone()),
+                    )
+                    .when(active, |s| {
+                        s.child(
+                            div()
+                                .h(px(4.))
+                                .rounded_full()
+                                .overflow_hidden()
+                                .bg(t.foreground.opacity(0.08))
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .rounded_full()
+                                        .bg(if d.state == DownloadState::Paused {
+                                            t.muted_foreground
+                                        } else {
+                                            t.primary
+                                        })
+                                        .w(relative(fraction.unwrap_or(0.0))),
+                                ),
+                        )
+                    })
+                    .child(
+                        div()
+                            .truncate()
+                            .text_size(metrics::TEXT_SMALL)
+                            .text_color(t.muted_foreground)
+                            .child(status),
+                    ),
+            )
+            .child(actions)
+            .when(d.state == DownloadState::Complete && !missing, |s| {
+                s.on_click(move |_, _, _| open_path(&path))
+            })
+            .into_any_element()
     }
 
     fn library_search(&mut self, window: &mut Window, cx: &mut Context<Self>) -> Entity<InputState> {
@@ -413,33 +475,115 @@ impl Browser {
 }
 
 /// Seconds east of UTC for grouping the archive by local day:
-/// `MORI_UTC_OFFSET` if set, else what `date +%z` reports, else UTC.
+/// `MORI_UTC_OFFSET` if set, else the C library's local time zone. (This
+/// runs on every render of the Archive tab, so it must not spawn anything.)
 fn local_utc_offset() -> i64 {
-    std::env::var("MORI_UTC_OFFSET")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or_else(|| {
-            std::process::Command::new("date")
-                .arg("+%z")
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .and_then(|s| {
-                    let s = s.trim();
-                    let sign = if s.starts_with('-') { -1 } else { 1 };
-                    let digits = s.trim_start_matches(['+', '-']);
-                    let (h, m) = digits.split_at(2.min(digits.len()));
-                    Some(sign * (h.parse::<i64>().ok()? * 3600 + m.parse::<i64>().unwrap_or(0) * 60))
-                })
-                .unwrap_or(0)
-        })
+    if let Some(offset) = std::env::var("MORI_UTC_OFFSET").ok().and_then(|v| v.parse().ok()) {
+        return offset;
+    }
+    // SAFETY: `time` and `localtime_r` only write into the provided
+    // out-parameters; `tm` is plain data.
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&now, &mut tm).is_null() {
+            0
+        } else {
+            tm.tm_gmtoff
+        }
+    }
+}
+
+/// Lucide icon for a downloaded file, by extension.
+fn file_icon(name: &str) -> &'static str {
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    match ext.as_str() {
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "avif" | "heic" | "bmp" | "ico" => "file-image",
+        "zip" | "tar" | "gz" | "tgz" | "xz" | "bz2" | "7z" | "rar" | "zst" | "deb" | "rpm" => "file-archive",
+        "mp4" | "mkv" | "webm" | "mov" | "avi" => "file-video-camera",
+        "mp3" | "flac" | "wav" | "ogg" | "m4a" | "opus" => "file-music",
+        "pdf" | "txt" | "md" | "doc" | "docx" | "odt" | "rtf" | "epub" => "file-text",
+        "csv" | "xls" | "xlsx" | "ods" => "file-spreadsheet",
+        "json" | "js" | "ts" | "rs" | "py" | "html" | "css" | "xml" | "sh" | "toml" | "yaml" | "yml" => "file-code",
+        _ => "file",
+    }
 }
 
 pub fn open_path(path: &std::path::Path) {
-    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+    if let Ok(mut child) = std::process::Command::new("xdg-open").arg(path).spawn() {
+        // Reap it, or every open leaves a zombie behind until Mori exits.
+        std::thread::spawn(move || child.wait());
+    }
 }
 
-fn reveal(path: &std::path::Path) {
-    let dir = path.parent().unwrap_or(path);
-    open_path(dir);
+/// Show a file in the file manager (its folder, with the file selected
+/// where the file manager supports it).
+pub fn reveal(path: &std::path::Path) {
+    let path = path.to_path_buf();
+    // Off the UI thread: the D-Bus call may wait on service activation.
+    std::thread::spawn(move || {
+        let uri = url::Url::from_file_path(&path).ok();
+        let shown = uri.is_some_and(|uri| {
+            std::process::Command::new("dbus-send")
+                .args([
+                    "--session",
+                    "--print-reply",
+                    "--type=method_call",
+                    "--dest=org.freedesktop.FileManager1",
+                    "/org/freedesktop/FileManager1",
+                    "org.freedesktop.FileManager1.ShowItems",
+                ])
+                .arg(format!("array:string:{uri}"))
+                .arg("string:")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .is_ok_and(|s| s.success())
+        });
+        if !shown {
+            open_path(path.parent().unwrap_or(&path));
+        }
+    });
+}
+
+/// The header's downloads button: a ring that fills with the progress of
+/// running downloads.
+pub fn download_ring(fraction: Option<f32>, active: bool, color: Hsla, track: Hsla) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            if !active {
+                return;
+            }
+            let center = bounds.center();
+            let radius = f32::from(bounds.size.width.min(bounds.size.height)) / 2. - 1.5;
+            let arc = |from: f32, to: f32| {
+                let mut path = PathBuilder::stroke(px(2.));
+                let steps = 48;
+                for s in 0..=steps {
+                    let a = from + (to - from) * s as f32 / steps as f32;
+                    let p = point(
+                        center.x + px(radius * a.sin()),
+                        center.y - px(radius * a.cos()),
+                    );
+                    if s == 0 { path.move_to(p) } else { path.line_to(p) }
+                }
+                path.build().ok()
+            };
+            let tau = std::f32::consts::TAU;
+            if let Some(track) = arc(0., tau).map(|p| (p, track)) {
+                window.paint_path(track.0, track.1);
+            }
+            // Unknown size: a quarter arc marks activity.
+            let (from, to) = match fraction {
+                Some(f) => (0., tau * f.clamp(0.02, 1.)),
+                None => (0., tau * 0.25),
+            };
+            if let Some(path) = arc(from, to) {
+                window.paint_path(path, color);
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
 }

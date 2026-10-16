@@ -8,16 +8,19 @@
 pub mod archive;
 pub mod bookmarks;
 pub mod boosts;
+pub mod downloads;
 pub mod history;
 pub mod launcher;
 pub mod omnibox;
 pub mod paths;
+pub mod persist;
 pub mod routes;
 pub mod scripts;
 pub mod settings;
 pub mod theme;
 pub mod util;
 pub mod workspace;
+pub mod zoom;
 
 pub use archive::{ArchiveEntry, ArchiveGroup, ArchiveStore};
 pub use bookmarks::{Bookmark, BookmarkStore};

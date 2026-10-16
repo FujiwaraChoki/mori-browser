@@ -5,6 +5,7 @@ mod assets;
 mod assistant;
 mod browser;
 mod commands;
+mod devtools_bridge;
 mod engine_hub;
 mod favicons;
 mod screenshot;
@@ -27,7 +28,7 @@ fn main() {
     let data_dir = mori_core::paths::data_dir();
     let config = EngineConfig {
         profile_dir: data_dir.join("profile"),
-        downloads_dir: dirs::download_dir().unwrap_or_else(|| data_dir.join("downloads")),
+        downloads_dir: mori_core::paths::downloads_dir(),
         user_agent_product: None,
         remote_debugging_port: std::env::var("MORI_REMOTE_DEBUGGING_PORT")
             .ok()

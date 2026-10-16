@@ -47,12 +47,41 @@ pub fn now() -> f64 {
         .unwrap_or(0.0)
 }
 
+/// Environment variable that overrides where downloads are saved.
+pub const DOWNLOAD_DIR_ENV: &str = "MORI_DOWNLOAD_DIR";
+
+/// Where downloads are saved: `$MORI_DOWNLOAD_DIR` if set; else, for a
+/// profile in `$MORI_DATA_DIR` (tests, portable installs), its own
+/// `downloads` folder so it never writes into the user's real one; else
+/// the XDG download directory (`~/Downloads`).
+pub fn downloads_dir() -> PathBuf {
+    let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
+    downloads_dir_from(env(DOWNLOAD_DIR_ENV), env(DATA_DIR_ENV), dirs::download_dir(), &data_dir())
+}
+
+fn downloads_dir_from(
+    explicit: Option<PathBuf>,
+    profile: Option<PathBuf>,
+    xdg: Option<PathBuf>,
+    data_dir: &Path,
+) -> PathBuf {
+    explicit
+        .or_else(|| profile.map(|p| p.join("downloads")))
+        .or(xdg)
+        .unwrap_or_else(|| data_dir.join("downloads"))
+}
+
 /// Serialize `value` as pretty JSON and atomically replace `path` with it.
 pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> anyhow::Result<()> {
+    let json = serde_json::to_vec_pretty(value).context("serializing JSON")?;
+    write_bytes_atomic(path, &json)
+}
+
+/// Atomically replace `path` with `bytes` (temp file, fsync, rename).
+pub fn write_bytes_atomic(path: &Path, json: &[u8]) -> anyhow::Result<()> {
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    let json = serde_json::to_vec_pretty(value).context("serializing JSON")?;
     let file_name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -61,7 +90,7 @@ pub fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> anyhow::Result
     {
         let mut file =
             fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-        file.write_all(&json)
+        file.write_all(json)
             .and_then(|_| file.sync_all())
             .with_context(|| format!("writing {}", tmp.display()))?;
     }
@@ -165,5 +194,21 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with("thing.backup-"))
             .collect();
         assert_eq!(backups.len(), 1);
+    }
+
+    #[test]
+    fn downloads_dir_prefers_explicit_then_profile() {
+        let data = Path::new("/data/mori");
+        let xdg = Some(PathBuf::from("/home/u/Downloads"));
+        assert_eq!(
+            downloads_dir_from(Some("/x".into()), Some("/p".into()), xdg.clone(), data),
+            PathBuf::from("/x")
+        );
+        assert_eq!(
+            downloads_dir_from(None, Some("/p".into()), xdg.clone(), data),
+            PathBuf::from("/p/downloads")
+        );
+        assert_eq!(downloads_dir_from(None, None, xdg, data), PathBuf::from("/home/u/Downloads"));
+        assert_eq!(downloads_dir_from(None, None, None, data), PathBuf::from("/data/mori/downloads"));
     }
 }

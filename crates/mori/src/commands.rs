@@ -158,7 +158,7 @@ pub fn run(b: &mut Browser, command: Command, window: &mut Window, cx: &mut Cont
         }
         ToggleBookmark => b.toggle_bookmark(cx),
         OpenAssistant => b.open_assistant(None, window, cx),
-        DevTools => b.toggle_devtools(),
+        DevTools => b.toggle_devtools(window, cx),
         Library => {
             b.panel = Some(Panel::Library);
             cx.notify();
@@ -167,11 +167,7 @@ pub fn run(b: &mut Browser, command: Command, window: &mut Window, cx: &mut Cont
             b.panel = Some(Panel::Downloads);
             cx.notify();
         }
-        Print => {
-            if let Some(view) = b.selected_view() {
-                view.print();
-            }
-        }
+        Print => b.print_selected(cx),
         MoveTabToSpace(space) => {
             if let Some(id) = b.selected() {
                 b.move_tab_to_space(id, space, window, cx);

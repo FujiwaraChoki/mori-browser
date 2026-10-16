@@ -450,12 +450,7 @@ fn web_entries(b: &Browser, tab: TabId, info: &mori_engine::ContextMenuInfo) -> 
         v.push(Entry::Separator);
     }
     let (x, y) = (info.x, info.y);
-    let vw = view;
-    v.push(item("Inspect", "code", move |_, _, _| {
-        if let Some(v) = &vw {
-            v.show_devtools(Some((x, y)));
-        }
-    }));
+    v.push(item("Inspect", "code", move |b, w, cx| b.inspect_element(tab, x, y, w, cx)));
     v
 }
 

@@ -150,12 +150,8 @@ impl Browser {
         let (can_back, can_fwd, loading) = live
             .map(|l| (l.can_go_back, l.can_go_forward, l.loading))
             .unwrap_or((false, false, false));
-        let has_downloads = !self.downloads.is_empty();
-        let active_downloads = self
-            .downloads
-            .iter()
-            .filter(|d| d.state == mori_engine::DownloadState::InProgress)
-            .count();
+        let active_downloads = self.downloads.active_count();
+        let download_fraction = self.downloads.active_fraction();
 
         let nav = h_flex()
             .h(px(28.))
@@ -216,32 +212,27 @@ impl Browser {
                     },
                 )),
             )
-            .when(has_downloads, |s| {
-                s.child(
-                    div()
-                        .relative()
-                        .child(
-                            icon_button("downloads", "download", px(28.), true, cx).on_click(
-                                cx.listener(|this, _, _, cx| {
-                                    this.panel = (this.panel != Some(Panel::Downloads))
-                                        .then_some(Panel::Downloads);
-                                    cx.notify();
-                                }),
-                            ),
-                        )
-                        .when(active_downloads > 0, |s| {
-                            s.child(
-                                div()
-                                    .absolute()
-                                    .top(px(3.))
-                                    .right(px(3.))
-                                    .size(px(7.))
-                                    .rounded_full()
-                                    .bg(t.status_info),
-                            )
-                        }),
-                )
-            });
+            // Always present so the buttons around it never shift; a ring
+            // shows the progress of running downloads.
+            .child(
+                div()
+                    .relative()
+                    .child(
+                        icon_button("downloads", "download", px(28.), true, cx).on_click(
+                            cx.listener(|this, _, _, cx| {
+                                this.panel = (this.panel != Some(Panel::Downloads))
+                                    .then_some(Panel::Downloads);
+                                cx.notify();
+                            }),
+                        ),
+                    )
+                    .child(crate::ui::panels::download_ring(
+                        download_fraction,
+                        active_downloads > 0,
+                        t.status_info,
+                        t.sidebar_foreground.opacity(0.14),
+                    )),
+            );
 
         let nav = nav.children(window_controls(window, cx));
         v_flex()
@@ -262,6 +253,9 @@ impl Browser {
         let bookmarked = is_web && self.bookmarks.contains(&url);
         let reader = self.selected_live().is_some_and(|l| l.reader);
         let fav = self.selected().and_then(|id| self.favicon_for(id));
+        let zoom = self.selected_zoom_level();
+        let zoom_label = (is_web && !mori_core::zoom::is_default(zoom))
+            .then(|| format!("{}%", mori_core::zoom::percent_for_level(zoom)));
 
         let lead: AnyElement = if url.starts_with("https://") {
             match fav {
@@ -308,6 +302,29 @@ impl Browser {
                     Animation::new(std::time::Duration::from_millis(900)).repeat(),
                     |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
                 ))
+            })
+            // The site's zoom when it is not 100%; click to reset.
+            .when_some(zoom_label, |s, label| {
+                s.child(
+                    div()
+                        .id("zoom-chip")
+                        .flex_none()
+                        .h(px(18.))
+                        .px(px(5.))
+                        .flex()
+                        .items_center()
+                        .rounded(metrics::RADIUS_MD)
+                        .bg(t.foreground.opacity(0.08))
+                        .hover(|s| s.bg(t.foreground.opacity(0.14)))
+                        .cursor_pointer()
+                        .text_size(metrics::TEXT_SMALL)
+                        .text_color(t.sidebar_foreground.opacity(0.75))
+                        .child(label)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.zoom(0.0, cx);
+                        })),
+                )
             })
             .when(is_web, |s| {
                 s.child(
