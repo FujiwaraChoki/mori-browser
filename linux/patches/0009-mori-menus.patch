@@ -1,0 +1,78 @@
+--- a/ui/views/controls/menu/menu_config.cc
++++ b/ui/views/controls/menu/menu_config.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "ui/views/controls/menu/menu_config.h"
+ 
++#include "ui/gfx/font_list.h"
++
+ #include "base/debug/dump_without_crashing.h"
+ #include "base/no_destructor.h"
+ #include "ui/base/ui_base_features.h"
+@@ -93,6 +95,22 @@
+   separator_height = 17;
+   separator_spacing_height = 4;
+   use_outer_border = false;
++
++  // Mori: Mori 3's (Zen's) menus: 14px text, 28px rows inset 4px with 5px
++  // corners, 10px between icon and label, 9px separators, 8px corners.
++  const gfx::FontList base;
++  context_menu_font_list = font_list =
++      base.DeriveWithSizeDelta(14 - base.GetFontSize());
++  item_vertical_margin = 4;
++  minimum_text_item_height = 28;
++  minimum_container_item_height = 28;
++  item_horizontal_border_padding = 14;
++  item_corner_radius = 5;
++  icon_label_spacing = 10;
++  separator_height = 9;
++  separator_spacing_height = 4;
++  corner_radius = 8;
++  auxiliary_corner_radius = 8;
+ }
+ 
+ // static
+--- a/chrome/browser/ui/toolbar/app_menu_model.cc
++++ b/chrome/browser/ui/toolbar/app_menu_model.cc
+@@ -4,6 +4,9 @@
+ 
+ #include "chrome/browser/ui/toolbar/app_menu_model.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_app_menu.h"
++#include "chrome/browser/ui/views/mori/mori_command_ids.h"
++
+ #include <algorithm>
+ #include <cmath>
+ #include <memory>
+@@ -1100,6 +1103,10 @@
+ }
+ 
+ void AppMenuModel::ExecuteCommand(int command_id, int event_flags) {
++  if (mori::IsMoriCommand(command_id)) {
++    mori::ExecuteMoriCommand(browser_, command_id);
++    return;
++  }
+   GlobalError* error =
+       GlobalErrorServiceFactory::GetForProfile(browser_->GetProfile())
+           ->GetGlobalErrorByMenuItemCommandID(command_id);
+@@ -1842,6 +1849,9 @@
+ }
+ 
+ bool AppMenuModel::IsCommandIdEnabled(int command_id) const {
++  if (mori::IsMoriCommand(command_id)) {
++    return true;
++  }
+   GlobalError* error =
+       GlobalErrorServiceFactory::GetForProfile(browser_->GetProfile())
+           ->GetGlobalErrorByMenuItemCommandID(command_id);
+@@ -1912,6 +1922,10 @@
+   // Build (and, by extension, Init) should only be called once.
+   DCHECK_EQ(0u, GetItemCount());
+ 
++  // Mori: Mori 3's "..." menu.
++  mori::BuildAppMenu(this, browser_);
++  return;
++
+   if (app_menu_icon_controller_ &&
+       app_menu_icon_controller_->GetTypeAndSeverity().type ==
+           AppMenuIconController::IconType::kUpgradeNotification) {

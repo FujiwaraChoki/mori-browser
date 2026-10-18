@@ -28,3 +28,4 @@ dist/
 
 # Linux Chromium build (ungoogled-chromium portable Linux checkout, sources and build output)
 ungoogled-chromium-linux/
+linux/harness/vptr/target/

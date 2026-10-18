@@ -8,7 +8,7 @@ namespace mori {
 // With tabs in the sidebar the page is a card: inset from the window's right
 // and bottom edges and rounded, like Zen Browser.
 inline constexpr int kContentCardMargin = 8;
-inline constexpr float kContentCardRadius = 10.0f;
+inline constexpr float kContentCardRadius = 6.0f;
 
 }  // namespace mori
 

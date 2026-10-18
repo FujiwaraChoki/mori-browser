@@ -8,6 +8,7 @@
 
 #include "ui/base/class_property.h"
 
+class BrowserWindowInterface;
 class ToolbarView;
 
 namespace views {
@@ -29,6 +30,11 @@ inline constexpr int kSidebarToolbarRowHeight = 36;
 // The toolbar's layout: Chromium's FlexLayout, switching to two rows while
 // kSidebarToolbarLeadingInsetKey is set.
 std::unique_ptr<views::FlexLayout> CreateToolbarLayout(ToolbarView* toolbar);
+
+// The button next to the menu that collapses the sidebar (Mori 3's sidebar
+// toggle). Its class name is "MoriSidebarToggle".
+std::unique_ptr<views::View> CreateSidebarToggle(
+    BrowserWindowInterface* browser);
 
 }  // namespace mori
 

@@ -1,15 +1,28 @@
 --- a/chrome/browser/ui/browser_command_controller.cc
 +++ b/chrome/browser/ui/browser_command_controller.cc
-@@ -57,6 +57,8 @@
+@@ -57,6 +57,10 @@
  #include "chrome/browser/ui/actions/command_action_updater.h"
  #include "chrome/browser/ui/browser_actions.h"
  #include "chrome/browser/ui/browser_commands.h"
 +#include "chrome/browser/ui/views/mori/mori_command_bar.h"
++#include "chrome/browser/ui/views/mori/mori_command_ids.h"
++#include "chrome/browser/ui/views/mori/mori_sidebar.h"
 +#include "chrome/browser/ui/views/mori/mori_spaces.h"
  #include "chrome/browser/ui/browser_element_identifiers.h"
  #include "chrome/browser/ui/browser_select_file_dialog_controller.h"
  #include "chrome/browser/ui/browser_window.h"
-@@ -752,6 +754,10 @@
+@@ -707,7 +711,9 @@
+       ToggleTabScrollButtonsPin(browser_);
+       break;
+     case IDC_TOGGLE_VERTICAL_TABS:
+-      ToggleVerticalTabs(browser_);
++      // Mori: tabs always live in the sidebar; this hides or shows it
++      // (Ctrl+S, as in Arc and Mori 3).
++      mori::ToggleSidebarHidden(browser_.get());
+       break;
+     case IDC_TOGGLE_VERTICAL_TABS_COLLAPSE:
+ #if !BUILDFLAG(IS_MAC)
+@@ -752,6 +758,10 @@
        CloseWindow(browser_);
        break;
      case IDC_NEW_TAB: {
@@ -20,7 +33,7 @@
        NewTab(browser_, NewTabTypes::kNewTabCommand);
        break;
      }
-@@ -1104,6 +1110,10 @@
+@@ -1104,6 +1114,10 @@
          break;
        }
        base::RecordAction(base::UserMetricsAction("Accel_Focus_Location"));
@@ -31,7 +44,7 @@
        FocusLocationBar(browser_);
        break;
      case IDC_FOCUS_SEARCH:
-@@ -1380,6 +1390,11 @@
+@@ -1380,6 +1394,11 @@
  
      // Tab group commands.
      case IDC_FOCUS_NEXT_TAB_GROUP:
@@ -43,7 +56,7 @@
        if (base::i18n::IsRTL()) {
          FocusPreviousTabGroup(browser_);
        } else {
-@@ -1389,6 +1404,10 @@
+@@ -1389,6 +1408,10 @@
                                      TabGroupShortcut::kFocusNextTabGroup);
        break;
      case IDC_FOCUS_PREV_TAB_GROUP:
@@ -54,42 +67,65 @@
        if (base::i18n::IsRTL()) {
          FocusNextTabGroup(browser_);
        } else {
+@@ -1595,6 +1618,11 @@
+       break;
+     }
+     default:
++      // Mori: its own commands (menu items and shortcuts).
++      if (mori::IsMoriCommand(id)) {
++        mori::ExecuteMoriCommand(browser_.get(), id);
++        break;
++      }
+       LOG(WARNING) << "Received Unimplemented Command: " << id;
+       break;
+   }
+@@ -1716,6 +1744,11 @@
+     return;
+   }
+ 
++  // Mori: its own commands.
++  for (int id = mori::kCommandFirst; id <= mori::kCommandLast; ++id) {
++    command_updater_->UpdateCommandEnabled(id, true);
++  }
++
+   // Navigation commands
+   const bool can_reload = CanReload(browser_);
+   command_updater_->UpdateCommandEnabled(IDC_RELOAD, can_reload);
 --- a/chrome/browser/ui/accelerator_table.cc
 +++ b/chrome/browser/ui/accelerator_table.cc
-@@ -164,6 +164,11 @@
-      IDC_SHOW_AVATAR_MENU},
-     {ui::VKEY_L, ui::EF_SHIFT_DOWN | ui::EF_PLATFORM_ACCELERATOR,
-      IDC_TOGGLE_VERTICAL_TABS_COLLAPSE},
-+#if BUILDFLAG(IS_LINUX)
-+    // Mori: compact sidebar, as in Mori 3 and Zen.
-+    {ui::VKEY_C, ui::EF_CONTROL_DOWN | ui::EF_ALT_DOWN,
-+     IDC_TOGGLE_VERTICAL_TABS_COLLAPSE},
-+#endif
+@@ -4,6 +4,8 @@
  
- // Platform-specific key maps.
- #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
-@@ -271,6 +276,13 @@
-     {ui::VKEY_P, ui::EF_SHIFT_DOWN | ui::EF_ALT_DOWN, IDC_CREATE_NEW_TAB_GROUP},
-     {ui::VKEY_X, ui::EF_SHIFT_DOWN | ui::EF_ALT_DOWN, IDC_FOCUS_NEXT_TAB_GROUP},
-     {ui::VKEY_Z, ui::EF_SHIFT_DOWN | ui::EF_ALT_DOWN, IDC_FOCUS_PREV_TAB_GROUP},
-+#if BUILDFLAG(IS_LINUX)
-+    // Mori: switch spaces, as in Mori 3.
-+    {ui::VKEY_RIGHT, ui::EF_CONTROL_DOWN | ui::EF_ALT_DOWN,
-+     IDC_FOCUS_NEXT_TAB_GROUP},
-+    {ui::VKEY_LEFT, ui::EF_CONTROL_DOWN | ui::EF_ALT_DOWN,
-+     IDC_FOCUS_PREV_TAB_GROUP},
-+#endif
-     {ui::VKEY_W, ui::EF_SHIFT_DOWN | ui::EF_ALT_DOWN, IDC_CLOSE_TAB_GROUP},
- };
+ #include "chrome/browser/ui/accelerator_table.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_command_ids.h"
++
+ #include <stddef.h>
+ 
+ #include <algorithm>
+@@ -358,6 +360,9 @@
+                          std::begin(kTabGroupAcceleratorMap),
+                          std::end(kTabGroupAcceleratorMap));
  #endif  // !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_CHROMEOS)
++
++    // Mori: Mori 3's shortcuts (Ctrl+S, Alt+1-9, ...).
++    mori::ApplyMoriAccelerators(accelerators);
+   }
+ 
+   return *accelerators;
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -2721,6 +2721,14 @@
+@@ -2721,6 +2721,20 @@
        "views/frame/browser_root_view.cc",
        "views/frame/browser_view.cc",
        "views/frame/browser_view.h",
 +      "views/mori/mori_command_bar.cc",
 +      "views/mori/mori_command_bar.h",
++      "views/mori/mori_command_ids.cc",
++      "views/mori/mori_command_ids.h",
++      "views/mori/mori_app_menu.cc",
++      "views/mori/mori_app_menu.h",
++      "views/mori/mori_sidebar.cc",
++      "views/mori/mori_sidebar.h",
 +      "views/mori/mori_commands.cc",
 +      "views/mori/mori_commands.h",
 +      "views/mori/mori_spaces.cc",

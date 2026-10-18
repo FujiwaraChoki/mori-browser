@@ -1,0 +1,201 @@
+--- a/chrome/browser/ui/tabs/vertical_tab_strip_state.h
++++ b/chrome/browser/ui/tabs/vertical_tab_strip_state.h
+@@ -7,7 +7,8 @@
+ 
+ namespace tabs {
+ 
+-inline constexpr int kVerticalTabStripDefaultUncollapsedWidth = 240;
++// Mori: Mori 3's sidebar (178px) plus the 8px gutter before the page.
++inline constexpr int kVerticalTabStripDefaultUncollapsedWidth = 186;
+ 
+ // Per-window state for the vertical tab strip.
+ struct VerticalTabStripState {
+--- a/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
+@@ -19,6 +19,7 @@
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
++#include "chrome/browser/ui/views/mori/mori_spaces.h"
+ #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
+ #include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
+ #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
+@@ -198,6 +199,13 @@
+       views::ScrollView::ScrollWithLayers::kEnabled));
+   SetScrollViewProperties(unpinned_tabs_scroll_view_);
+ 
++  // Mori: the space header (name, divider, "New Tab") between the favorites
++  // and the space's tabs. TabStripViewLayout finds it by class name.
++  if (IsVerticalOrientation(collection_node_)) {
++    AddChildView(mori::CreateSpaceHeader(
++        collection_node_->GetController()->GetBrowserView()->browser()));
++  }
++
+   if (!IsVerticalOrientation(collection_node_)) {
+     unpinned_tab_scroll_type_recorder_ =
+         std::make_unique<tabs::UnpinnedTabScrollTypeRecorder>(
+--- a/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
+@@ -5,6 +5,7 @@
+ #include "chrome/browser/ui/views/tabs/common/tab_strip_view_layout.h"
+ 
+ #include <algorithm>
++#include <string_view>
+ 
+ #include "base/logging.h"
+ #include "chrome/browser/ui/layout_constants.h"
+@@ -232,6 +233,23 @@
+ 
+   int y = 0;
+ 
++  // Mori: the space header (name, divider, "New Tab") sits between the
++  // favorites and the space's tabs while the sidebar is expanded.
++  views::View* mori_header = nullptr;
++  for (views::View* child : tab_strip_view->children()) {
++    if (child->GetClassName() == std::string_view("MoriSpaceHeader")) {
++      mori_header = child;
++    }
++  }
++  const bool show_mori_header =
++      mori_header && !is_collapsed && IsChildIncludedInLayout(mori_header);
++  const int mori_header_width = std::max(
++      0, size_bounds.width().value() - 2 * region_horizontal_padding);
++  const int mori_header_height =
++      show_mori_header
++          ? mori_header->GetHeightForWidth(mori_header_width)
++          : 0;
++
+   // Determine container preferred heights.
+   views::SizeBounds pinned_tab_container_size_bounds =
+       size_bounds.Inset(gfx::Insets::TLBR(0, region_horizontal_padding, 0, 0));
+@@ -250,7 +268,7 @@
+   // pinned and unpinned containers.
+   int remaining_height = 0;
+   if (size_bounds.height().is_bounded()) {
+-    remaining_height = size_bounds.height().value();
++    remaining_height = size_bounds.height().value() - mori_header_height;
+     if (pinned_preferred_height != 0 && unpinned_preferred_height != 0) {
+       remaining_height -= region_vertical_padding;
+     }
+@@ -304,6 +322,17 @@
+   layouts.child_layouts.emplace_back(tabs_separator, should_show_separator,
+                                      separator_bounds);
+ 
++  if (mori_header) {
++    gfx::Rect header_bounds;
++    if (show_mori_header) {
++      header_bounds = gfx::Rect(region_horizontal_padding, y,
++                                mori_header_width, mori_header_height);
++      y += mori_header_height;
++    }
++    layouts.child_layouts.emplace_back(mori_header, show_mori_header,
++                                       header_bounds);
++  }
++
+   // Place the unpinned container using the entire available width, we do not
+   // inset the x value by `region_horizontal_padding` here because, when the tab
+   // strip is collapsed, tab groups need to draw the group colored line in this
+--- a/chrome/browser/ui/views/tabs/common/tab_group_view_layout.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_group_view_layout.cc
+@@ -25,7 +25,8 @@
+ #include "ui/views/view_utils.h"
+ 
+ namespace {
+-constexpr int kTabVerticalPadding = 2;
++// Mori: 4px between sidebar rows, as in Mori 3.
++constexpr int kTabVerticalPadding = 4;
+ constexpr int kGroupLineWidth = 2;
+ constexpr int kGroupLineCollapsedLeadingPadding = 6;
+ constexpr int kGroupHeaderHeight = 26;
+@@ -67,8 +68,14 @@
+     const views::SizeBounds& size_bounds) const {
+   views::ProposedLayout layouts;
+   int width = 0;
+-  int height = kGroupHeaderVerticalMargin;
+   auto tab_strip_collapse_state = tab_group_view->GetTabStripCollapseState();
++  // Mori: a focused group is the space on screen, and Mori's space header
++  // above the tabs stands in for the group header.
++  const bool mori_space_header =
++      tab_group_view->IsGroupFocused() &&
++      tab_strip_collapse_state ==
++          tabs::VerticalTabStripCollapseState::kExpanded;
++  int height = mori_space_header ? 0 : kGroupHeaderVerticalMargin;
+ 
+   gfx::Rect header_bounds;
+   gfx::Rect group_line_bounds;
+@@ -94,10 +101,13 @@
+ 
+   layouts.child_layouts.emplace_back(
+       tab_group_view->group_header_.get(),
+-      tab_group_view->group_header_->GetVisible(), header_bounds);
++      tab_group_view->group_header_->GetVisible() && !mori_space_header,
++      header_bounds);
+ 
+-  height +=
+-      header_bounds.height() + kGroupHeaderVerticalMargin + kTabVerticalPadding;
++  if (!mori_space_header) {
++    height += header_bounds.height() + kGroupHeaderVerticalMargin +
++              kTabVerticalPadding;
++  }
+   width = std::max(width, header_bounds.width());
+ 
+   // If the tab strip is not collapsed then the group line is below and left
+--- a/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
++++ b/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
+@@ -25,7 +25,8 @@
+ #include "ui/views/view_utils.h"
+ 
+ namespace {
+-constexpr int kTabVerticalPadding = 2;
++// Mori: 4px between sidebar rows, as in Mori 3.
++constexpr int kTabVerticalPadding = 4;
+ }  // namespace
+ 
+ UnpinnedTabContainerViewLayout::UnpinnedTabContainerViewLayout(
+--- a/chrome/browser/ui/views/tabs/common/tab_view_vertical_layout.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_view_vertical_layout.cc
+@@ -189,7 +189,8 @@
+       return TabView().active_ && hovered_or_focused;
+     }
+ 
+-    return TabView().active_ || hovered_or_focused;
++    // Mori: close buttons only under the pointer, as in Arc and Mori 3.
++    return hovered_or_focused;
+   }
+ 
+   NOTREACHED() << "Unknown tab child view";
+--- a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc
++++ b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc
+@@ -106,6 +106,8 @@
+   new_tab_button_->SetInsets(GetLayoutInsets(
+       collapsed ? LayoutInset::VERTICAL_TAB_STRIP_BOTTOM_BUTTON_COLLAPSED
+                 : LayoutInset::VERTICAL_TAB_STRIP_BOTTOM_BUTTON_UNCOLLAPSED));
++  // Mori: the expanded sidebar has a "New Tab" row above the tabs instead.
++  new_tab_button_->SetVisible(collapsed);
+ }
+ 
+ BEGIN_METADATA(VerticalTabStripBottomContainer)
+--- a/chrome/browser/ui/views/bookmarks/bookmark_page_action_controller.cc
++++ b/chrome/browser/ui/views/bookmarks/bookmark_page_action_controller.cc
+@@ -90,6 +90,7 @@
+     content::WebContents* web_contents,
+     bool starred) {
+   SetStarred(starred);
++  UpdatePageActionVisibility();
+ }
+ 
+ void BookmarkPageActionController::ObserveBookmarkTabHelper(
+@@ -131,8 +132,12 @@
+ 
+ bool BookmarkPageActionController::ShouldShowPageAction() const {
+   const auto& url = tab().GetContents()->GetLastCommittedURL();
++  // Mori: like Mori 3 and Arc, the star only shows on a bookmarked page;
++  // Ctrl+D or the menu bookmarks a page.
++  auto* bookmark_helper = BookmarkTabHelper::FromWebContents(tab().GetContents());
+   return browser_defaults::bookmarks_enabled &&
+-         edit_bookmarks_enabled_.GetValue() && url.is_valid() && !IsNTPUrl(url);
++         edit_bookmarks_enabled_.GetValue() && url.is_valid() &&
++         !IsNTPUrl(url) && bookmark_helper && bookmark_helper->is_starred();
+ }
+ 
+ void BookmarkPageActionController::SetStarred(bool starred) {

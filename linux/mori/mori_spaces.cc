@@ -1,5 +1,7 @@
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
 
+#include "chrome/browser/ui/views/mori/mori_icons.h"
+
 #include <algorithm>
 #include <string>
 #include <utility>
@@ -44,6 +46,17 @@
 #include "ui/views/controls/button/image_button_factory.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/view.h"
+#include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/ui/browser_commands.h"
+#include "ui/views/controls/image_view.h"
+#include "ui/views/controls/label.h"
+#include "ui/views/border.h"
+#include "ui/views/view_class_properties.h"
+#include "ui/gfx/color_utils.h"
+#include "ui/color/color_id.h"
+#include "ui/base/models/image_model.h"
+#include "ui/events/event.h"
+#include "ui/gfx/font_list.h"
 #include "url/gurl.h"
 
 namespace mori {
@@ -133,6 +146,203 @@ class SpaceButton : public views::Button {
 BEGIN_METADATA(SpaceButton)
 END_METADATA
 
+// Mori 3's sidebar metrics (crates/mori/src/theme.rs, ui/sidebar.rs).
+constexpr int kRowHeight = 36;
+constexpr int kRowRadius = 8;
+constexpr int kRowContentInset = 7;
+constexpr int kLabelHeight = 24;
+constexpr int kDividerHeight = 20;
+
+// Mori 3's muted sidebar text (the space label, "New Tab").
+SkColor MutedColor(const views::View* view) {
+  const SkColor frame = view->GetColorProvider()->GetColor(ui::kColorFrameActive);
+  return color_utils::IsDark(frame) ? SkColorSetRGB(0xA0, 0xA1, 0xA2)
+                                    : SkColorSetRGB(0x5A, 0x5C, 0x5E);
+}
+
+// The space's name: 13px bold in the muted sidebar colour.
+class SpaceLabel : public views::Label {
+  METADATA_HEADER(SpaceLabel, views::Label)
+
+ public:
+  explicit SpaceLabel(base::RepeatingClosure edit) : edit_(std::move(edit)) {
+    SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    SetElideBehavior(gfx::ELIDE_TAIL);
+    SetFontList(views::Label::GetDefaultFontList()
+                    .DeriveWithSizeDelta(13 - views::Label::GetDefaultFontList()
+                                                  .GetFontSize())
+                    .DeriveWithWeight(gfx::Font::Weight::BOLD));
+    SetBorder(views::CreateEmptyBorder(gfx::Insets::TLBR(0, kRowContentInset,
+                                                         0, 0)));
+    SetPreferredSize(gfx::Size(0, kLabelHeight));
+  }
+
+  void OnThemeChanged() override {
+    views::Label::OnThemeChanged();
+    SetEnabledColor(MutedColor(this));
+  }
+
+  // Double-click or right-click renames or recolours the space.
+  bool OnMousePressed(const ui::MouseEvent& event) override {
+    if (event.IsRightMouseButton() ||
+        (event.IsLeftMouseButton() && event.GetClickCount() == 2)) {
+      edit_.Run();
+      return true;
+    }
+    return false;
+  }
+
+ private:
+  base::RepeatingClosure edit_;
+};
+
+BEGIN_METADATA(SpaceLabel)
+END_METADATA
+
+// A 1px line in white (or black) at low opacity, as Mori 3's divider.
+class SpaceDivider : public views::View {
+  METADATA_HEADER(SpaceDivider, views::View)
+
+ public:
+  SpaceDivider() { SetPreferredSize(gfx::Size(0, kDividerHeight)); }
+
+  void OnPaint(gfx::Canvas* canvas) override {
+    const ui::ColorProvider* colors = GetColorProvider();
+    const SkColor frame = colors->GetColor(ui::kColorFrameActive);
+    const bool dark = color_utils::IsDark(frame);
+    const SkColor line = color_utils::AlphaBlend(
+        dark ? SK_ColorWHITE : SK_ColorBLACK, frame, dark ? 0.09f : 0.10f);
+    canvas->FillRect(gfx::Rect(4, height() / 2, width() - 4, 1), line);
+  }
+};
+
+BEGIN_METADATA(SpaceDivider)
+END_METADATA
+
+// "+ New Tab": opens the command bar, as Ctrl+T does.
+class NewTabRow : public views::Button {
+  METADATA_HEADER(NewTabRow, views::Button)
+
+ public:
+  explicit NewTabRow(PressedCallback callback)
+      : views::Button(std::move(callback)) {
+    auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kHorizontal,
+        gfx::Insets::TLBR(0, kRowContentInset, 0, 0), 10));
+    layout->set_cross_axis_alignment(
+        views::BoxLayout::CrossAxisAlignment::kCenter);
+    icon_ = AddChildView(std::make_unique<views::ImageView>());
+    icon_->SetPreferredSize(gfx::Size(16, 16));
+    label_ = AddChildView(std::make_unique<views::Label>(u"New Tab"));
+    SetPreferredSize(gfx::Size(0, kRowHeight));
+    SetAccessibleName(u"New Tab");
+  }
+
+  void OnThemeChanged() override {
+    views::Button::OnThemeChanged();
+    const SkColor muted = MutedColor(this);
+    icon_->SetImage(ui::ImageModel::FromVectorIcon(kAddIcon, muted, 13));
+    label_->SetEnabledColor(muted);
+  }
+
+  void OnPaintBackground(gfx::Canvas* canvas) override {
+    if (GetState() != STATE_HOVERED && GetState() != STATE_PRESSED) {
+      return;
+    }
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setColor(GetColorProvider()->GetColor(
+        kColorTabBackgroundInactiveHoverFrameActive));
+    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), kRowRadius, flags);
+  }
+
+  void StateChanged(ButtonState old_state) override { SchedulePaint(); }
+
+ private:
+  raw_ptr<views::ImageView> icon_ = nullptr;
+  raw_ptr<views::Label> label_ = nullptr;
+};
+
+BEGIN_METADATA(NewTabRow)
+END_METADATA
+
+class MoriSpaceHeader : public views::View, public TabStripModelObserver {
+  METADATA_HEADER(MoriSpaceHeader, views::View)
+
+ public:
+  explicit MoriSpaceHeader(BrowserWindowInterface* browser)
+      : browser_(browser) {
+    SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kVertical));
+    label_ = AddChildView(std::make_unique<SpaceLabel>(base::BindRepeating(
+        &MoriSpaceHeader::EditSpace, base::Unretained(this))));
+    divider_ = AddChildView(std::make_unique<SpaceDivider>());
+    AddChildView(std::make_unique<NewTabRow>(base::BindRepeating(
+        [](BrowserWindowInterface* browser) {
+          // Opens the command bar (see the IDC_NEW_TAB hook).
+          chrome::ExecuteCommand(browser, IDC_NEW_TAB);
+        },
+        browser)));
+    if (TabStripModel* model = SpacesModel(browser_)) {
+      model->AddObserver(this);
+    }
+    Update();
+  }
+
+  // TabStripModelObserver:
+  void OnTabGroupChanged(const TabGroupChange& change) override { Update(); }
+  void OnTabGroupFocusChanged(
+      std::optional<tab_groups::TabGroupId> new_focused_group,
+      std::optional<tab_groups::TabGroupId> old_focused_group) override {
+    Update();
+  }
+  void OnTabStripModelChanged(TabStripModel* tab_strip_model,
+                              const TabStripModelChange& change,
+                              const TabStripSelectionChange& selection) override {
+    if (change.type() != TabStripModelChange::kSelectionOnly) {
+      Update();
+    }
+  }
+
+ private:
+  void Update() {
+    TabStripModel* model = SpacesModel(browser_);
+    const std::optional<tab_groups::TabGroupId> space =
+        model ? model->GetFocusedGroup() : std::nullopt;
+    if (!space.has_value() ||
+        !model->group_model()->ContainsTabGroup(*space)) {
+      SetVisible(false);
+      return;
+    }
+    label_->SetText(
+        model->group_model()->GetTabGroup(*space)->visual_data()->title());
+    // Mori 3 puts the label's top 11px under the favorites (the tab strip
+    // already adds 8px there) or 5px under the address field.
+    const bool has_favorites = model->IndexOfFirstNonPinnedTab() > 0;
+    label_->SetProperty(views::kMarginsKey,
+                        gfx::Insets::TLBR(has_favorites ? 3 : 5, 0, 0, 0));
+    divider_->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(9, 0, 3, 0));
+    SetVisible(true);
+    InvalidateLayout();
+  }
+
+  void EditSpace() {
+    if (TabStripModel* model = SpacesModel(browser_)) {
+      if (std::optional<tab_groups::TabGroupId> space =
+              model->GetFocusedGroup()) {
+        model->OpenTabGroupEditor(*space);
+      }
+    }
+  }
+
+  raw_ptr<BrowserWindowInterface> browser_;
+  raw_ptr<SpaceLabel> label_ = nullptr;
+  raw_ptr<SpaceDivider> divider_ = nullptr;
+};
+
+BEGIN_METADATA(MoriSpaceHeader)
+END_METADATA
+
 class SpaceBar : public views::View,
                  public TabStripModelObserver,
                  public tab_groups::TabGroupSyncService::Observer {
@@ -140,11 +350,10 @@ class SpaceBar : public views::View,
 
  public:
   explicit SpaceBar(BrowserWindowInterface* browser) : browser_(browser) {
+    // Mori 3: dots centred (only with two or more spaces), "+" at the end.
     auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
-        views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(6, 10),
+        views::BoxLayout::Orientation::kHorizontal, gfx::Insets::VH(6, 7),
         2));
-    layout->set_main_axis_alignment(
-        views::BoxLayout::MainAxisAlignment::kCenter);
     layout->set_cross_axis_alignment(
         views::BoxLayout::CrossAxisAlignment::kCenter);
     if (TabStripModel* model = SpacesModel(browser_)) {
@@ -267,9 +476,28 @@ class SpaceBar : public views::View,
     }
     const std::optional<tab_groups::TabGroupId> current =
         model->GetFocusedGroup();
+    const std::vector<tab_groups::TabGroupId> spaces = SpacesInOrder(model);
+    auto* layout = static_cast<views::BoxLayout*>(GetLayoutManager());
+    // Mori 3: the library (history and bookmarks) at the start.
+    auto library = views::CreateVectorImageButtonWithNativeTheme(
+        base::BindRepeating(
+            [](BrowserWindowInterface* browser) {
+              chrome::ExecuteCommand(browser, IDC_SHOW_HISTORY);
+            },
+            browser_.get()),
+        LucideIcon("library"), 16);
+    library->SetTooltipText(u"History & Bookmarks (Ctrl+Y)");
+    library->SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));
+    AddChildView(std::move(library));
+    // Flexible spacers keep the dots centred and "+" at the end.
+    auto* before = AddChildView(std::make_unique<views::View>());
+    layout->SetFlexForView(before, 1);
     int number = 0;
-    for (const tab_groups::TabGroupId& id : SpacesInOrder(model)) {
+    for (const tab_groups::TabGroupId& id : spaces) {
       ++number;
+      if (spaces.size() < 2) {
+        break;
+      }
       const tab_groups::TabGroupVisualData* visuals =
           model->group_model()->GetTabGroup(id)->visual_data();
       std::u16string title = visuals->title();
@@ -281,6 +509,8 @@ class SpaceBar : public views::View,
                               id),
           visuals->color(), title, current == id));
     }
+    auto* after = AddChildView(std::make_unique<views::View>());
+    layout->SetFlexForView(after, 1);
     auto add = views::CreateVectorImageButtonWithNativeTheme(
         base::BindRepeating(&mori::NewSpace, browser_.get()),
         kAddIcon, 16);
@@ -324,6 +554,17 @@ std::optional<tab_groups::TabGroupId> GetCurrentSpace(
   return model ? model->GetFocusedGroup() : std::nullopt;
 }
 
+int IndexForNewTab(BrowserWindowInterface* browser) {
+  TabStripModel* model = SpacesModel(browser);
+  if (!model || !model->GetFocusedGroup().has_value()) {
+    return -1;
+  }
+  return model->group_model()
+      ->GetTabGroup(*model->GetFocusedGroup())
+      ->ListTabs()
+      .start();
+}
+
 void ShowSpaceOfActiveTab(BrowserWindowInterface* browser) {
   TabStripModel* model = SpacesModel(browser);
   if (!model) {
@@ -356,6 +597,17 @@ void NewSpace(BrowserWindowInterface* browser) {
   model->SetFocusedGroup(id);
 }
 
+void SelectSpace(BrowserWindowInterface* browser, int index) {
+  TabStripModel* model = SpacesModel(browser);
+  if (!model) {
+    return;
+  }
+  const std::vector<tab_groups::TabGroupId> spaces = SpacesInOrder(model);
+  if (index >= 0 && index < static_cast<int>(spaces.size())) {
+    model->SetFocusedGroup(spaces[index]);
+  }
+}
+
 void SwitchSpace(BrowserWindowInterface* browser, bool forward) {
   TabStripModel* model = SpacesModel(browser);
   if (!model) {
@@ -372,6 +624,11 @@ void SwitchSpace(BrowserWindowInterface* browser, bool forward) {
     index = (index + (forward ? 1 : spaces.size() - 1)) % spaces.size();
   }
   model->SetFocusedGroup(spaces[index]);
+}
+
+std::unique_ptr<views::View> CreateSpaceHeader(
+    BrowserWindowInterface* browser) {
+  return std::make_unique<MoriSpaceHeader>(browser);
 }
 
 std::unique_ptr<views::View> CreateSpaceBar(BrowserWindowInterface* browser) {

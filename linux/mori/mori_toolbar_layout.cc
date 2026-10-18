@@ -4,12 +4,21 @@
 #include <string_view>
 #include <vector>
 
+#include "base/functional/bind.h"
+#include "chrome/app/chrome_command_ids.h"
+#include "chrome/app/vector_icons/vector_icons.h"
+#include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/toolbar/reload_button.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_button.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/proposed_layout.h"
+#include "ui/base/metadata/metadata_header_macros.h"
+#include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/view.h"
 
 DEFINE_UI_CLASS_PROPERTY_KEY(int, kMoriSidebarToolbarLeadingInset, -1)
@@ -21,21 +30,21 @@ const ui::ClassProperty<int>* const kSidebarToolbarLeadingInsetKey =
 
 namespace {
 
-// Matches the sidebar's tab rows.
-constexpr int kHorizontalPadding = 10;
+// Mori 3's sidebar inset.
+constexpr int kHorizontalPadding = 7;
 constexpr int kTopPadding = 4;
 constexpr int kRowGap = 2;
-constexpr int kBottomPadding = 8;
+constexpr int kBottomPadding = 3;
 constexpr int kButtonGap = 2;
 // Used when the toolbar is asked for its preferred width.
 constexpr int kDefaultWidth = 240;
 
 enum class Slot {
-  // Back, forward and reload: first row, after the window buttons.
+  // The menu, extensions, downloads and other pinned actions: first row,
+  // from the start (Mori 3 has its "..." menu there).
+  kLeading,
+  // Back, forward and reload: first row, at the end.
   kNavigation,
-  // Downloads and other pinned actions, extensions, the menu: first row,
-  // at the end.
-  kTrailing,
   // The address field: the whole second row.
   kAddress,
   // Everything else (profile button, home, overflow, ...) is hidden.
@@ -73,8 +82,8 @@ class SidebarToolbarLayout : public views::FlexLayout {
     layout.host_size = gfx::Size(
         width, second_row_y + kSidebarToolbarRowHeight + kBottomPadding);
 
+    std::vector<views::View*> leading;
     std::vector<views::View*> navigation;
-    std::vector<views::View*> trailing;
     for (views::View* child : host_view()->children()) {
       if (!IsChildIncludedInLayout(child)) {
         continue;
@@ -83,8 +92,8 @@ class SidebarToolbarLayout : public views::FlexLayout {
         case Slot::kNavigation:
           navigation.push_back(child);
           break;
-        case Slot::kTrailing:
-          trailing.push_back(child);
+        case Slot::kLeading:
+          leading.push_back(child);
           break;
         case Slot::kAddress: {
           const int height = std::min(kSidebarToolbarRowHeight,
@@ -103,29 +112,35 @@ class SidebarToolbarLayout : public views::FlexLayout {
       }
     }
 
-    // Navigation buttons from the start of the first row.
-    int x = kHorizontalPadding + leading_inset;
-    for (views::View* child : navigation) {
-      const gfx::Size size = child->GetPreferredSize();
-      layout.child_layouts.push_back({child, true, RowRect(x, first_row_y, size),
-                                      views::SizeBounds(size)});
-      x += size.width() + kButtonGap;
-    }
-
-    // Trailing buttons from the end, as long as they fit.
+    // Navigation buttons at the end of the first row.
     int right = width - kHorizontalPadding;
-    for (auto it = trailing.rbegin(); it != trailing.rend(); ++it) {
+    for (auto it = navigation.rbegin(); it != navigation.rend(); ++it) {
       views::View* child = *it;
       const gfx::Size size = child->GetPreferredSize();
-      const bool fits = right - size.width() >= x;
-      if (fits) {
-        right -= size.width();
-      }
+      right -= size.width();
+      layout.child_layouts.push_back({child, true,
+                                      RowRect(right, first_row_y, size),
+                                      views::SizeBounds(size)});
+      right -= kButtonGap;
+    }
+
+    // The menu and friends from the start, as long as they fit.
+    int x = kHorizontalPadding + leading_inset;
+    // Mori 3's order: the menu, the sidebar toggle, then the rest.
+    std::ranges::stable_sort(leading, {}, [](const views::View* v) {
+      const std::string_view name = v->GetClassName();
+      return name == "BrowserAppMenuButton" ? 0
+             : name == "MoriSidebarToggle"  ? 1
+                                            : 2;
+    });
+    for (views::View* child : leading) {
+      const gfx::Size size = child->GetPreferredSize();
+      const bool fits = x + size.width() <= right;
       layout.child_layouts.push_back(
-          {child, fits && size.width() > 0, RowRect(right, first_row_y, size),
+          {child, fits && size.width() > 0, RowRect(x, first_row_y, size),
            views::SizeBounds(size)});
       if (fits) {
-        right -= kButtonGap;
+        x += size.width() + kButtonGap;
       }
     }
     return layout;
@@ -149,8 +164,8 @@ class SidebarToolbarLayout : public views::FlexLayout {
     }
     if (name == "PinnedToolbarActionsContainer" ||
         name == "ExtensionsToolbarDesktop" ||
-        name == "BrowserAppMenuButton") {
-      return Slot::kTrailing;
+        name == "BrowserAppMenuButton" || name == "MoriSidebarToggle") {
+      return Slot::kLeading;
     }
     return Slot::kHidden;
   }
@@ -158,7 +173,32 @@ class SidebarToolbarLayout : public views::FlexLayout {
   raw_ptr<ToolbarView> toolbar_;
 };
 
+class MoriSidebarToggle : public ToolbarButton {
+  METADATA_HEADER(MoriSidebarToggle, ToolbarButton)
+
+ public:
+  explicit MoriSidebarToggle(BrowserWindowInterface* browser)
+      : ToolbarButton(base::BindRepeating(
+            [](BrowserWindowInterface* browser) {
+              // Hides the sidebar (Ctrl+S), as in Mori 3 and Arc.
+              chrome::ExecuteCommand(browser, IDC_TOGGLE_VERTICAL_TABS);
+            },
+            browser)) {
+    SetVectorIcon(kLeftPanelCloseFlippableIcon);
+    SetTooltipText(u"Hide sidebar (Ctrl+S)");
+    GetViewAccessibility().SetName(u"Toggle sidebar");
+  }
+};
+
+BEGIN_METADATA(MoriSidebarToggle)
+END_METADATA
+
 }  // namespace
+
+std::unique_ptr<views::View> CreateSidebarToggle(
+    BrowserWindowInterface* browser) {
+  return std::make_unique<MoriSidebarToggle>(browser);
+}
 
 std::unique_ptr<views::FlexLayout> CreateToolbarLayout(ToolbarView* toolbar) {
   return std::make_unique<SidebarToolbarLayout>(toolbar);

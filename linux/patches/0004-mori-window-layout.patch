@@ -8,25 +8,30 @@
  #include <utility>
  
  #include "base/functional/bind.h"
-@@ -37,6 +38,8 @@
+@@ -37,6 +38,9 @@
  #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
  #include "chrome/browser/ui/views/frame/vertical_tab_strip_background_blur_backdrop.h"
  #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 +#include "chrome/browser/ui/views/mori/mori_layout.h"
++#include "chrome/browser/ui/views/mori/mori_sidebar.h"
 +#include "chrome/browser/ui/views/mori/mori_toolbar_layout.h"
  #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
  #include "chrome/browser/ui/views/side_panel/side_panel.h"
  #include "chrome/browser/ui/views/side_panel/side_panel_animation_content_view.h"
-@@ -204,6 +207,8 @@
+@@ -204,6 +208,12 @@
    VerticalTabStripAnimation vertical_tab_strip_animation;
    SeparatorInfo separator_info;
    SidePanelContentAnimation side_panel_content_animation;
 +  // Mori: the toolbar sits at the top of the expanded sidebar.
 +  bool mori_sidebar_toolbar = false;
++  // Mori: the sidebar is hidden (Ctrl+S); while peeking it floats over the
++  // page.
++  bool mori_sidebar_hidden = false;
++  bool mori_sidebar_peek = false;
  };
  
  BrowserViewTabbedLayoutImpl::BrowserViewTabbedLayoutImpl(
-@@ -392,7 +397,11 @@
+@@ -392,7 +402,11 @@
    layout.min_content_width = kContentsContainerMinimumWidth;
  
    // Get information about the vertical tabstrip, if present.
@@ -39,7 +44,7 @@
    int min_vertical_tab_strip_width = 0;
    int preferred_vertical_tab_strip_width = 0;
    if (layout_data_->tab_strip_type == TabStripType::kVertical) {
-@@ -764,6 +773,14 @@
+@@ -764,6 +778,16 @@
    bool clip_content_for_animation = false;
    gfx::Rect unclipped_contents_region = params.visual_client_area;
  
@@ -50,14 +55,30 @@
 +      layout_data_->tab_strip_type == TabStripType::kVertical &&
 +      !is_fullscreen(layout_data_->window_state);
 +  const bool mori_sidebar_toolbar = layout_data_->mori_sidebar_toolbar;
++  const bool mori_sidebar_hidden = layout_data_->mori_sidebar_hidden;
++  const bool mori_sidebar_peek = layout_data_->mori_sidebar_peek;
 +
    // Lay out vertical tab strip if visible.
    int collapsed_vertical_tab_strip_adjustment = 0;
    const VerticalTabStripAnimation& vertical_tab_strip_animation =
-@@ -818,6 +835,22 @@
+@@ -818,9 +842,41 @@
              gfx::Insets::TLBR(views::Separator::kThickness, 0, 0, 0));
        }
  
++      // Mori: a hidden sidebar takes no room; peeking, it floats over the
++      // page, inset from the window edges.
++      if (mori_sidebar_hidden) {
++        vertical_tab_strip_bounds =
++            mori_sidebar_peek
++                ? gfx::Rect(
++                      params.visual_client_area.x() + mori::kSidebarPeekInset,
++                      params.visual_client_area.y() + mori::kSidebarPeekInset,
++                      horizontal_layout.vertical_tab_strip_width,
++                      params.visual_client_area.height() -
++                          2 * mori::kSidebarPeekInset)
++                : gfx::Rect();
++      }
++
 +      // Mori: the toolbar takes the top of the sidebar; tabs go below it.
 +      if (mori_sidebar_toolbar) {
 +        auto& top_container_layout =
@@ -76,8 +97,24 @@
 +
        const int inset_amount = horizontal_layout.vertical_tab_strip_width -
                                 GetVerticalTabStripContentOverlap();
-       params.InsetHorizontal(inset_amount, /*leading=*/true);
-@@ -855,9 +888,10 @@
+-      params.InsetHorizontal(inset_amount, /*leading=*/true);
++      if (!mori_sidebar_hidden) {
++        params.InsetHorizontal(inset_amount, /*leading=*/true);
++      }
+ 
+       // Let the vertical tab strip animate out over the content.
+       if (vertical_tab_strip_animation.current_motion) {
+@@ -838,7 +894,8 @@
+     }
+     layout.AddChild(views().vertical_tab_strip_region_view,
+                     vertical_tab_strip_bounds,
+-                    layout_data_->tab_strip_type == TabStripType::kVertical);
++                    layout_data_->tab_strip_type == TabStripType::kVertical &&
++                        (!mori_sidebar_hidden || mori_sidebar_peek));
+   }
+ 
+   if (IsParentedTo(views().vertical_tab_strip_background_blur_backdrop,
+@@ -855,9 +912,10 @@
    if (IsParentedTo(views().vertical_tab_strip_top_corner,
                     views().browser_view)) {
      gfx::Rect corner_bounds;
@@ -89,16 +126,25 @@
  
      // The top corner is drawn when the tabstrip goes all the way to the top.
      if (top_corner_visible) {
-@@ -934,7 +968,7 @@
+@@ -934,7 +992,16 @@
  
    // When the tabstrip isn't at the top or in constrained widths, the top
    // container is laid out before all side panels.
 -  if (horizontal_layout.force_top_container_to_top &&
++  // Mori: no toolbar while the sidebar is hidden (Arc); Ctrl+L still opens
++  // the command bar. It gets no room rather than being hidden: this layout
++  // leaves visibility alone where it isn't stated, so nothing would show it
++  // again.
++  if (mori_sidebar_hidden && !mori_sidebar_peek &&
++      IsParentedTo(views().top_container, views().browser_view)) {
++    layout.AddChild(views().top_container, gfx::Rect());
++  }
 +  if (horizontal_layout.force_top_container_to_top && !mori_sidebar_toolbar &&
++      !mori_sidebar_hidden &&
        IsParentedTo(views().top_container, views().browser_view)) {
      auto& top_container_layout =
          layout.AddChild(views().top_container, gfx::Rect());
-@@ -979,7 +1013,9 @@
+@@ -979,7 +1046,9 @@
      } else {
        main_background_bounds = params.visual_client_area;
      }
@@ -109,16 +155,17 @@
      main_background_layout =
          &layout.AddChild(views().main_background_region, main_background_bounds,
                           main_background_visibility);
-@@ -1070,7 +1106,7 @@
+@@ -1070,7 +1139,8 @@
    // Lay out top container. The top container is laid out after the
    // toolbar-height side panel with a horizontal tabstrip if the browser is wide
    // enough.
 -  if (!horizontal_layout.force_top_container_to_top &&
 +  if (!horizontal_layout.force_top_container_to_top && !mori_sidebar_toolbar &&
++      !mori_sidebar_hidden &&
        IsParentedTo(views().top_container, views().browser_view)) {
      auto& top_container_layout =
          layout.AddChild(views().top_container, gfx::Rect());
-@@ -1167,11 +1203,16 @@
+@@ -1167,11 +1237,18 @@
      content_right =
          std::min(content_right, browser_params.visual_client_area.right());
    }
@@ -127,7 +174,9 @@
 +                           params.visual_client_area.height());
 +  if (mori_content_card) {
 +    content_bounds.Inset(gfx::Insets::TLBR(
-+        mori_sidebar_toolbar ? mori::kContentCardMargin : 0, 0,
++        mori_sidebar_toolbar || mori_sidebar_hidden ? mori::kContentCardMargin
++                                                    : 0,
++        mori_sidebar_hidden ? mori::kContentCardMargin : 0,
 +        mori::kContentCardMargin, mori::kContentCardMargin));
 +  }
    auto& contents_layout =
@@ -139,7 +188,7 @@
  
    // Maybe expand and clip the web contents to avoid issues during animation.
    if (features::UseSidePanelFlyoverAnimation()) {
-@@ -1231,6 +1272,10 @@
+@@ -1231,6 +1308,10 @@
        }
      }
      views().multi_contents_view->SetBackgroundRadii(content_corners);
@@ -150,7 +199,7 @@
    }
  
    // Make final visual adjustments required for child views to paint.
-@@ -1259,6 +1304,12 @@
+@@ -1259,6 +1340,12 @@
            tabstrip_bounds->x();
      }
  
@@ -163,7 +212,7 @@
      views().vertical_tab_strip_region_view->SetToolbarHeightForLayout(
          std::max(0, toolbar_height));
      views().vertical_tab_strip_region_view->SetCaptionButtonWidthForLayout(
-@@ -1374,7 +1425,9 @@
+@@ -1374,7 +1461,9 @@
    }
  
    // Lay out the bookmarks bar if one is present.
@@ -174,13 +223,21 @@
    if (IsParentedTo(views().bookmark_bar, views().top_container)) {
      const gfx::Rect bookmarks_bounds(
          params.visual_client_area.x(), params.visual_client_area.y(),
-@@ -1473,6 +1526,39 @@
+@@ -1473,6 +1562,47 @@
    layout_data_ = std::make_unique<TransientLayoutData>(params);
    layout_data_->window_state = delegate().GetBrowserWindowState();
    layout_data_->tab_strip_type = delegate().GetTabStripType();
 +
 +  // Mori: decide where the toolbar goes before anything measures it.
++  layout_data_->mori_sidebar_hidden =
++      layout_data_->tab_strip_type == TabStripType::kVertical &&
++      !is_fullscreen(layout_data_->window_state) &&
++      mori::IsSidebarHidden(views().browser_view);
++  layout_data_->mori_sidebar_peek =
++      layout_data_->mori_sidebar_hidden &&
++      mori::IsSidebarPeeking(views().browser_view);
 +  layout_data_->mori_sidebar_toolbar =
++      (!layout_data_->mori_sidebar_hidden || layout_data_->mori_sidebar_peek) &&
 +      layout_data_->tab_strip_type == TabStripType::kVertical &&
 +      !is_fullscreen(layout_data_->window_state) &&
 +      GetVerticalTabStripCollapsedState() ==
@@ -224,7 +281,17 @@
  #include "chrome/browser/ui/views/page_action/page_action_container_view.h"
  #include "chrome/browser/ui/views/page_action/page_action_view.h"
  #include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
-@@ -1395,7 +1396,9 @@
+@@ -631,6 +632,9 @@
+         l10n_util::GetStringUTF16(IDS_APPMENU_TOOLTIP));
+     app_menu_button->SetID(VIEW_ID_APP_MENU);
+     app_menu_button_ = AddChildView(std::move(app_menu_button));
++    // Mori: the sidebar toggle next to the menu (only shown by Mori's
++    // sidebar toolbar layout).
++    AddChildView(mori::CreateSidebarToggle(browser_));
+   }
+ 
+   if (base::FeatureList::IsEnabled(contextual_tasks::kContextualTasks) &&
+@@ -1395,7 +1399,9 @@
        // back button) plus margins.
        // TODO(crbug.com/40663413): Figure out why the height reports incorrectly
        // on some installations.
@@ -235,7 +302,7 @@
          const int max_height = std::max(location_bar_->PreferredSize().height(),
                                          GetBackForwardButtonSize().height()) +
                                 layout_manager_->interior_margin().height();
-@@ -1423,7 +1426,9 @@
+@@ -1423,7 +1429,9 @@
        // back button) plus margins.
        // TODO(crbug.com/40663413): Figure out why the height reports incorrectly
        // on some installations.
@@ -246,7 +313,7 @@
          const int max_height =
              std::max(location_bar_->MinimumSize().height(),
                       GetBackForwardButtonSize(/*minimum_size=*/true).height()) +
-@@ -1561,7 +1566,8 @@
+@@ -1561,7 +1569,8 @@
                                 views::MaximumFlexSizeRule::kUnbounded)
            .WithOrder(location_bar_flex_order);
  
@@ -258,26 +325,21 @@
        .SetCrossAxisAlignment(views::LayoutAlignment::kCenter)
 --- a/chrome/browser/ui/views/frame/browser_frame_view_linux.cc
 +++ b/chrome/browser/ui/views/frame/browser_frame_view_linux.cc
-@@ -26,6 +26,18 @@
+@@ -26,6 +26,13 @@
  // bottom resize borders.
  constexpr int kResizeTopBorderThickness = 4;
  
-+// Mori: every window button goes at the start of the sidebar's first row,
-+// like Arc's traffic lights: the leading buttons, then the trailing ones
-+// mirrored.
++// Mori: no window buttons, as in Mori 3; the window manager moves, resizes
++// and closes the window (Ctrl+Shift+W closes it too). Code that asks where
++// the buttons go gets an empty list.
 +std::vector<views::FrameButton> MoriLeadingButtons() {
-+  auto* const provider = views::WindowButtonOrderProvider::GetInstance();
-+  std::vector<views::FrameButton> buttons = provider->leading_buttons();
-+  const std::vector<views::FrameButton>& trailing =
-+      provider->trailing_buttons();
-+  buttons.insert(buttons.end(), trailing.rbegin(), trailing.rend());
-+  return buttons;
++  return {};
 +}
 +
  }  // namespace
  
  BrowserFrameViewLinux::BrowserFrameViewLinux(
-@@ -96,9 +108,7 @@
+@@ -96,9 +103,7 @@
  }
  
  void BrowserFrameViewLinux::OnWindowButtonOrderingChange() {
@@ -288,7 +350,7 @@
  
    // We can receive OnWindowButtonOrderingChange events before we've been added
    // to a Widget. We need a Widget because layout crashes due to dependencies
-@@ -152,13 +162,8 @@
+@@ -152,13 +157,8 @@
                                         /*leading_spacing=*/false,
                                         /*is_leading_button=*/false);
  
@@ -303,7 +365,7 @@
      if (auto* const button_view = layout_->GetFrameButton(button);
          button_view && button_view->GetVisible()) {
        leading_bounds.Union(button_view->bounds());
-@@ -171,32 +176,18 @@
+@@ -171,32 +171,18 @@
      params.leading_exclusion.horizontal_padding = caption_margin;
    }
  
@@ -359,3 +421,65 @@
    gemini_button_ = AddChildView(std::make_unique<views::View>());
  
    resize_area_ = AddChildView(std::make_unique<views::ResizeArea>(this));
+--- a/chrome/browser/ui/views/location_bar/location_bar_view.cc
++++ b/chrome/browser/ui/views/location_bar/location_bar_view.cc
+@@ -524,8 +524,8 @@
+ 
+ // static
+ int LocationBarView::ComputeBorderRadius(gfx::Size size) {
+-  return ChromeLayoutProvider::Get()->GetCornerRadiusMetric(
+-      views::Emphasis::kMaximum, size);
++  // Mori: the address pill has Mori 3's 8px corners.
++  return std::min(8, size.height() / 2);
+ }
+ 
+ // static
+--- a/chrome/browser/ui/layout_constants.cc
++++ b/chrome/browser/ui/layout_constants.cc
+@@ -118,11 +118,11 @@
+       return touch_ui ? 4 : 6;
+     case LayoutConstant::kTabstripToolbarOverlap:
+       return 1;
++    // Mori: Mori 3's toolbar buttons (30px, 16px icons).
+     case LayoutConstant::kToolbarButtonHeight:
+-      return touch_ui ? 48 : 34;
++      return touch_ui ? 48 : 30;
+     case LayoutConstant::kToolbarButtonIconSize:
+-      return touch_ui ? kDefaultTouchableIconSize
+-                      : kDefaultIconSizeChromeRefresh;
++      return touch_ui ? kDefaultTouchableIconSize : 16;
+     case LayoutConstant::kToolbarDividerCornerRadius:
+       return 1;
+     case LayoutConstant::kToolbarDividerHeight:
+@@ -147,14 +147,15 @@
+     case LayoutConstant::kToolbarCornerRadius:
+     case LayoutConstant::kVerticalTabCornerRadius:
+       return 8;
++    // Mori: Mori 3's sidebar rows are 36px high, 9px from the edge.
+     case LayoutConstant::kVerticalTabHeight:
+-      return 30;
++      return 36;
+     case LayoutConstant::kVerticalTabPinnedHeight:
+       return 32;
+     case LayoutConstant::kVerticalTabMinWidth:
+       return 32;
+     case LayoutConstant::kVerticalTabStripHorizontalPadding:
+-      return 12;
++      return 9;
+     case LayoutConstant::kVerticalTabStripUncollapsedVerticalPadding:
+       return 12;
+     case LayoutConstant::kVerticalTabStripCollapsedVerticalPadding:
+--- a/chrome/browser/ui/views/chrome_typography.cc
++++ b/chrome/browser/ui/views/chrome_typography.cc
+@@ -59,6 +59,11 @@
+     case CONTEXT_OMNIBOX_TOOLBELT_BUTTON: {
+       const bool is_touch_ui = ui::TouchUiController::Get()->touch_ui();
+       int desired_font_size = is_touch_ui ? 15 : 14;
++      // Mori: the address pill's text is Mori 3's (15px, medium).
++      if (context == CONTEXT_OMNIBOX_PRIMARY) {
++        desired_font_size = 15;
++        details.weight = gfx::Font::Weight::MEDIUM;
++      }
+       const int omnibox_primary_delta =
+           GetFontSizeDeltaBoundedByAvailableHeight(
+               LocationBarView::GetAvailableTextHeight(), desired_font_size);

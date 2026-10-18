@@ -58,3 +58,15 @@
 +  // Mori: show the site, not the full URL, until the field is edited.
 +  registry->RegisterBooleanPref(omnibox::kPreventUrlElisionsInOmnibox, false);
  }
+--- a/chrome/browser/profiles/profile.cc
++++ b/chrome/browser/profiles/profile.cc
+@@ -332,7 +332,8 @@
+ void Profile::RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
+   registry->RegisterBooleanPref(
+       prefs::kSearchSuggestEnabled,
+-      false,
++      // Mori: live suggestions in the command bar, as in Mori 3.
++      true,
+       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+ #if BUILDFLAG(IS_ANDROID)
+   registry->RegisterStringPref(

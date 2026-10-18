@@ -1,0 +1,34 @@
+--- a/ui/gfx/paint_vector_icon.cc
++++ b/ui/gfx/paint_vector_icon.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "ui/gfx/paint_vector_icon.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_icons.h"
++
+ #include <algorithm>
+ #include <map>
+ #include <tuple>
+@@ -461,6 +463,10 @@
+                      int dip_size,
+                      SkColor color) {
+   CHECK(!icon.is_empty());
++  // Mori: Lucide icons in place of Chromium's, as Mori 3 draws them.
++  if (mori::PaintReplacementIcon(canvas, icon, dip_size, color)) {
++    return;
++  }
+   for (const auto& rep : icon.reps) {
+     CHECK(!rep.path.empty());
+   }
+--- a/ui/gfx/BUILD.gn
++++ b/ui/gfx/BUILD.gn
+@@ -383,6 +383,9 @@
+       "paint_throbber.cc",
+       "paint_throbber.h",
+       "paint_vector_icon.cc",
++      "//chrome/browser/ui/views/mori/mori_icons.cc",
++      "//chrome/browser/ui/views/mori/mori_icons.h",
++      "//chrome/browser/ui/views/mori/mori_lucide_icons.inc",
+       "paint_vector_icon.h",
+       "render_text.cc",
+       "render_text.h",
