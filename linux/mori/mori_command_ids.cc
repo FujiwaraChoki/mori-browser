@@ -13,6 +13,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "base/functional/bind.h"
 #include "base/strings/string_util.h"
+#include "chrome/browser/ui/views/mori/mori_assistant.h"
 #include "chrome/browser/ui/views/mori/mori_boosts.h"
 #include "chrome/browser/ui/views/mori/mori_cheatsheet.h"
 #include "chrome/browser/ui/views/mori/mori_peek.h"
@@ -109,6 +110,7 @@ constexpr AcceleratorMapping kMoriAccelerators[] = {
     {ui::VKEY_X, kCtrl | kShift, IDC_SHARING_HUB_SCREENSHOT},
     // Arc: Boost this site (Chromium's bookmarks bar toggle otherwise).
     {ui::VKEY_B, kCtrl | kShift, kCommandBoostSite},
+    {ui::VKEY_K, kCtrl | kShift, kCommandToggleAssistant},
     // Places.
     {ui::VKEY_OEM_COMMA, kCtrl, IDC_OPTIONS},
     {ui::VKEY_Y, kCtrl, IDC_SHOW_HISTORY},
@@ -151,6 +153,9 @@ void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id) {
       break;
     case kCommandBoostSite:
       EditBoost(browser);
+      break;
+    case kCommandToggleAssistant:
+      ToggleAssistant(browser);
       break;
     case kCommandEditTheme:
       // The space's own theme, as Mori 3's "Edit Theme…".

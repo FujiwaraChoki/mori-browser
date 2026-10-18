@@ -30,7 +30,9 @@ enum CommandId {
   kCommandPeekClipboard,
   // Ctrl+Shift+B: the boost editor for the site on screen.
   kCommandBoostSite,
-  kCommandLast = kCommandBoostSite,
+  // Ctrl+Shift+K: the assistant panel.
+  kCommandToggleAssistant,
+  kCommandLast = kCommandToggleAssistant,
 };
 
 bool IsMoriCommand(int command_id);

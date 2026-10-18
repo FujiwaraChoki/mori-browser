@@ -91,6 +91,8 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
   command(u"Reopen Closed Tab", u"undo restore", "rotate-ccw",
           IDC_RESTORE_TAB);
   command(u"Find in Page", u"search text", "search", IDC_FIND);
+  command(u"Assistant", u"ai codex chat ask summarize agent", "sparkles",
+          kCommandToggleAssistant);
   command(u"Peek Link on Clipboard", u"preview glance paste", "eye",
           kCommandPeekClipboard);
   command(u"Capture", u"screenshot snip image area", "camera",

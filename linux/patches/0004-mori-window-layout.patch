@@ -8,17 +8,18 @@
  #include <utility>
  
  #include "base/functional/bind.h"
-@@ -37,6 +38,9 @@
+@@ -37,6 +38,10 @@
  #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
  #include "chrome/browser/ui/views/frame/vertical_tab_strip_background_blur_backdrop.h"
  #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
++#include "chrome/browser/ui/views/mori/mori_assistant.h"
 +#include "chrome/browser/ui/views/mori/mori_layout.h"
 +#include "chrome/browser/ui/views/mori/mori_sidebar.h"
 +#include "chrome/browser/ui/views/mori/mori_toolbar_layout.h"
  #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
  #include "chrome/browser/ui/views/side_panel/side_panel.h"
  #include "chrome/browser/ui/views/side_panel/side_panel_animation_content_view.h"
-@@ -204,6 +208,12 @@
+@@ -204,6 +209,12 @@
    VerticalTabStripAnimation vertical_tab_strip_animation;
    SeparatorInfo separator_info;
    SidePanelContentAnimation side_panel_content_animation;
@@ -31,7 +32,7 @@
  };
  
  BrowserViewTabbedLayoutImpl::BrowserViewTabbedLayoutImpl(
-@@ -392,7 +402,11 @@
+@@ -392,7 +403,11 @@
    layout.min_content_width = kContentsContainerMinimumWidth;
  
    // Get information about the vertical tabstrip, if present.
@@ -44,7 +45,7 @@
    int min_vertical_tab_strip_width = 0;
    int preferred_vertical_tab_strip_width = 0;
    if (layout_data_->tab_strip_type == TabStripType::kVertical) {
-@@ -764,6 +778,16 @@
+@@ -764,6 +779,16 @@
    bool clip_content_for_animation = false;
    gfx::Rect unclipped_contents_region = params.visual_client_area;
  
@@ -61,7 +62,7 @@
    // Lay out vertical tab strip if visible.
    int collapsed_vertical_tab_strip_adjustment = 0;
    const VerticalTabStripAnimation& vertical_tab_strip_animation =
-@@ -818,9 +842,41 @@
+@@ -818,9 +843,41 @@
              gfx::Insets::TLBR(views::Separator::kThickness, 0, 0, 0));
        }
  
@@ -104,7 +105,7 @@
  
        // Let the vertical tab strip animate out over the content.
        if (vertical_tab_strip_animation.current_motion) {
-@@ -838,7 +894,8 @@
+@@ -838,7 +895,8 @@
      }
      layout.AddChild(views().vertical_tab_strip_region_view,
                      vertical_tab_strip_bounds,
@@ -114,7 +115,7 @@
    }
  
    if (IsParentedTo(views().vertical_tab_strip_background_blur_backdrop,
-@@ -855,9 +912,10 @@
+@@ -855,9 +913,10 @@
    if (IsParentedTo(views().vertical_tab_strip_top_corner,
                     views().browser_view)) {
      gfx::Rect corner_bounds;
@@ -126,7 +127,7 @@
  
      // The top corner is drawn when the tabstrip goes all the way to the top.
      if (top_corner_visible) {
-@@ -934,7 +992,16 @@
+@@ -934,7 +993,16 @@
  
    // When the tabstrip isn't at the top or in constrained widths, the top
    // container is laid out before all side panels.
@@ -144,7 +145,7 @@
        IsParentedTo(views().top_container, views().browser_view)) {
      auto& top_container_layout =
          layout.AddChild(views().top_container, gfx::Rect());
-@@ -979,7 +1046,9 @@
+@@ -979,7 +1047,9 @@
      } else {
        main_background_bounds = params.visual_client_area;
      }
@@ -155,7 +156,7 @@
      main_background_layout =
          &layout.AddChild(views().main_background_region, main_background_bounds,
                           main_background_visibility);
-@@ -1070,7 +1139,8 @@
+@@ -1070,7 +1140,8 @@
    // Lay out top container. The top container is laid out after the
    // toolbar-height side panel with a horizontal tabstrip if the browser is wide
    // enough.
@@ -165,7 +166,7 @@
        IsParentedTo(views().top_container, views().browser_view)) {
      auto& top_container_layout =
          layout.AddChild(views().top_container, gfx::Rect());
-@@ -1167,11 +1237,18 @@
+@@ -1167,11 +1238,29 @@
      content_right =
          std::min(content_right, browser_params.visual_client_area.right());
    }
@@ -179,6 +180,17 @@
 +        mori_sidebar_hidden ? mori::kContentCardMargin : 0,
 +        mori::kContentCardMargin, mori::kContentCardMargin));
 +  }
++  // Mori: the assistant docks beside the page as a card of its own.
++  if (views::View* assistant =
++          mori::GetVisibleAssistantPanel(views().browser_view)) {
++    content_bounds.set_width(std::max(
++        0, content_bounds.width() - mori::kAssistantPanelWidth -
++               mori::kContentCardMargin));
++    layout.AddChild(assistant,
++                    gfx::Rect(content_bounds.right() + mori::kContentCardMargin,
++                              content_bounds.y(), mori::kAssistantPanelWidth,
++                              content_bounds.height()));
++  }
    auto& contents_layout =
 -      layout.AddChild(views().multi_contents_view,
 -                      gfx::Rect(content_left, params.visual_client_area.y(),
@@ -188,7 +200,7 @@
  
    // Maybe expand and clip the web contents to avoid issues during animation.
    if (features::UseSidePanelFlyoverAnimation()) {
-@@ -1231,6 +1308,10 @@
+@@ -1231,6 +1320,10 @@
        }
      }
      views().multi_contents_view->SetBackgroundRadii(content_corners);
@@ -199,7 +211,7 @@
    }
  
    // Make final visual adjustments required for child views to paint.
-@@ -1259,6 +1340,12 @@
+@@ -1259,6 +1352,12 @@
            tabstrip_bounds->x();
      }
  
@@ -212,7 +224,7 @@
      views().vertical_tab_strip_region_view->SetToolbarHeightForLayout(
          std::max(0, toolbar_height));
      views().vertical_tab_strip_region_view->SetCaptionButtonWidthForLayout(
-@@ -1374,7 +1461,9 @@
+@@ -1374,7 +1473,9 @@
    }
  
    // Lay out the bookmarks bar if one is present.
@@ -223,7 +235,7 @@
    if (IsParentedTo(views().bookmark_bar, views().top_container)) {
      const gfx::Rect bookmarks_bounds(
          params.visual_client_area.x(), params.visual_client_area.y(),
-@@ -1473,6 +1562,47 @@
+@@ -1473,6 +1574,47 @@
    layout_data_ = std::make_unique<TransientLayoutData>(params);
    layout_data_->window_state = delegate().GetBrowserWindowState();
    layout_data_->tab_strip_type = delegate().GetTabStripType();
@@ -271,7 +283,7 @@
    layout_data_->horizontal_layout =
        CalculateHorizontalLayout(layout_data_->revised_params);
    layout_data_->vertical_tab_strip_animation =
-@@ -1600,7 +1730,12 @@
+@@ -1600,7 +1742,12 @@
      // Apply shadow for expand-on-hover.
      auto* const shadow_frame =
          views().vertical_tab_strip_region_view->shadow_frame();

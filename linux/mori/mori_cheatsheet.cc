@@ -104,6 +104,7 @@ std::vector<Group> Groups() {
         {u"New private window", IDC_NEW_INCOGNITO_WINDOW},
         {u"Close window", IDC_CLOSE_WINDOW},
         {u"Show or hide sidebar", IDC_TOGGLE_VERTICAL_TABS},
+        {u"Assistant", kCommandToggleAssistant},
         {u"Full screen", IDC_FULLSCREEN},
         {u"Quit", IDC_EXIT}}},
       {u"Places",

@@ -961,6 +961,35 @@ constexpr IconOp kWalletOps[] = {
     {'A', {1.0f, 1.0f, 0.0f, 0.0f, 0.0f, 21.0f, 20.0f}},
     {'L', {21.0f, 16.0f}},
 };
+constexpr IconOp kSquarePenOps[] = {
+    {'M', {12.0f, 3.0f}},
+    {'L', {5.0f, 3.0f}},
+    {'A', {2.0f, 2.0f, 0.0f, 0.0f, 0.0f, 3.0f, 5.0f}},
+    {'L', {3.0f, 19.0f}},
+    {'A', {2.0f, 2.0f, 0.0f, 0.0f, 0.0f, 5.0f, 21.0f}},
+    {'L', {19.0f, 21.0f}},
+    {'A', {2.0f, 2.0f, 0.0f, 0.0f, 0.0f, 21.0f, 19.0f}},
+    {'L', {21.0f, 12.0f}},
+    {'M', {18.375f, 2.625f}},
+    {'A', {1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 21.375f, 5.625f}},
+    {'L', {12.362f, 14.639f}},
+    {'A', {2.0f, 2.0f, 0.0f, 0.0f, 1.0f, 11.509f, 15.144f}},
+    {'L', {8.636f, 15.984f}},
+    {'A', {0.5f, 0.5f, 0.0f, 0.0f, 1.0f, 8.016f, 15.364f}},
+    {'L', {8.856f, 12.491f}},
+    {'A', {2.0f, 2.0f, 0.0f, 0.0f, 1.0f, 9.362f, 11.639f}},
+    {'Z', {}},
+};
+constexpr IconOp kSquareOps[] = {
+    {'R', {3.0f, 3.0f, 18.0f, 18.0f, 2.0f, 2.0f}},
+};
+constexpr IconOp kArrowUpOps[] = {
+    {'M', {5.0f, 12.0f}},
+    {'L', {12.0f, 5.0f}},
+    {'L', {19.0f, 12.0f}},
+    {'M', {12.0f, 19.0f}},
+    {'L', {12.0f, 5.0f}},
+};
 constexpr gfx::VectorIcon kMoriArrowLeftIcon(kPlaceholderReps, 1, "mori::arrow-left");
 constexpr gfx::VectorIcon kMoriArrowRightIcon(kPlaceholderReps, 1, "mori::arrow-right");
 constexpr gfx::VectorIcon kMoriRotateCwIcon(kPlaceholderReps, 1, "mori::rotate-cw");
@@ -1030,6 +1059,9 @@ constexpr gfx::VectorIcon kMoriUsersIcon(kPlaceholderReps, 1, "mori::users");
 constexpr gfx::VectorIcon kMoriDumbbellIcon(kPlaceholderReps, 1, "mori::dumbbell");
 constexpr gfx::VectorIcon kMoriNewspaperIcon(kPlaceholderReps, 1, "mori::newspaper");
 constexpr gfx::VectorIcon kMoriWalletIcon(kPlaceholderReps, 1, "mori::wallet");
+constexpr gfx::VectorIcon kMoriSquarePenIcon(kPlaceholderReps, 1, "mori::square-pen");
+constexpr gfx::VectorIcon kMoriSquareIcon(kPlaceholderReps, 1, "mori::square");
+constexpr gfx::VectorIcon kMoriArrowUpIcon(kPlaceholderReps, 1, "mori::arrow-up");
 constexpr LucideIconData kLucideIcons[] = {
     {"arrow-left", kArrowLeftOps, &kMoriArrowLeftIcon},
     {"arrow-right", kArrowRightOps, &kMoriArrowRightIcon},
@@ -1100,4 +1132,7 @@ constexpr LucideIconData kLucideIcons[] = {
     {"dumbbell", kDumbbellOps, &kMoriDumbbellIcon},
     {"newspaper", kNewspaperOps, &kMoriNewspaperIcon},
     {"wallet", kWalletOps, &kMoriWalletIcon},
+    {"square-pen", kSquarePenOps, &kMoriSquarePenIcon},
+    {"square", kSquareOps, &kMoriSquareIcon},
+    {"arrow-up", kArrowUpOps, &kMoriArrowUpIcon},
 };

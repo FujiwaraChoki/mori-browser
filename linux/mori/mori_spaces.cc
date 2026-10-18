@@ -1,5 +1,6 @@
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
 
+#include "chrome/browser/ui/views/mori/mori_assistant.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_space_editor.h"
 #include "chrome/browser/ui/views/mori/mori_space_themes.h"
@@ -827,6 +828,13 @@ class SpaceBar : public views::View,
     library->SetTooltipText(u"History & Bookmarks (Ctrl+Y)");
     library->SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));
     AddChildView(std::move(library));
+    // Mori 3: the assistant beside the library.
+    auto assistant = views::CreateVectorImageButtonWithNativeTheme(
+        base::BindRepeating(&ToggleAssistant, browser_.get()),
+        LucideIcon("sparkles"), 16);
+    assistant->SetTooltipText(u"Assistant (Ctrl+Shift+K)");
+    assistant->SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));
+    AddChildView(std::move(assistant));
     // Flexible spacers keep the dots centred and "+" at the end.
     auto* before = AddChildView(std::make_unique<views::View>());
     layout->SetFlexForView(before, 1);
