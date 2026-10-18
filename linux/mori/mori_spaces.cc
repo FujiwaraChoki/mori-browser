@@ -37,6 +37,7 @@
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/common/webui_url_constants.h"
+#include "components/saved_tab_groups/public/saved_tab_group.h"
 #include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "components/tab_groups/tab_group_color.h"
 #include "components/tab_groups/tab_group_visual_data.h"
@@ -923,6 +924,35 @@ void ShowSpaceOfActiveTab(BrowserWindowInterface* browser) {
   if (tab && tab->GetGroup().has_value()) {
     model->SetFocusedGroup(tab->GetGroup());
   }
+}
+
+std::string SpaceKey(BrowserWindowInterface* browser,
+                     const tab_groups::TabGroupId& space) {
+  // A space outlives restarts as its saved tab group; its local id doesn't.
+  if (tab_groups::TabGroupSyncService* sync =
+          tab_groups::TabGroupSyncServiceFactory::GetForProfile(
+              browser->GetProfile())) {
+    if (std::optional<tab_groups::SavedTabGroup> group =
+            sync->GetGroup(space)) {
+      return group->saved_guid().AsLowercaseString();
+    }
+  }
+  return space.ToString();
+}
+
+std::optional<tab_groups::TabGroupId> FindSpace(BrowserWindowInterface* browser,
+                                                const std::string& key) {
+  TabStripModel* model = SpacesModel(browser);
+  if (!model) {
+    return std::nullopt;
+  }
+  for (const tab_groups::TabGroupId& id :
+       model->group_model()->ListTabGroups()) {
+    if (SpaceKey(browser, id) == key) {
+      return id;
+    }
+  }
+  return std::nullopt;
 }
 
 void NewSpace(BrowserWindowInterface* browser) {

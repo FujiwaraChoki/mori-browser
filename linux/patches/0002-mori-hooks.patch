@@ -130,7 +130,7 @@
    return *accelerators;
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -2721,6 +2721,36 @@
+@@ -2721,6 +2721,40 @@
        "views/frame/browser_root_view.cc",
        "views/frame/browser_view.cc",
        "views/frame/browser_view.h",
@@ -148,12 +148,16 @@
 +      "views/mori/mori_boosts.h",
 +      "views/mori/mori_cheatsheet.cc",
 +      "views/mori/mori_cheatsheet.h",
++      "views/mori/mori_json_file.cc",
++      "views/mori/mori_json_file.h",
 +      "views/mori/mori_overlay.cc",
 +      "views/mori/mori_overlay.h",
 +      "views/mori/mori_peek.cc",
 +      "views/mori/mori_peek.h",
 +      "views/mori/mori_tab_switcher.cc",
 +      "views/mori/mori_tab_switcher.h",
++      "views/mori/mori_routes.cc",
++      "views/mori/mori_routes.h",
 +      "views/mori/mori_space_editor.cc",
 +      "views/mori/mori_space_editor.h",
 +      "views/mori/mori_space_themes.cc",

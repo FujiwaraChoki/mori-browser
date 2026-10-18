@@ -10,10 +10,7 @@
 
 #include "base/callback_list.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
-#include "base/files/important_file_writer.h"
 #include "base/functional/bind.h"
-#include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -23,13 +20,13 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
-#include "base/task/thread_pool.h"
 #include "base/values.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/mori/mori_json_file.h"
 #include "chrome/browser/ui/views/mori/mori_overlay.h"
 #include "chrome/common/chrome_isolated_world_ids.h"
 #include "content/public/browser/render_frame_host.h"
@@ -101,20 +98,8 @@ class BoostStore {
   }
 
   explicit BoostStore(base::FilePath path)
-      : path_(std::move(path)),
-        file_runner_(base::ThreadPool::CreateSequencedTaskRunner(
-            {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN})) {
-    file_runner_->PostTaskAndReplyWithResult(
-        FROM_HERE,
-        base::BindOnce(
-            [](base::FilePath path) {
-              std::string json;
-              base::ReadFileToString(path, &json);
-              return json;
-            },
-            path_),
-        base::BindOnce(&BoostStore::OnLoaded, weak_factory_.GetWeakPtr()));
-  }
+      : file_(std::move(path),
+              base::BindOnce(&BoostStore::OnLoaded, base::Unretained(this))) {}
 
   bool loaded() const { return loaded_; }
 
@@ -153,9 +138,7 @@ class BoostStore {
   }
 
  private:
-  void OnLoaded(std::string json) {
-    std::optional<base::Value> value = base::JSONReader::Read(
-        json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  void OnLoaded(std::optional<base::Value> value) {
     if (value && value->is_list()) {
       for (const base::Value& item : value->GetList()) {
         const base::DictValue* dict = item.GetIfDict();
@@ -200,25 +183,15 @@ class BoostStore {
                       .Set("zapped", std::move(zapped))
                       .Set("enabled", boost.enabled));
     }
-    std::string json;
-    base::JSONWriter::WriteWithOptions(
-        list, base::JSONWriter::OPTIONS_PRETTY_PRINT, &json);
-    file_runner_->PostTask(
-        FROM_HERE, base::BindOnce(
-                       [](base::FilePath path, std::string json) {
-                         base::ImportantFileWriter::WriteFileAtomically(
-                             path, json);
-                       },
-                       path_, std::move(json)));
+    file_.Write(base::Value(std::move(list)));
     observers_.Notify();
   }
 
-  base::FilePath path_;
-  scoped_refptr<base::SequencedTaskRunner> file_runner_;
   std::vector<Boost> boosts_;
   bool loaded_ = false;
   base::RepeatingClosureList observers_;
-  base::WeakPtrFactory<BoostStore> weak_factory_{this};
+  // Last: its load callback uses the members above.
+  JsonFile file_;
 };
 
 std::string JsString(const std::string& text) {

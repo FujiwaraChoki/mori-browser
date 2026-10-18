@@ -7,27 +7,19 @@
 #include <utility>
 
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
-#include "base/files/important_file_writer.h"
 #include "base/functional/bind.h"
-#include "base/json/json_reader.h"
-#include "base/json/json_writer.h"
-#include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
-#include "base/task/thread_pool.h"
 #include "base/values.h"
 #include "cc/paint/paint_flags.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
+#include "chrome/browser/ui/views/mori/mori_json_file.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
-#include "components/saved_tab_groups/public/saved_tab_group.h"
-#include "components/saved_tab_groups/public/tab_group_sync_service.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/scoped_canvas.h"
@@ -75,20 +67,8 @@ class ThemeStore {
   }
 
   explicit ThemeStore(base::FilePath path)
-      : path_(std::move(path)),
-        file_runner_(base::ThreadPool::CreateSequencedTaskRunner(
-            {base::MayBlock(), base::TaskShutdownBehavior::BLOCK_SHUTDOWN})) {
-    file_runner_->PostTaskAndReplyWithResult(
-        FROM_HERE,
-        base::BindOnce(
-            [](base::FilePath path) {
-              std::string json;
-              base::ReadFileToString(path, &json);
-              return json;
-            },
-            path_),
-        base::BindOnce(&ThemeStore::OnLoaded, weak_factory_.GetWeakPtr()));
-  }
+      : file_(std::move(path),
+              base::BindOnce(&ThemeStore::OnLoaded, base::Unretained(this))) {}
 
   SpaceTheme Get(const std::string& key) const {
     auto it = themes_.find(key);
@@ -110,9 +90,7 @@ class ThemeStore {
   }
 
  private:
-  void OnLoaded(std::string json) {
-    std::optional<base::Value> value = base::JSONReader::Read(
-        json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
+  void OnLoaded(std::optional<base::Value> value) {
     if (value && value->is_dict()) {
       for (auto [key, item] : value->GetDict()) {
         const base::DictValue* dict = item.GetIfDict();
@@ -150,38 +128,14 @@ class ThemeStore {
       }
       dict.Set(key, std::move(entry));
     }
-    std::string json;
-    base::JSONWriter::WriteWithOptions(
-        dict, base::JSONWriter::OPTIONS_PRETTY_PRINT, &json);
-    file_runner_->PostTask(
-        FROM_HERE, base::BindOnce(
-                       [](base::FilePath path, std::string json) {
-                         base::ImportantFileWriter::WriteFileAtomically(
-                             path, json);
-                       },
-                       path_, std::move(json)));
+    file_.Write(base::Value(std::move(dict)));
   }
 
-  base::FilePath path_;
-  scoped_refptr<base::SequencedTaskRunner> file_runner_;
   std::map<std::string, SpaceTheme> themes_;
   base::RepeatingClosureList observers_;
-  base::WeakPtrFactory<ThemeStore> weak_factory_{this};
+  // Last: its load callback uses the members above.
+  JsonFile file_;
 };
-
-// A space outlives restarts as its saved tab group; its local id doesn't.
-std::string KeyFor(BrowserWindowInterface* browser,
-                   const tab_groups::TabGroupId& space) {
-  if (tab_groups::TabGroupSyncService* sync =
-          tab_groups::TabGroupSyncServiceFactory::GetForProfile(
-              browser->GetProfile())) {
-    if (std::optional<tab_groups::SavedTabGroup> group =
-            sync->GetGroup(space)) {
-      return group->saved_guid().AsLowercaseString();
-    }
-  }
-  return space.ToString();
-}
 
 // Mori 3's wash (theme.rs render_wash): the first colour, blooming into
 // the second towards the bottom right. Small; it's stretched over the
@@ -234,13 +188,13 @@ void RepaintTree(views::View* view) {
 SpaceTheme GetSpaceTheme(BrowserWindowInterface* browser,
                          const tab_groups::TabGroupId& space) {
   return ThemeStore::For(browser->GetProfile())
-      ->Get(KeyFor(browser, space));
+      ->Get(SpaceKey(browser, space));
 }
 
 void SetSpaceTheme(BrowserWindowInterface* browser,
                    const tab_groups::TabGroupId& space,
                    const SpaceTheme& theme) {
-  ThemeStore::For(browser->GetProfile())->Set(KeyFor(browser, space), theme);
+  ThemeStore::For(browser->GetProfile())->Set(SpaceKey(browser, space), theme);
 }
 
 base::CallbackListSubscription AddSpaceThemeObserver(

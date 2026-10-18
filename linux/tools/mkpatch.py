@@ -86,6 +86,9 @@ GROUPS = {
     "0015-mori-space-wash": [
         "chrome/browser/ui/views/frame/themed_background.cc",
     ],
+    "0016-mori-air-traffic-control": [
+        "chrome/browser/ui/startup/startup_browser_creator_impl.cc",
+    ],
     "0012-bubbles-stay-in-window": [
         "ui/views/bubble/bubble_dialog_delegate_view.cc",
     ],

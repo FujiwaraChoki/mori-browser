@@ -1,0 +1,21 @@
+--- a/chrome/browser/ui/startup/startup_browser_creator_impl.cc
++++ b/chrome/browser/ui/startup/startup_browser_creator_impl.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/ui/startup/startup_browser_creator_impl.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_routes.h"
++
+ #include <stddef.h>
+ 
+ #include <algorithm>
+@@ -457,6 +459,9 @@
+ #endif  // BUILDFLAG(ENABLE_RLZ)
+ 
+     Navigate(&params);
++    // Mori: Air Traffic Control sends the page to its site's space.
++    mori::RouteExternalTab(browser, params.navigated_or_inserted_contents,
++                           first_tab);
+     first_tab = false;
+   }
+   if (!browser->GetTabStripModel()->GetActiveWebContents() &&

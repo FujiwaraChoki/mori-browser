@@ -6,6 +6,7 @@
 #include "base/functional/bind.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -15,12 +16,14 @@
 #include "chrome/browser/ui/views/mori/mori_command_ids.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_space_editor.h"
+#include "chrome/browser/ui/views/mori/mori_routes.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "chrome/browser/ui/views/mori/mori_tab_names.h"
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
 #include "ui/base/accelerators/accelerator.h"
+#include "url/gurl.h"
 
 namespace mori {
 namespace {
@@ -131,6 +134,35 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
     if (tab->GetContents()->GetLastCommittedURL().SchemeIsHTTPOrHTTPS()) {
       command(u"Boost This Site", u"css javascript zap customize style",
               "zap", kCommandBoostSite);
+    }
+    // Air Traffic Control.
+    const GURL url = tab->GetContents()->GetLastCommittedURL();
+    if (url.SchemeIsHTTPOrHTTPS() && GetCurrentSpace(browser)) {
+      std::string host = base::ToLowerASCII(url.host());
+      if (host.starts_with("www.")) {
+        host = host.substr(4);
+      }
+      const std::u16string site = base::UTF8ToUTF16(host);
+      if (std::optional<Route> route = RouteFor(browser, url)) {
+        std::optional<tab_groups::TabGroupId> to =
+            FindSpace(browser, route->space);
+        const std::u16string name =
+            to ? model->group_model()->GetTabGroup(*to)->visual_data()->title()
+               : u"a deleted space";
+        action(u"Stop Opening " + base::UTF8ToUTF16(route->host) + u" in " +
+                   name,
+               u"air traffic control route rule links", "arrow-right-left",
+               base::BindRepeating(&RemoveRoute, browser, route->host));
+      } else {
+        const std::u16string name =
+            model->group_model()
+                ->GetTabGroup(*GetCurrentSpace(browser))
+                ->visual_data()
+                ->title();
+        action(u"Always Open " + site + u" in " + name,
+               u"air traffic control route rule links space", "arrow-right-left",
+               base::BindRepeating(&RouteSiteToCurrentSpace, browser, url));
+      }
     }
     command(u"Bookmark Page", u"star favorite", "star",
             IDC_BOOKMARK_THIS_TAB);

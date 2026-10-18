@@ -8,6 +8,7 @@
 
 #include <memory>
 #include <optional>
+#include <string>
 
 #include "components/tab_groups/tab_group_id.h"
 
@@ -33,6 +34,15 @@ int IndexForNewTab(BrowserWindowInterface* browser);
 // Shows the space that holds the active tab. Used after switching to a tab
 // in another space, which would otherwise show every space's tabs at once.
 void ShowSpaceOfActiveTab(BrowserWindowInterface* browser);
+
+// A key for `space` that outlives restarts (its saved tab group's GUID),
+// for Mori's own data about spaces.
+std::string SpaceKey(BrowserWindowInterface* browser,
+                     const tab_groups::TabGroupId& space);
+
+// The space in `browser` with that key, if it has one.
+std::optional<tab_groups::TabGroupId> FindSpace(BrowserWindowInterface* browser,
+                                                const std::string& key);
 
 // Makes a new space with one new tab and shows it.
 void NewSpace(BrowserWindowInterface* browser);
