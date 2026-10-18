@@ -607,6 +607,18 @@ constexpr IconOp kArchiveOps[] = {
     {'M', {10.0f, 12.0f}},
     {'L', {14.0f, 12.0f}},
 };
+constexpr IconOp kMaximize2Ops[] = {
+    {'M', {15.0f, 3.0f}},
+    {'L', {21.0f, 3.0f}},
+    {'L', {21.0f, 9.0f}},
+    {'M', {21.0f, 3.0f}},
+    {'L', {14.0f, 10.0f}},
+    {'M', {3.0f, 21.0f}},
+    {'L', {10.0f, 14.0f}},
+    {'M', {9.0f, 21.0f}},
+    {'L', {3.0f, 21.0f}},
+    {'L', {3.0f, 15.0f}},
+};
 constexpr gfx::VectorIcon kMoriArrowLeftIcon(kPlaceholderReps, 1, "mori::arrow-left");
 constexpr gfx::VectorIcon kMoriArrowRightIcon(kPlaceholderReps, 1, "mori::arrow-right");
 constexpr gfx::VectorIcon kMoriRotateCwIcon(kPlaceholderReps, 1, "mori::rotate-cw");
@@ -655,6 +667,7 @@ constexpr gfx::VectorIcon kMoriPencilIcon(kPlaceholderReps, 1, "mori::pencil");
 constexpr gfx::VectorIcon kMoriScanIcon(kPlaceholderReps, 1, "mori::scan");
 constexpr gfx::VectorIcon kMoriArrowDownIcon(kPlaceholderReps, 1, "mori::arrow-down");
 constexpr gfx::VectorIcon kMoriArchiveIcon(kPlaceholderReps, 1, "mori::archive");
+constexpr gfx::VectorIcon kMoriMaximize2Icon(kPlaceholderReps, 1, "mori::maximize-2");
 constexpr LucideIconData kLucideIcons[] = {
     {"arrow-left", kArrowLeftOps, &kMoriArrowLeftIcon},
     {"arrow-right", kArrowRightOps, &kMoriArrowRightIcon},
@@ -704,4 +717,5 @@ constexpr LucideIconData kLucideIcons[] = {
     {"scan", kScanOps, &kMoriScanIcon},
     {"arrow-down", kArrowDownOps, &kMoriArrowDownIcon},
     {"archive", kArchiveOps, &kMoriArchiveIcon},
+    {"maximize-2", kMaximize2Ops, &kMoriMaximize2Icon},
 };

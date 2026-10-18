@@ -11,11 +11,15 @@
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "base/functional/bind.h"
+#include "base/strings/string_util.h"
 #include "chrome/browser/ui/views/mori/mori_cheatsheet.h"
+#include "chrome/browser/ui/views/mori/mori_peek.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "chrome/browser/ui/views/mori/mori_tab_switcher.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
+#include "ui/base/clipboard/clipboard.h"
 #include "ui/events/event_constants.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "url/gurl.h"
@@ -48,6 +52,21 @@ void TogglePin(BrowserWindowInterface* browser) {
   if (index != TabStripModel::kNoTab) {
     model->SetTabPinned(index, !model->IsTabPinned(index));
   }
+}
+
+// Ctrl+Shift+O: the web address on the clipboard, in Peek (Mori 3).
+void PeekClipboard(BrowserWindowInterface* browser) {
+  ui::Clipboard::GetForCurrentThread()->ReadText(
+      ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/std::nullopt,
+      base::BindOnce(
+          [](base::WeakPtr<BrowserWindowInterface> browser,
+             std::u16string text) {
+            const GURL url(base::TrimWhitespace(text, base::TRIM_ALL));
+            if (browser && url.is_valid() && url.SchemeIsHTTPOrHTTPS()) {
+              ShowPeek(browser.get(), url);
+            }
+          },
+          browser->GetWeakPtr()));
 }
 
 constexpr int kCtrl = ui::EF_CONTROL_DOWN;
@@ -83,6 +102,7 @@ constexpr AcceleratorMapping kMoriAccelerators[] = {
     {ui::VKEY_TAB, kCtrl, kCommandSwitchRecentTab},
     {ui::VKEY_TAB, kCtrl | kShift, kCommandSwitchRecentTabBack},
     {ui::VKEY_OEM_2, kCtrl, kCommandShowShortcuts},
+    {ui::VKEY_O, kCtrl | kShift, kCommandPeekClipboard},
     // Places.
     {ui::VKEY_OEM_COMMA, kCtrl, IDC_OPTIONS},
     {ui::VKEY_Y, kCtrl, IDC_SHOW_HISTORY},
@@ -119,6 +139,9 @@ void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id) {
       break;
     case kCommandShowShortcuts:
       ToggleCheatsheet(browser);
+      break;
+    case kCommandPeekClipboard:
+      PeekClipboard(browser);
       break;
     case kCommandEditTheme: {
       NavigateParams params(browser, GURL("chrome://settings/appearance"),

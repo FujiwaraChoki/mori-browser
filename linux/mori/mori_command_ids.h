@@ -26,7 +26,9 @@ enum CommandId {
   kCommandSwitchRecentTabBack,
   // Ctrl+/: the shortcut cheatsheet.
   kCommandShowShortcuts,
-  kCommandLast = kCommandShowShortcuts,
+  // Ctrl+Shift+O: the link on the clipboard in Peek.
+  kCommandPeekClipboard,
+  kCommandLast = kCommandPeekClipboard,
 };
 
 bool IsMoriCommand(int command_id);

@@ -1,0 +1,52 @@
+--- a/third_party/blink/renderer/core/loader/navigation_policy.cc
++++ b/third_party/blink/renderer/core/loader/navigation_policy.cc
+@@ -67,7 +67,9 @@
+     return shift ? kNavigationPolicyNewForegroundTab
+                  : kNavigationPolicyNewBackgroundTab;
+   }
+-  return shift ? kNavigationPolicyNewWindow : kNavigationPolicyDownload;
++  // Mori: Alt+click opens the link in Peek (Arc's Peek, Zen's Glance),
++  // which the browser receives as a picture-in-picture disposition.
++  return shift ? kNavigationPolicyNewWindow : kNavigationPolicyPictureInPicture;
+ }
+ 
+ NavigationPolicy NavigationPolicyFromEventInternal(const Event* event) {
+@@ -151,6 +153,12 @@
+     return kNavigationPolicyNewForegroundTab;
+   }
+ 
++  if (event_policy == kNavigationPolicyPictureInPicture &&
++      input_policy != kNavigationPolicyPictureInPicture) {
++    // Mori: no Peek from synthesized events without user intention.
++    return kNavigationPolicyCurrentTab;
++  }
++
+   if (event_policy == kNavigationPolicySplitView &&
+       input_policy != kNavigationPolicySplitView) {
+     // No split view from synthesized events without user intention.
+--- a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
++++ b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_peek.h"
++
+ #include "base/check_deref.h"
+ #include "base/metrics/histogram_macros.h"
+ #include "base/notimplemented.h"
+@@ -548,6 +550,14 @@
+                                   std::move(navigation_handle_callback));
+   }
+ 
++  // Mori: Alt+click on a link (see blink's navigation_policy.cc) opens it in
++  // Peek over the page.
++  if (params.disposition == WindowOpenDisposition::NEW_PICTURE_IN_PICTURE &&
++      params.is_renderer_initiated && source &&
++      mori::ShowPeek(&*browser_, params.url)) {
++    return nullptr;
++  }
++
+   // If the source is already split, navigate the other pane instead of
+   // creating a new tab. Return |source| so that WebContentsImpl::OpenURL()
+   // sees new_contents == this and skips the DidOpenRequestedURL notification,
