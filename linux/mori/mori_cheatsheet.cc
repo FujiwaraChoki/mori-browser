@@ -96,6 +96,7 @@ std::vector<Group> Groups() {
         {u"Reader view", IDC_SHOW_READING_MODE_SIDE_PANEL},
         {u"Print", IDC_PRINT},
         {u"Capture", IDC_SHARING_HUB_SCREENSHOT},
+        {u"Boost this site", kCommandBoostSite},
         {u"Developer tools", IDC_DEV_TOOLS},
         {u"View source", IDC_VIEW_SOURCE}}},
       {u"Window",

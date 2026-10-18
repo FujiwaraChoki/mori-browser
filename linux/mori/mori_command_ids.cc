@@ -13,6 +13,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "base/functional/bind.h"
 #include "base/strings/string_util.h"
+#include "chrome/browser/ui/views/mori/mori_boosts.h"
 #include "chrome/browser/ui/views/mori/mori_cheatsheet.h"
 #include "chrome/browser/ui/views/mori/mori_peek.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
@@ -105,6 +106,8 @@ constexpr AcceleratorMapping kMoriAccelerators[] = {
     {ui::VKEY_O, kCtrl | kShift, kCommandPeekClipboard},
     // Arc's Capture: drag over the page to capture an area.
     {ui::VKEY_X, kCtrl | kShift, IDC_SHARING_HUB_SCREENSHOT},
+    // Arc: Boost this site (Chromium's bookmarks bar toggle otherwise).
+    {ui::VKEY_B, kCtrl | kShift, kCommandBoostSite},
     // Places.
     {ui::VKEY_OEM_COMMA, kCtrl, IDC_OPTIONS},
     {ui::VKEY_Y, kCtrl, IDC_SHOW_HISTORY},
@@ -144,6 +147,9 @@ void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id) {
       break;
     case kCommandPeekClipboard:
       PeekClipboard(browser);
+      break;
+    case kCommandBoostSite:
+      EditBoost(browser);
       break;
     case kCommandEditTheme: {
       NavigateParams params(browser, GURL("chrome://settings/appearance"),

@@ -28,7 +28,9 @@ enum CommandId {
   kCommandShowShortcuts,
   // Ctrl+Shift+O: the link on the clipboard in Peek.
   kCommandPeekClipboard,
-  kCommandLast = kCommandPeekClipboard,
+  // Ctrl+Shift+B: the boost editor for the site on screen.
+  kCommandBoostSite,
+  kCommandLast = kCommandBoostSite,
 };
 
 bool IsMoriCommand(int command_id);

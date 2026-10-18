@@ -1,0 +1,21 @@
+--- a/chrome/browser/ui/tab_helpers.cc
++++ b/chrome/browser/ui/tab_helpers.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/ui/tab_helpers.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_boosts.h"
++
+ #include <cstdint>
+ #include <memory>
+ #include <optional>
+@@ -323,6 +325,9 @@
+   web_contents->SetUserData(&kTabContentsAttachedTabHelpersUserDataKey,
+                             std::make_unique<base::SupportsUserData::Data>());
+ 
++  // Mori: per-site boosts.
++  mori::AttachBoosts(web_contents);
++
+   // Create all the tab helpers.
+ 
+   // SessionTabHelper comes first because it sets up the tab ID, and other

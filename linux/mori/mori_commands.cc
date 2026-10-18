@@ -133,6 +133,10 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
     command(u"Duplicate Tab", u"copy clone", "copy", IDC_DUPLICATE_TAB);
     action(u"Rename Tab", u"title name", "pencil",
            base::BindRepeating(&RenameActiveTab, browser));
+    if (tab->GetContents()->GetLastCommittedURL().SchemeIsHTTPOrHTTPS()) {
+      command(u"Boost This Site", u"css javascript zap customize style",
+              "zap", kCommandBoostSite);
+    }
     command(u"Bookmark Page", u"star favorite", "star",
             IDC_BOOKMARK_THIS_TAB);
     command(u"Split View", u"side by side split screen", "columns-2",

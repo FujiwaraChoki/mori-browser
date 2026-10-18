@@ -80,6 +80,9 @@ GROUPS = {
         "chrome/browser/sessions/session_service_base.cc",
         "chrome/browser/ui/views/tabs/common/tab_view.cc",
     ],
+    "0014-mori-boosts": [
+        "chrome/browser/ui/tab_helpers.cc",
+    ],
     "0012-bubbles-stay-in-window": [
         "ui/views/bubble/bubble_dialog_delegate_view.cc",
     ],
