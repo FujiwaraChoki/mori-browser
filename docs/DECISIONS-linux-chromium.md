@@ -256,14 +256,74 @@ follows Arc and Zen's single-toolbar layout.
   extension that pins two tabs and makes "Work" and "Leisure" groups on
   first run. Ctrl+Shift+U opens a tab the way an extension or link would.
 
+## Step 4: Mori 3's look and features
+
+The window now matches Mori 3 side by side at 1.5× (sidebar metrics, Lucide
+icons, the launcher, menus), and most of Mori 3's features are ported. Each
+lives in `linux/mori/` and reaches Chromium through a small patch.
+
+- **Arc's Ctrl+S** (`mori_sidebar.cc`): the sidebar hides; at the window's
+  left edge it floats back over the page, with rounded corners and a shadow.
+- **Spaces outlive their last tab.** Closing or moving a space's last tab
+  brings the space back with a new tab; "Delete Space" removes one on
+  purpose. Chromium's "delete group?" prompts are off (`0005`).
+- **Space editor** (`mori_space_editor.cc`, `mori_space_themes.cc`, `0015`):
+  name, symbol (a Lucide icon or an emoji) and one of Mori 3's gradients. The
+  gradient washes over the sidebar, toolbar and margins through a hook in
+  `ThemedBackground`. The sidebar's surfaces are translucent, as in Mori 3,
+  so the wash shows through. Themes are kept in "Mori Spaces.json", keyed by
+  saved tab group.
+- **Clear and auto-archive.** The divider's "Clear" closes a space's tabs.
+  Space tabs unused for 24 hours close; they stay in History and Reopen
+  Closed Tab.
+- **Command bar parity**: switch to or move a tab to a space, move a tab to
+  a new window, edit or delete a space, reopen a closed tab, find, capture,
+  peek the clipboard link, Boosts, routing rules, import, the assistant. Each
+  row shows the command's shortcut.
+- **Ctrl+Tab** goes through the space's recent tabs, with thumbnails
+  (`mori_tab_switcher.cc`). **Ctrl+/** opens a searchable shortcut
+  cheatsheet built from the live key bindings.
+- **Peek** (`mori_peek.cc`, `0010`): Alt+click opens a link in a card over
+  the page, with Close, Open as Tab and Split View. Blink sends Alt+click
+  through as a picture-in-picture disposition, which the browser's
+  `OpenURLFromTab` turns into Peek. Ctrl+Shift+O peeks the link on the
+  clipboard.
+- **Capture** (Ctrl+Shift+X) uses Chromium's screenshot flow. `0011` fixes
+  its selection layer, which was offset by the sidebar's width.
+- **Bubbles open into the window** (`0012`). Wayland gives Chromium no
+  screen position, so it never moved bubbles back on screen. Ones anchored
+  to the sidebar's toolbar opened past the window's left edge; they now
+  mirror against the window.
+- **Tab names** (`mori_tab_names.cc`, `0013`): double-click a tab, or "Rename
+  Tab". Names go into the session's per-tab extra data, which the patch also
+  writes whenever Chromium rewrites the session file.
+- **Boosts** (`mori_boosts.cc`, `0014`): per-site CSS, JavaScript and zapped
+  elements, applied from an isolated world as pages load. They are kept in
+  "Mori Boosts.json".
+- **Links from other apps** (`0016`). Air Traffic Control rules
+  (`mori_routes.cc`, "Mori Routes.json") send a site's links to a space.
+  Other links open in Little Mori (`mori_little.cc`): a 900×640 popup window
+  with back, the address, "Open in <space>" and close. The command bar
+  switches between Little Mori and the current space.
+- **Import** (`mori_import.cc`, `0017`). Zen's workspaces and essentials, a
+  Firefox session, and Arc's sidebar file become spaces and favorites. Tabs
+  arrive unloaded and fetch their icons. Chromium's importer finds Zen
+  profiles too, for bookmarks, history and passwords.
+- **Assistant** (`mori_assistant*.cc`, `mori_codex.cc`): Mori 3's Codex
+  panel, docked beside the page by the browser layout (Ctrl+Shift+K or the
+  sparkles button).
+  - Talks to `codex app-server` over stdio, with Mori 3's browser tools.
+  - Page scripts run in Mori's isolated world. Because Chromium's public
+    isolated-world call doesn't await promises, each script parks its result
+    in the world and the browser polls for it.
+  - Every page read or browser change waits for Allow.
+- **Toasts** (`mori_toast.cc`): Zen's pill for "Opened in <space>", rule
+  changes and import results.
+
 Still to port from Mori 3:
-- Today and archiving.
-- Renaming spaces and changing their icons from Mori UI. Chromium's group
-  editor already renames and recolours.
-- A sidebar toggle button.
-- A Ctrl+Tab recent-tab switcher.
-- Peek.
-- Importing from Arc and Zen.
+- Per-space pinned tabs and folders. Chromium's tab groups have neither; it
+  needs Mori's own bookkeeping per saved group.
+- A Mori new tab page, in place of Chromium's.
 - Content blocking (uBlock Origin, once MV2 support is checked).
 - Branding: the name, icon and window class.
 
