@@ -28,6 +28,7 @@
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/mori/mori_commands.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "chrome/browser/ui/views/theme_copying_widget.h"
 #include "components/keyed_service/core/service_access_type.h"
@@ -66,6 +67,7 @@ namespace mori {
 namespace {
 
 constexpr size_t kMaxResults = 8;
+constexpr size_t kMaxCommands = 3;
 constexpr int kWidth = 640;
 constexpr int kCornerRadius = 12;
 constexpr int kRowHeight = 40;
@@ -126,6 +128,16 @@ class ResultRow : public views::Button {
                     : kColorOmniboxResultsIcon,
           kIconSize));
     }
+  }
+
+  void SetCommand(const Command& command) {
+    title_->SetText(std::u16string(command.title));
+    detail_->SetVisible(false);
+    SetAccessibleName(std::u16string(command.title));
+    icon_->SetImage(ui::ImageModel::FromVectorIcon(
+        *command.icon,
+        selected_ ? kColorOmniboxResultsTextSelected : kColorOmniboxResultsIcon,
+        kIconSize));
   }
 
   void SetSelected(bool selected) {
@@ -229,6 +241,7 @@ class CommandBar : public views::View,
     selected_ = 0;
     controller_->Stop(AutocompleteStopReason::kClobbered);
     matches_.clear();
+    commands_.clear();
     UpdateResults();
     UpdateBounds();
     GetWidget()->Show();
@@ -295,6 +308,7 @@ class CommandBar : public views::View,
     if (text.empty()) {
       controller_->Stop(AutocompleteStopReason::kClobbered);
       matches_.clear();
+      commands_.clear();
       UpdateResults();
       UpdateBounds();
       return;
@@ -312,22 +326,30 @@ class CommandBar : public views::View,
     controller_->Start(input);
   }
 
-  int VisibleMatches() const { return static_cast<int>(matches_.size()); }
+  // Commands come first, then Chromium's suggestions.
+  int VisibleMatches() const {
+    return static_cast<int>(commands_.size() + matches_.size());
+  }
 
   // The bar's results in display order. When the input looks like an
   // address, the address itself goes first, so Enter loads it rather than
   // searching for it or switching to an open tab on the same site.
   void RebuildMatches() {
     matches_.clear();
+    commands_.clear();
     if (field_->GetText().empty()) {
       return;
     }
+    if (!input_is_url_) {
+      commands_ = MatchCommands(browser_view_->browser(), field_->GetText(),
+                                kMaxCommands);
+    }
     for (const AutocompleteMatch& match : controller_->result()) {
+      if (matches_.size() + commands_.size() == kMaxResults) {
+        break;
+      }
       if (match.destination_url.is_valid()) {
         matches_.push_back(match);
-      }
-      if (matches_.size() == kMaxResults) {
-        break;
       }
     }
     if (input_is_url_ && !matches_.empty()) {
@@ -359,7 +381,12 @@ class CommandBar : public views::View,
       if (i >= count) {
         continue;
       }
-      const AutocompleteMatch& match = matches_[i];
+      row->SetSelected(i == selected_);
+      if (i < static_cast<int>(commands_.size())) {
+        row->SetCommand(*commands_[i]);
+        continue;
+      }
+      const AutocompleteMatch& match = matches_[i - commands_.size()];
       gfx::Image favicon;
       if (!AutocompleteMatch::IsSearchType(match.type)) {
         favicon = favicon_cache_.GetFaviconForPageUrl(
@@ -367,7 +394,6 @@ class CommandBar : public views::View,
             base::BindOnce(&CommandBar::OnFaviconFetched,
                            weak_factory_.GetWeakPtr()));
       }
-      row->SetSelected(i == selected_);
       row->SetMatch(match, favicon);
     }
   }
@@ -397,7 +423,13 @@ class CommandBar : public views::View,
     if (index >= VisibleMatches()) {
       return;
     }
-    AutocompleteMatch match = matches_[index];
+    if (index < static_cast<int>(commands_.size())) {
+      const Command* command = commands_[index];
+      Hide();
+      command->run(browser_view_->browser());
+      return;
+    }
+    AutocompleteMatch match = matches_[index - commands_.size()];
     if (!match.destination_url.is_valid()) {
       return;
     }
@@ -463,6 +495,7 @@ class CommandBar : public views::View,
   raw_ptr<views::View> results_ = nullptr;
   std::vector<raw_ptr<ResultRow>> rows_;
   std::vector<AutocompleteMatch> matches_;
+  std::vector<const Command*> commands_;
   bool input_is_url_ = false;
   int selected_ = 0;
   base::ScopedObservation<AutocompleteController,

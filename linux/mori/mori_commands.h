@@ -1,0 +1,37 @@
+// Actions offered by name in the command bar (Arc and Mori 3's commands):
+// typing "settings", "new space" or "toggle sidebar" runs it.
+
+#ifndef CHROME_BROWSER_UI_VIEWS_MORI_MORI_COMMANDS_H_
+#define CHROME_BROWSER_UI_VIEWS_MORI_MORI_COMMANDS_H_
+
+#include <string>
+#include <string_view>
+#include <vector>
+
+class BrowserWindowInterface;
+
+namespace gfx {
+struct VectorIcon;
+}
+
+namespace mori {
+
+struct Command {
+  std::u16string_view title;
+  // Other words it can be found by.
+  std::u16string_view keywords;
+  const gfx::VectorIcon* icon;
+  void (*run)(BrowserWindowInterface* browser);
+  // Whether it applies right now; null means always.
+  bool (*available)(BrowserWindowInterface* browser) = nullptr;
+};
+
+// Commands matching `query`, best first, at most `limit`. Every word of the
+// query has to start a word of the command's title or keywords.
+std::vector<const Command*> MatchCommands(BrowserWindowInterface* browser,
+                                          std::u16string_view query,
+                                          size_t limit);
+
+}  // namespace mori
+
+#endif  // CHROME_BROWSER_UI_VIEWS_MORI_MORI_COMMANDS_H_

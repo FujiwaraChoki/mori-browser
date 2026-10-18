@@ -30,6 +30,9 @@ std::optional<tab_groups::TabGroupId> GetCurrentSpace(
 // in another space, which would otherwise show every space's tabs at once.
 void ShowSpaceOfActiveTab(BrowserWindowInterface* browser);
 
+// Makes a new space with one new tab and shows it.
+void NewSpace(BrowserWindowInterface* browser);
+
 // Moves to the next or previous space.
 void SwitchSpace(BrowserWindowInterface* browser, bool forward);
 

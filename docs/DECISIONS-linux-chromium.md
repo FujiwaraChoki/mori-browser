@@ -222,8 +222,17 @@ follows Arc and Zen's single-toolbar layout.
   colour.
   - A space bar at the bottom of the sidebar shows a dot per space and a
     "+" for a new space.
-  - Ctrl+Alt+←/→ (and Chromium's Alt+Shift+X/Z) switch spaces. Unfocused,
-    the sidebar shows every space's tabs.
+  - Ctrl+Alt+←/→ (and Chromium's Alt+Shift+X/Z) switch spaces, wrapping
+    around.
+  - Every tab that isn't a favorite is in a space, and a space is always on
+    screen, as in Arc. A window without spaces gets a "Personal" space for
+    its tabs. Loose tabs, for example from session restore, join the space
+    on screen. If Chromium unfocuses (say the focused space's last tab
+    closes), the active tab's space is shown.
+  - Spaces are only created and named once the saved-tab-groups service has
+    initialised. That service applies its stored copy of each group when it
+    starts, which reset a "Personal" space made earlier to an unnamed grey
+    group.
   - New tabs join the space on screen: from the command bar, links,
     extensions and the new-tab button. `TabStripModel::AddTab` gives a new
     unpinned tab the focused group, because Chromium otherwise drops focus
@@ -233,8 +242,18 @@ follows Arc and Zen's single-toolbar layout.
 - **Session restore by default**, as in Arc.
 - **Command bar fix.** For address-like input, the typed address ranks
   first, ahead of searches and open tabs.
+- **Commands in the command bar** (`mori_commands.cc`). Typing part of a
+  command's name lists it above the suggestions:
+  - spaces: new, next, previous;
+  - favorites: add or remove the current tab;
+  - toggle sidebar, split view, duplicate tab, copy URL, close tab;
+  - new window, new private window;
+  - history, downloads, bookmarks, extensions, settings;
+  - clear browsing data, developer tools, print.
+
+  Every word typed has to start a word of the command's name or keywords.
 - **Test fixture** (`linux/harness/fixture-ext`, `FIXTURE=1 run.sh`). An
-  extension that pins two tabs and makes "Work" and "Personal" groups on
+  extension that pins two tabs and makes "Work" and "Leisure" groups on
   first run. Ctrl+Shift+U opens a tab the way an extension or link would.
 
 Still to port from Mori 3:
@@ -242,7 +261,6 @@ Still to port from Mori 3:
 - Renaming spaces and changing their icons from Mori UI. Chromium's group
   editor already renames and recolours.
 - A sidebar toggle button.
-- Commands in the command bar.
 - A Ctrl+Tab recent-tab switcher.
 - Peek.
 - Importing from Arc and Zen.

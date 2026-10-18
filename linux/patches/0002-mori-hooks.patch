@@ -84,12 +84,14 @@
  #endif  // !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_CHROMEOS)
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -2721,6 +2721,12 @@
+@@ -2721,6 +2721,14 @@
        "views/frame/browser_root_view.cc",
        "views/frame/browser_view.cc",
        "views/frame/browser_view.h",
 +      "views/mori/mori_command_bar.cc",
 +      "views/mori/mori_command_bar.h",
++      "views/mori/mori_commands.cc",
++      "views/mori/mori_commands.h",
 +      "views/mori/mori_spaces.cc",
 +      "views/mori/mori_spaces.h",
 +      "views/mori/mori_toolbar_layout.cc",

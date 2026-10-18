@@ -1,5 +1,5 @@
 // Test only. Builds a sidebar like an Arc user's: two pinned tabs
-// (favorites), a "Work" and a "Personal" group, and a loose tab.
+// (favorites), a "Work" and a "Leisure" group, and a loose tab.
 chrome.runtime.onInstalled.addListener(async () => {
   const open = (url) => chrome.tabs.create({ url, active: false });
   const pinned = [await open("https://github.com"), await open("https://en.wikipedia.org")];
@@ -9,7 +9,7 @@ chrome.runtime.onInstalled.addListener(async () => {
   await chrome.tabGroups.update(workGroup, { title: "Work", color: "blue" });
   const personal = [await open("https://www.youtube.com"), await open("https://www.reddit.com")];
   const personalGroup = await chrome.tabs.group({ tabIds: personal.map((t) => t.id) });
-  await chrome.tabGroups.update(personalGroup, { title: "Personal", color: "pink" });
+  await chrome.tabGroups.update(personalGroup, { title: "Leisure", color: "pink" });
 });
 
 // Ctrl+Shift+U: open a tab as an extension or a link would, to check that it
