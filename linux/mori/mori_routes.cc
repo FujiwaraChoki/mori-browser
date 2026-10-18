@@ -14,6 +14,11 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/mori/mori_json_file.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
+#include "chrome/browser/ui/views/mori/mori_toast.h"
+#include "chrome/browser/ui/tabs/tab_group_model.h"
+#include "components/tab_groups/tab_group_visual_data.h"
+#include "components/tabs/public/tab_group.h"
+#include "base/strings/utf_string_conversions.h"
 #include "content/public/browser/web_contents.h"
 #include "url/gurl.h"
 
@@ -118,6 +123,13 @@ void RouteSiteToCurrentSpace(BrowserWindowInterface* browser,
   }
   RouteStore::For(browser->GetProfile())
       ->Put({SiteOf(url), SpaceKey(browser, *space)});
+  ShowToast(browser,
+            base::UTF8ToUTF16(SiteOf(url)) + u" will open in " +
+                browser->GetTabStripModel()
+                    ->group_model()
+                    ->GetTabGroup(*space)
+                    ->visual_data()
+                    ->title());
 }
 
 void RemoveRoute(BrowserWindowInterface* browser, const std::string& host) {
@@ -152,6 +164,10 @@ void RouteExternalTab(BrowserWindowInterface* browser,
   if (first) {
     model->SetFocusedGroup(*space);
     model->ActivateTabAt(model->GetIndexOfWebContents(contents));
+    ShowToast(browser, u"Opened in " + model->group_model()
+                                           ->GetTabGroup(*space)
+                                           ->visual_data()
+                                           ->title());
   }
 }
 

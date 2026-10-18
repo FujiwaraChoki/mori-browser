@@ -17,6 +17,7 @@
 #include "chrome/browser/ui/views/mori/mori_command_ids.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_space_editor.h"
+#include "chrome/browser/ui/views/mori/mori_import.h"
 #include "chrome/browser/ui/views/mori/mori_little.h"
 #include "chrome/browser/ui/views/mori/mori_routes.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
@@ -114,6 +115,16 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
                },
                browser));
   }
+  // Mori 3's import (Arc's onboarding does the same).
+  for (auto [title, source] :
+       {std::pair{u"Import Spaces from Zen", ImportSource::kZen},
+        std::pair{u"Import Spaces from Firefox", ImportSource::kFirefox},
+        std::pair{u"Import Spaces from Arc", ImportSource::kArc}}) {
+    action(title, u"import migrate switch tabs workspaces essentials",
+           "download", base::BindRepeating(&ImportSpaces, browser, source));
+  }
+  command(u"Import Bookmarks and History", u"import migrate passwords",
+          "bookmark", IDC_IMPORT_SETTINGS);
   command(u"Keyboard Shortcuts", u"keys hotkeys cheatsheet help", "keyboard",
           kCommandShowShortcuts);
   command(u"Settings", u"preferences options", "settings", IDC_OPTIONS);

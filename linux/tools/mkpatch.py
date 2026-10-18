@@ -89,6 +89,9 @@ GROUPS = {
     "0016-mori-links-from-other-apps": [
         "chrome/browser/ui/startup/startup_browser_creator_impl.cc",
     ],
+    "0017-import-from-zen": [
+        "chrome/browser/importer/importer_list.cc",
+    ],
     "0012-bubbles-stay-in-window": [
         "ui/views/bubble/bubble_dialog_delegate_view.cc",
     ],
