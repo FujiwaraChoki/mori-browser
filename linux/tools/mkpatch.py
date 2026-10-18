@@ -71,6 +71,12 @@ GROUPS = {
         "ui/views/controls/menu/menu_config.cc",
         "chrome/browser/ui/toolbar/app_menu_model.cc",
     ],
+    "0011-capture-overlay-offset": [
+        "chrome/browser/image_editor/screenshot_flow.cc",
+    ],
+    "0012-bubbles-stay-in-window": [
+        "ui/views/bubble/bubble_dialog_delegate_view.cc",
+    ],
     "0010-mori-peek": [
         "third_party/blink/renderer/core/loader/navigation_policy.cc",
         "chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc",

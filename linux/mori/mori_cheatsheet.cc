@@ -95,6 +95,7 @@ std::vector<Group> Groups() {
         {u"Actual size", IDC_ZOOM_NORMAL},
         {u"Reader view", IDC_SHOW_READING_MODE_SIDE_PANEL},
         {u"Print", IDC_PRINT},
+        {u"Capture", IDC_SHARING_HUB_SCREENSHOT},
         {u"Developer tools", IDC_DEV_TOOLS},
         {u"View source", IDC_VIEW_SOURCE}}},
       {u"Window",

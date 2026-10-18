@@ -85,6 +85,8 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
   command(u"Find in Page", u"search text", "search", IDC_FIND);
   command(u"Peek Link on Clipboard", u"preview glance paste", "eye",
           kCommandPeekClipboard);
+  command(u"Capture", u"screenshot snip image area", "camera",
+          IDC_SHARING_HUB_SCREENSHOT);
   command(u"Toggle Sidebar", u"hide show compact mode zen", "panel-left",
           IDC_TOGGLE_VERTICAL_TABS);
   command(u"Keyboard Shortcuts", u"keys hotkeys cheatsheet help", "keyboard",

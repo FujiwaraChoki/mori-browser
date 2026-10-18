@@ -1,0 +1,36 @@
+--- a/ui/views/bubble/bubble_dialog_delegate_view.cc
++++ b/ui/views/bubble/bubble_dialog_delegate_view.cc
+@@ -1041,6 +1041,33 @@
+            ->GetPlatformProperties()
+            .supports_global_screen_coordinates) {
+     adjust_to_fix_available_bounds = false;
++    // Mori: its toolbar sits at the window's left edge, beside the sidebar,
++    // where a bubble opening leftwards would stick out of the window. The
++    // window's own bounds are known, so mirror against those.
++    if (has_anchor && !anchor_minimized && anchor_widget() &&
++        BubbleBorder::has_arrow(arrow()) &&
++        !BubbleBorder::is_arrow_at_center(arrow())) {
++      BubbleFrameView* frame = GetBubbleFrameView();
++      const gfx::Size client_size =
++          GetWidget()->client_view()->GetPreferredSize({});
++      const gfx::Rect window = anchor_widget()->GetWindowBoundsInScreen();
++      frame->SetArrow(arrow());
++      const gfx::Rect bounds = frame->GetUpdatedWindowBounds(
++          anchor_rect, arrow(), client_size, false);
++      if (bounds.x() < window.x() || bounds.right() > window.right()) {
++        const BubbleBorder::Arrow mirrored =
++            BubbleBorder::horizontal_mirror(arrow());
++        frame->SetArrow(mirrored);
++        const gfx::Rect mirrored_bounds = frame->GetUpdatedWindowBounds(
++            anchor_rect, mirrored, client_size, false);
++        if (mirrored_bounds.x() >= window.x() &&
++            mirrored_bounds.right() <= window.right()) {
++          return mirrored_bounds;
++        }
++        frame->SetArrow(arrow());
++      }
++      return bounds;
++    }
+   }
+ #endif
+ 

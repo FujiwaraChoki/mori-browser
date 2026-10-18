@@ -103,6 +103,27 @@ fn main() {
             pointer.frame();
             flush(&mut queue, &mut state);
         }
+        // drag X Y X2 Y2: press at X Y, glide to X2 Y2, release.
+        Some("drag") => {
+            let x2: u32 = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(x);
+            let y2: u32 = args.get(5).and_then(|v| v.parse().ok()).unwrap_or(y);
+            let left = 0x110;
+            pointer.button(now_ms(), left, wayland_client::protocol::wl_pointer::ButtonState::Pressed);
+            pointer.frame();
+            flush(&mut queue, &mut state);
+            for step in 1..=20i64 {
+                let px = x as i64 + (x2 as i64 - x as i64) * step / 20;
+                let py = y as i64 + (y2 as i64 - y as i64) * step / 20;
+                pointer.motion_absolute(now_ms(), px as u32, py as u32, w, h);
+                pointer.frame();
+                flush(&mut queue, &mut state);
+                thread::sleep(Duration::from_millis(16));
+            }
+            thread::sleep(Duration::from_millis(60));
+            pointer.button(now_ms(), left, wayland_client::protocol::wl_pointer::ButtonState::Released);
+            pointer.frame();
+            flush(&mut queue, &mut state);
+        }
         Some("scroll") => {
             let dy: f64 = args.get(4).and_then(|v| v.parse().ok()).unwrap_or(0.0);
             pointer.axis(now_ms(), wayland_client::protocol::wl_pointer::Axis::VerticalScroll, dy);

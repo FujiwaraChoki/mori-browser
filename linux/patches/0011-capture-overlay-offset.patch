@@ -1,0 +1,23 @@
+--- a/chrome/browser/image_editor/screenshot_flow.cc
++++ b/chrome/browser/image_editor/screenshot_flow.cc
+@@ -132,7 +132,10 @@
+ #else
+   const gfx::NativeWindow& native_window = web_contents_->GetNativeView();
+   ui::Layer* content_layer = native_window->layer();
+-  const gfx::Rect bounds = native_window->bounds();
++  // Mori: the layer is the page window's child, so it takes the window's
++  // own size, not its bounds in the parent (the page isn't at the window's
++  // left edge next to Mori's sidebar).
++  const gfx::Rect bounds(native_window->bounds().size());
+   // Capture mouse down and drag events on our window.
+   event_capture_.Observe(native_window);
+ #endif
+@@ -371,7 +374,7 @@
+   }
+ #else
+   const gfx::NativeWindow& native_window = web_contents_->GetNativeView();
+-  const gfx::Rect bounds = native_window->bounds();
++  const gfx::Rect bounds(native_window->bounds().size());
+ #endif
+   screen_capture_layer_->SetBounds(bounds);
+ }

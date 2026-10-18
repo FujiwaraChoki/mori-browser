@@ -103,6 +103,8 @@ constexpr AcceleratorMapping kMoriAccelerators[] = {
     {ui::VKEY_TAB, kCtrl | kShift, kCommandSwitchRecentTabBack},
     {ui::VKEY_OEM_2, kCtrl, kCommandShowShortcuts},
     {ui::VKEY_O, kCtrl | kShift, kCommandPeekClipboard},
+    // Arc's Capture: drag over the page to capture an area.
+    {ui::VKEY_X, kCtrl | kShift, IDC_SHARING_HUB_SCREENSHOT},
     // Places.
     {ui::VKEY_OEM_COMMA, kCtrl, IDC_OPTIONS},
     {ui::VKEY_Y, kCtrl, IDC_SHOW_HISTORY},
