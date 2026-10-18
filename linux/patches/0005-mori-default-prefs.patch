@@ -36,3 +36,25 @@
                                          /*use_first_as_fallback=*/true);
  }
  
+--- a/chrome/browser/prefs/session_startup_pref.cc
++++ b/chrome/browser/prefs/session_startup_pref.cc
+@@ -63,7 +63,8 @@
+ 
+ // static
+ SessionStartupPref::Type SessionStartupPref::GetDefaultStartupType() {
+-#if BUILDFLAG(IS_CHROMEOS)
++  // Mori: reopen the last session, with its spaces, like Arc.
++#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
+   return SessionStartupPref::LAST;
+ #else
+ #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
+--- a/chrome/browser/ui/toolbar/chrome_location_bar_model_delegate.cc
++++ b/chrome/browser/ui/toolbar/chrome_location_bar_model_delegate.cc
+@@ -316,5 +316,6 @@
+ // static
+ void ChromeLocationBarModelDelegate::RegisterProfilePrefs(
+     user_prefs::PrefRegistrySyncable* registry) {
+-  registry->RegisterBooleanPref(omnibox::kPreventUrlElisionsInOmnibox, true);
++  // Mori: show the site, not the full URL, until the field is edited.
++  registry->RegisterBooleanPref(omnibox::kPreventUrlElisionsInOmnibox, false);
+ }

@@ -28,6 +28,7 @@
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "chrome/browser/ui/views/theme_copying_widget.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/omnibox/browser/autocomplete_classifier.h"
@@ -313,9 +314,9 @@ class CommandBar : public views::View,
 
   int VisibleMatches() const { return static_cast<int>(matches_.size()); }
 
-  // The bar's results in display order. Chromium ranks open tabs first; when
-  // the input looks like an address, the typed address goes first instead,
-  // so Enter loads it rather than switching to a tab on the same site.
+  // The bar's results in display order. When the input looks like an
+  // address, the address itself goes first, so Enter loads it rather than
+  // searching for it or switching to an open tab on the same site.
   void RebuildMatches() {
     matches_.clear();
     if (field_->GetText().empty()) {
@@ -329,11 +330,17 @@ class CommandBar : public views::View,
         break;
       }
     }
-    if (input_is_url_ && !matches_.empty() && IsTabMatch(matches_.front())) {
-      auto first_page = std::ranges::find_if(
-          matches_, [](const AutocompleteMatch& m) { return !IsTabMatch(m); });
-      if (first_page != matches_.end()) {
-        std::rotate(matches_.begin(), first_page, first_page + 1);
+    if (input_is_url_ && !matches_.empty()) {
+      auto address = std::ranges::find_if(matches_, [](const auto& m) {
+        return m.type == AutocompleteMatchType::URL_WHAT_YOU_TYPED;
+      });
+      if (address == matches_.end()) {
+        address = std::ranges::find_if(matches_, [](const auto& m) {
+          return !IsTabMatch(m) && !AutocompleteMatch::IsSearchType(m.type);
+        });
+      }
+      if (address != matches_.end()) {
+        std::rotate(matches_.begin(), address, address + 1);
       }
     }
   }
@@ -397,15 +404,21 @@ class CommandBar : public views::View,
     BrowserWindowInterface* browser = browser_view_->browser();
     Hide();
     NavigateParams params(browser, match.destination_url, match.transition);
-    if (IsTabMatch(match)) {
+    const bool switch_to_tab = IsTabMatch(match);
+    if (switch_to_tab) {
       params.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
     } else if (mode_ == CommandBarMode::kNewTab) {
       params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+      // New tabs join the space on screen.
+      params.group = GetCurrentSpace(browser);
     } else {
       params.disposition = WindowOpenDisposition::CURRENT_TAB;
     }
     params.window_action = NavigateParams::WindowAction::kShowWindow;
     Navigate(&params);
+    if (switch_to_tab) {
+      ShowSpaceOfActiveTab(browser);
+    }
   }
 
   void OnFieldBlurred() {

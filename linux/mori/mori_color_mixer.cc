@@ -21,6 +21,7 @@ struct Palette {
   SkColor field;           // The address field.
   SkColor field_hover;
   SkColor popover;         // Command bar and suggestion lists.
+  SkColor card;            // An empty page (the new tab page).
   SkColor foreground;
   SkColor foreground_dim;
 };
@@ -32,6 +33,7 @@ constexpr Palette kDark = {
     .field = SkColorSetRGB(0x22, 0x22, 0x22),
     .field_hover = SkColorSetRGB(0x2A, 0x2A, 0x2A),
     .popover = SkColorSetRGB(0x1B, 0x1B, 0x1D),
+    .card = SkColorSetRGB(0x2B, 0x2B, 0x2B),
     .foreground = SkColorSetRGB(0xEE, 0xEE, 0xEF),
     .foreground_dim = SkColorSetRGB(0xA0, 0xA1, 0xA2),
 };
@@ -43,6 +45,7 @@ constexpr Palette kLight = {
     .field = SkColorSetRGB(0xF4, 0xF4, 0xF4),
     .field_hover = SkColorSetRGB(0xFB, 0xFB, 0xFB),
     .popover = SkColorSetRGB(0xFB, 0xFB, 0xFB),
+    .card = SkColorSetRGB(0xFB, 0xFB, 0xFB),
     .foreground = SkColorSetRGB(0x1D, 0x1F, 0x22),
     .foreground_dim = SkColorSetRGB(0x5A, 0x5C, 0x5E),
 };
@@ -70,7 +73,15 @@ void AddMoriColorMixer(ui::ColorProvider* provider,
   // The sidebar's trailing outline.
   mixer[kColorVerticalTabStripShadow] = {SK_ColorTRANSPARENT};
 
-  // Tabs.
+  // Tabs. Like Arc, only the active and hovered tabs get a fill.
+  mixer[kColorTabBackgroundInactiveFrameActive] = {p.window};
+  mixer[kColorTabBackgroundInactiveFrameInactive] = {p.window};
+  mixer[kColorTabBackgroundSelectedFrameActive] = {p.hover};
+  mixer[kColorTabBackgroundSelectedFrameInactive] = {p.hover};
+  mixer[kColorTabBackgroundSelectedHoverFrameActive] = {p.hover};
+  mixer[kColorTabBackgroundSelectedHoverFrameInactive] = {p.hover};
+  mixer[kColorNewTabButtonCRBackgroundFrameActive] = {p.window};
+  mixer[kColorNewTabButtonCRBackgroundFrameInactive] = {p.window};
   mixer[kColorTabBackgroundActiveFrameActive] = {p.selected};
   mixer[kColorTabBackgroundActiveFrameInactive] = {p.selected};
   mixer[kColorTabBackgroundInactiveHoverFrameActive] = {p.hover};
@@ -79,6 +90,8 @@ void AddMoriColorMixer(ui::ColorProvider* provider,
   mixer[kColorTabForegroundActiveFrameInactive] = {p.foreground};
   mixer[kColorTabForegroundInactiveFrameActive] = {p.foreground_dim};
   mixer[kColorTabForegroundInactiveFrameInactive] = {p.foreground_dim};
+
+  mixer[kColorNewTabPageBackground] = {p.card};
 
   // Address field and suggestions.
   mixer[kColorLocationBarBackground] = {p.field};

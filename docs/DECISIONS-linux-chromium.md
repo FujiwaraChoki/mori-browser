@@ -1,7 +1,7 @@
 # Mori on Linux: build on Chromium itself, not CEF
 
 Status: decided 2026-10-17. Step 1 (stock build) done the same day; step 2
-(Mori window spike) done 2026-10-18.
+(Mori window spike) done 2026-10-18; step 3 (porting features) in progress.
 
 ## Context
 
@@ -140,8 +140,8 @@ into it, so a Chromium upgrade means rebasing a few hunks, not a fork:
 - `0003-mori-profile-and-policy-dirs`: the profile is `~/.config/mori`, and
   policies come from `/etc/mori/policies`, not Chromium's. This also stops
   Omarchy's Chromium theme policy from marking Mori as managed.
-- `0004-mori-content-card-layout`: with tabs in the sidebar, the page is an
-  inset card with rounded corners.
+- `0004-mori-content-card-layout` (now `0004-mori-window-layout`): with tabs
+  in the sidebar, the page is an inset card with rounded corners.
 - `0005-mori-default-prefs`: tabs in the sidebar and no bookmarks bar by
   default.
 - Also in `0005`: the default search
@@ -178,6 +178,76 @@ Notes for step 3:
   elsewhere in the window, for example into the page.
 - Product rules such as result ordering are still C++. They belong in
   mori-core once Chromium's Rust build is wired up.
+
+## Step 3 progress
+
+Step 2's window still looked like Chrome with vertical tabs: a toolbar across
+the top, Chrome's tab rows, and Chrome's sidebar header. The window now
+follows Arc and Zen's single-toolbar layout.
+
+- **Toolbar in the sidebar** (`mori_toolbar_layout.cc`, `0004`). Chromium's
+  own toolbar moves to the top of the expanded sidebar and lays out in two
+  rows. Row one has the window buttons, back, forward and reload, and
+  downloads, extensions and the menu at the end. Row two is the address
+  field. Moving the real toolbar, rather than drawing a new one, keeps every
+  bubble Chromium anchors to it working: site info, permissions, extension
+  popups and downloads.
+  - The toolbar keeps a `FlexLayout` subclass, because `ToolbarView` holds a
+    pointer to its layout. It switches to two rows while the browser layout
+    sets `kSidebarToolbarLeadingInsetKey`.
+  - The decision is made before layout starts, so every measurement agrees.
+  - The toolbar's one-row height cap is skipped in sidebar mode.
+  - Its minimum height is one row, so the frame sizes the window buttons to
+    the first row.
+  - When the sidebar is collapsed (Ctrl+Shift+L or Ctrl+Alt+C), the toolbar
+    goes back above the page.
+- **Window buttons on the left** (`0004`). All window buttons sit at the
+  start of the sidebar's first row, like Arc's traffic lights. The frame
+  uses the same order for placing buttons and for the exclusion areas it
+  reports to the layout. With the two out of step, the layout saw a trailing
+  exclusion as wide as the window.
+- **No Chrome sidebar header.** The tab strip's own header row (collapse,
+  tab groups, tab search) is hidden in sidebar-toolbar mode.
+- **The page is a card on all four sides.**
+- **Flat tab rows.** Only the active and hovered tabs get a fill.
+- **The address field shows the site.** ungoogled-chromium turns URL
+  elision off; Mori turns it back on.
+- **The new tab page uses the card colour.**
+- **Favorites are pinned tabs**, which Chromium's vertical tab strip already
+  draws as a grid of tiles above the tabs. They are shared by every space,
+  as in Arc.
+- **Spaces are tab groups** (`mori_spaces.cc`, `0006`). Chromium 155's
+  `kTabGroupsFocusing`, enabled by default in Mori, "focuses" a group: the
+  sidebar shows that group's tabs and the pinned tabs, tinted in the group's
+  colour.
+  - A space bar at the bottom of the sidebar shows a dot per space and a
+    "+" for a new space.
+  - Ctrl+Alt+←/→ (and Chromium's Alt+Shift+X/Z) switch spaces. Unfocused,
+    the sidebar shows every space's tabs.
+  - New tabs join the space on screen: from the command bar, links,
+    extensions and the new-tab button. `TabStripModel::AddTab` gives a new
+    unpinned tab the focused group, because Chromium otherwise drops focus
+    as soon as such a tab is inserted.
+  - Switching to an open tab from the command bar shows its space.
+  - Spaces, and which one is focused, come back after a restart.
+- **Session restore by default**, as in Arc.
+- **Command bar fix.** For address-like input, the typed address ranks
+  first, ahead of searches and open tabs.
+- **Test fixture** (`linux/harness/fixture-ext`, `FIXTURE=1 run.sh`). An
+  extension that pins two tabs and makes "Work" and "Personal" groups on
+  first run. Ctrl+Shift+U opens a tab the way an extension or link would.
+
+Still to port from Mori 3:
+- Today and archiving.
+- Renaming spaces and changing their icons from Mori UI. Chromium's group
+  editor already renames and recolours.
+- A sidebar toggle button.
+- Commands in the command bar.
+- A Ctrl+Tab recent-tab switcher.
+- Peek.
+- Importing from Arc and Zen.
+- Content blocking (uBlock Origin, once MV2 support is checked).
+- Branding: the name, icon and window class.
 
 ## Risks
 

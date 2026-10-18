@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "Mori Test Fixture",
+  "version": "1.0",
+  "description": "Test only: opens, pins and groups tabs so the sidebar has something to show.",
+  "permissions": [
+    "tabs",
+    "tabGroups"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "open-tab": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+U"
+      },
+      "description": "Open a tab the way an extension or link would"
+    }
+  }
+}
