@@ -287,7 +287,16 @@
        shadow_frame->SetShadowVisible(true);
 --- a/chrome/browser/ui/views/toolbar/toolbar_view.cc
 +++ b/chrome/browser/ui/views/toolbar/toolbar_view.cc
-@@ -86,6 +86,7 @@
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_little.h"
++
+ #include <algorithm>
+ #include <memory>
+ #include <utility>
+@@ -86,6 +88,7 @@
  #include "chrome/browser/ui/views/global_media_controls/media_toolbar_button_view.h"
  #include "chrome/browser/ui/views/intent_picker_bubble_view.h"
  #include "chrome/browser/ui/views/location_bar/webui_location_bar.h"
@@ -295,7 +304,16 @@
  #include "chrome/browser/ui/views/page_action/page_action_container_view.h"
  #include "chrome/browser/ui/views/page_action/page_action_view.h"
  #include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
-@@ -631,6 +632,9 @@
+@@ -390,6 +393,8 @@
+                                    views::MinimumFlexSizeRule::kScaleToZero,
+                                    views::MaximumFlexSizeRule::kUnbounded));
+     }
++    // Mori: Little Mori's header buttons.
++    mori::MaybeAddLittleHeader(this, browser_view_);
+     initialized_ = true;
+     return;
+   }
+@@ -631,6 +636,9 @@
          l10n_util::GetStringUTF16(IDS_APPMENU_TOOLTIP));
      app_menu_button->SetID(VIEW_ID_APP_MENU);
      app_menu_button_ = AddChildView(std::move(app_menu_button));
@@ -305,7 +323,7 @@
    }
  
    if (base::FeatureList::IsEnabled(contextual_tasks::kContextualTasks) &&
-@@ -1395,7 +1399,9 @@
+@@ -1395,7 +1403,9 @@
        // back button) plus margins.
        // TODO(crbug.com/40663413): Figure out why the height reports incorrectly
        // on some installations.
@@ -316,7 +334,7 @@
          const int max_height = std::max(location_bar_->PreferredSize().height(),
                                          GetBackForwardButtonSize().height()) +
                                 layout_manager_->interior_margin().height();
-@@ -1423,7 +1429,9 @@
+@@ -1423,7 +1433,9 @@
        // back button) plus margins.
        // TODO(crbug.com/40663413): Figure out why the height reports incorrectly
        // on some installations.
@@ -327,7 +345,7 @@
          const int max_height =
              std::max(location_bar_->MinimumSize().height(),
                       GetBackForwardButtonSize(/*minimum_size=*/true).height()) +
-@@ -1561,7 +1569,8 @@
+@@ -1561,7 +1573,8 @@
                                 views::MaximumFlexSizeRule::kUnbounded)
            .WithOrder(location_bar_flex_order);
  

@@ -76,7 +76,20 @@
  #include <optional>
  #include <string>
  
-@@ -600,6 +602,13 @@
+@@ -297,7 +299,11 @@
+   bool IsPinned() const override { return tab_view_->pinned_; }
+ 
+   bool ShouldPaintTabBackgroundColor() const override {
+-    return tab_view_->should_fill_background_tab_color_;
++    // Mori: only favorites sit on a tile at rest (Mori 3's tile_rest);
++    // other rows show a background when selected or hovered.
++    return tab_view_->should_fill_background_tab_color_ &&
++           (tab_view_->pinned_ ||
++            tab_view_->orientation_ == TabStripOrientation::kHorizontal);
+   }
+ 
+   int GetStrokeThickness() const override {
+@@ -600,6 +606,13 @@
    RecordMousePressedInTab();
    UpdateHoverCard(nullptr, TabSlotController::HoverCardUpdateType::kEvent);
  

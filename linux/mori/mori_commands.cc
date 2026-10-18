@@ -9,6 +9,7 @@
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -16,6 +17,7 @@
 #include "chrome/browser/ui/views/mori/mori_command_ids.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_space_editor.h"
+#include "chrome/browser/ui/views/mori/mori_little.h"
 #include "chrome/browser/ui/views/mori/mori_routes.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "chrome/browser/ui/views/mori/mori_tab_names.h"
@@ -94,6 +96,24 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
           IDC_SHARING_HUB_SCREENSHOT);
   command(u"Toggle Sidebar", u"hide show compact mode zen", "panel-left",
           IDC_TOGGLE_VERTICAL_TABS);
+  // Mori 3's setting for links from other apps.
+  if (LinksOpenInLittle(browser->GetProfile())) {
+    action(u"Open Links from Other Apps in the Current Space",
+           u"little mori external default setting", "app-window",
+           base::BindRepeating(
+               [](BrowserWindowInterface* b) {
+                 SetLinksOpenInLittle(b->GetProfile(), false);
+               },
+               browser));
+  } else {
+    action(u"Open Links from Other Apps in Little Mori",
+           u"little mori external default setting", "app-window",
+           base::BindRepeating(
+               [](BrowserWindowInterface* b) {
+                 SetLinksOpenInLittle(b->GetProfile(), true);
+               },
+               browser));
+  }
   command(u"Keyboard Shortcuts", u"keys hotkeys cheatsheet help", "keyboard",
           kCommandShowShortcuts);
   command(u"Settings", u"preferences options", "settings", IDC_OPTIONS);
