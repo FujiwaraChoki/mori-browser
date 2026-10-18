@@ -11,7 +11,23 @@
  #include "chrome/browser/ui/browser_element_identifiers.h"
  #include "chrome/browser/ui/browser_select_file_dialog_controller.h"
  #include "chrome/browser/ui/browser_window.h"
-@@ -707,7 +711,9 @@
+@@ -531,6 +535,15 @@
+   }
+ #endif
+ 
++  // Mori: its window shortcuts work whatever the page does with the keys,
++  // as in Arc (Ctrl+S, Ctrl+Tab, Ctrl+/, Alt+1-9, ...).
++  if (mori::IsMoriCommand(command_id) ||
++      command_id == IDC_TOGGLE_VERTICAL_TABS ||
++      command_id == IDC_FOCUS_NEXT_TAB_GROUP ||
++      command_id == IDC_FOCUS_PREV_TAB_GROUP) {
++    return true;
++  }
++
+   return command_id == IDC_CLOSE_TAB || command_id == IDC_CLOSE_WINDOW ||
+          command_id == IDC_NEW_INCOGNITO_WINDOW ||
+          command_id == IDC_NEW_ISOLATED_WINDOW || command_id == IDC_NEW_TAB ||
+@@ -707,7 +720,9 @@
        ToggleTabScrollButtonsPin(browser_);
        break;
      case IDC_TOGGLE_VERTICAL_TABS:
@@ -22,7 +38,7 @@
        break;
      case IDC_TOGGLE_VERTICAL_TABS_COLLAPSE:
  #if !BUILDFLAG(IS_MAC)
-@@ -752,6 +758,10 @@
+@@ -752,6 +767,10 @@
        CloseWindow(browser_);
        break;
      case IDC_NEW_TAB: {
@@ -33,7 +49,7 @@
        NewTab(browser_, NewTabTypes::kNewTabCommand);
        break;
      }
-@@ -1104,6 +1114,10 @@
+@@ -1104,6 +1123,10 @@
          break;
        }
        base::RecordAction(base::UserMetricsAction("Accel_Focus_Location"));
@@ -44,7 +60,7 @@
        FocusLocationBar(browser_);
        break;
      case IDC_FOCUS_SEARCH:
-@@ -1380,6 +1394,11 @@
+@@ -1380,6 +1403,11 @@
  
      // Tab group commands.
      case IDC_FOCUS_NEXT_TAB_GROUP:
@@ -56,7 +72,7 @@
        if (base::i18n::IsRTL()) {
          FocusPreviousTabGroup(browser_);
        } else {
-@@ -1389,6 +1408,10 @@
+@@ -1389,6 +1417,10 @@
                                      TabGroupShortcut::kFocusNextTabGroup);
        break;
      case IDC_FOCUS_PREV_TAB_GROUP:
@@ -67,7 +83,7 @@
        if (base::i18n::IsRTL()) {
          FocusNextTabGroup(browser_);
        } else {
-@@ -1595,6 +1618,11 @@
+@@ -1595,6 +1627,11 @@
        break;
      }
      default:
@@ -79,7 +95,7 @@
        LOG(WARNING) << "Received Unimplemented Command: " << id;
        break;
    }
-@@ -1716,6 +1744,11 @@
+@@ -1716,6 +1753,11 @@
      return;
    }
  
@@ -114,7 +130,7 @@
    return *accelerators;
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -2721,6 +2721,20 @@
+@@ -2721,6 +2721,26 @@
        "views/frame/browser_root_view.cc",
        "views/frame/browser_view.cc",
        "views/frame/browser_view.h",
@@ -128,6 +144,12 @@
 +      "views/mori/mori_sidebar.h",
 +      "views/mori/mori_commands.cc",
 +      "views/mori/mori_commands.h",
++      "views/mori/mori_cheatsheet.cc",
++      "views/mori/mori_cheatsheet.h",
++      "views/mori/mori_overlay.cc",
++      "views/mori/mori_overlay.h",
++      "views/mori/mori_tab_switcher.cc",
++      "views/mori/mori_tab_switcher.h",
 +      "views/mori/mori_spaces.cc",
 +      "views/mori/mori_spaces.h",
 +      "views/mori/mori_toolbar_layout.cc",

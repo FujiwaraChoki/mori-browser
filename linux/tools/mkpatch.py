@@ -42,6 +42,7 @@ GROUPS = {
     ],
     "0005-mori-default-prefs": [
         "chrome/browser/ui/tabs/tab_strip_prefs.cc",
+        "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_pref_names.cc",
         "components/bookmarks/browser/bookmark_utils.cc",
         "components/search_engines/template_url_prepopulate_data.cc",
         "chrome/browser/prefs/session_startup_pref.cc",

@@ -11,7 +11,9 @@
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/mori/mori_cheatsheet.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
+#include "chrome/browser/ui/views/mori/mori_tab_switcher.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/events/event_constants.h"
@@ -77,6 +79,10 @@ constexpr AcceleratorMapping kMoriAccelerators[] = {
     {ui::VKEY_D, kCtrl | kShift, IDC_DUPLICATE_TAB},
     {ui::VKEY_S, kCtrl | kAlt, kCommandSleepBackgroundTabs},
     {ui::VKEY_R, kCtrl | kAlt, IDC_SHOW_READING_MODE_SIDE_PANEL},
+    // Arc: Ctrl+Tab goes through recent tabs, not the strip's order.
+    {ui::VKEY_TAB, kCtrl, kCommandSwitchRecentTab},
+    {ui::VKEY_TAB, kCtrl | kShift, kCommandSwitchRecentTabBack},
+    {ui::VKEY_OEM_2, kCtrl, kCommandShowShortcuts},
     // Places.
     {ui::VKEY_OEM_COMMA, kCtrl, IDC_OPTIONS},
     {ui::VKEY_Y, kCtrl, IDC_SHOW_HISTORY},
@@ -104,6 +110,15 @@ void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id) {
       break;
     case kCommandTogglePin:
       TogglePin(browser);
+      break;
+    case kCommandSwitchRecentTab:
+      StepTabSwitcher(browser, /*forward=*/true);
+      break;
+    case kCommandSwitchRecentTabBack:
+      StepTabSwitcher(browser, /*forward=*/false);
+      break;
+    case kCommandShowShortcuts:
+      ToggleCheatsheet(browser);
       break;
     case kCommandEditTheme: {
       NavigateParams params(browser, GURL("chrome://settings/appearance"),

@@ -271,6 +271,20 @@
    layout_data_->horizontal_layout =
        CalculateHorizontalLayout(layout_data_->revised_params);
    layout_data_->vertical_tab_strip_animation =
+@@ -1600,7 +1730,12 @@
+     // Apply shadow for expand-on-hover.
+     auto* const shadow_frame =
+         views().vertical_tab_strip_region_view->shadow_frame();
+-    if (vertical_tabs_bottom_corner_amount > 0.0) {
++    if (layout_data_->mori_sidebar_peek) {
++      // Mori: the floating sidebar's shadow, as Mori 3 draws it.
++      shadow_frame->SetShadowCornerRadius(mori::kContentCardRadius + 4);
++      shadow_frame->SetShadowOpacity(1.0);
++      shadow_frame->SetShadowVisible(true);
++    } else if (vertical_tabs_bottom_corner_amount > 0.0) {
+       shadow_frame->SetShadowCornerRadius(vertical_tabs_bottom_corner_size);
+       shadow_frame->SetShadowOpacity(vertical_tabs_bottom_corner_amount);
+       shadow_frame->SetShadowVisible(true);
 --- a/chrome/browser/ui/views/toolbar/toolbar_view.cc
 +++ b/chrome/browser/ui/views/toolbar/toolbar_view.cc
 @@ -86,6 +86,7 @@

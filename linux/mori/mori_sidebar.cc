@@ -1,6 +1,7 @@
 #include "chrome/browser/ui/views/mori/mori_sidebar.h"
 
 #include <memory>
+#include <string_view>
 
 #include "base/memory/raw_ptr.h"
 #include "base/timer/timer.h"
@@ -9,6 +10,7 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
 #include "ui/compositor/layer.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/aura/window.h"
 #include "ui/base/class_property.h"
 #include "ui/events/event.h"
@@ -27,6 +29,8 @@ namespace {
 constexpr int kRevealEdge = 13;
 constexpr int kHideMargin = 24;
 constexpr base::TimeDelta kHideDelay = base::Milliseconds(250);
+// Mori 3's floating sidebar corners (metrics::RADIUS).
+constexpr float kFloatingRadius = 10;
 
 class SidebarState : public ui::EventObserver {
  public:
@@ -109,9 +113,17 @@ class SidebarState : public ui::EventObserver {
   void Relayout() {
     // Peeking, the toolbar's container floats over the page with the tab
     // list (which already paints to its own layer). It needs a layer of its
-    // own, above the page's.
+    // own, above the page's. Together they make Mori 3's floating card, with
+    // its rounded corners.
+    views::View* top = browser_view_->top_container();
+    views::View* tabs = nullptr;
+    for (views::View* child : browser_view_->children()) {
+      if (std::string_view(child->GetClassName()) ==
+          "VerticalTabStripRegionView") {
+        tabs = child;
+      }
+    }
     if (peeking_) {
-      views::View* top = browser_view_->top_container();
       if (top && !top->layer()) {
         top->SetPaintToLayer();
         top->layer()->SetFillsBoundsOpaquely(false);
@@ -119,6 +131,15 @@ class SidebarState : public ui::EventObserver {
       if (top && top->parent() == browser_view_) {
         browser_view_->ReorderChildView(top, browser_view_->children().size());
       }
+    }
+    const float radius = peeking_ ? kFloatingRadius : 0;
+    if (top && top->layer()) {
+      top->layer()->SetRoundedCornerRadius(
+          gfx::RoundedCornersF(radius, radius, 0, 0));
+    }
+    if (tabs && tabs->layer()) {
+      tabs->layer()->SetRoundedCornerRadius(
+          gfx::RoundedCornersF(0, 0, radius, radius));
     }
     browser_view_->InvalidateLayout();
     browser_view_->SchedulePaint();

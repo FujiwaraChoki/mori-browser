@@ -3,6 +3,8 @@
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 
 #include <algorithm>
+#include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -11,6 +13,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/no_destructor.h"
 #include "base/scoped_observation.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
@@ -82,6 +85,12 @@ TabStripModel* SpacesModel(BrowserWindowInterface* browser) {
   }
   TabStripModel* model = browser->GetTabStripModel();
   return model && model->SupportsTabGroups() ? model : nullptr;
+}
+
+// Spaces being deleted on purpose (Delete Space), which must not come back.
+std::set<tab_groups::TabGroupId>& SpacesBeingDeleted() {
+  static base::NoDestructor<std::set<tab_groups::TabGroupId>> deleting;
+  return *deleting;
 }
 
 // The first space in a window without one.
@@ -385,6 +394,24 @@ class SpaceBar : public views::View,
 
   // TabStripModelObserver:
   void OnTabGroupChanged(const TabGroupChange& change) override {
+    // Arc keeps a space whose last tab closed or moved away; a tab group
+    // can't be empty, so the space comes back with a new tab.
+    if (change.type == TabGroupChange::kClosed && change.GetCloseChange() &&
+        change.GetCloseChange()->reason() ==
+            TabGroupChange::TabGroupClosureReason::kGroupClosed) {
+      const bool deleted = SpacesBeingDeleted().erase(change.group) > 0;
+      TabStripModel* model = SpacesModel(browser_);
+      auto known = known_.find(change.group);
+      if (!deleted && model && !model->closing_all() && !model->empty() &&
+          known != known_.end()) {
+        KnownSpace space = known->second;
+        space.was_current = last_current_ == change.group;
+        to_restore_.push_back(space);
+      }
+      if (known != known_.end()) {
+        known_.erase(known);
+      }
+    }
     ScheduleUpdate();
   }
   void OnTabGroupFocusChanged(
@@ -421,9 +448,55 @@ class SpaceBar : public views::View,
   void Update() {
     update_pending_ = false;
     if (groups_ready_) {
+      RestoreEmptiedSpaces();
       KeepEveryTabInASpace();
+      Remember();
     }
     Rebuild();
+  }
+
+  // What each space looked like, so an emptied one can come back as it was.
+  void Remember() {
+    TabStripModel* model = SpacesModel(browser_);
+    if (!model) {
+      return;
+    }
+    known_.clear();
+    for (const tab_groups::TabGroupId& id : SpacesInOrder(model)) {
+      const TabGroup* group = model->group_model()->GetTabGroup(id);
+      known_[id] = {group->visual_data()->title(),
+                    group->visual_data()->color(),
+                    static_cast<int>(group->ListTabs().start()), false};
+    }
+    last_current_ = model->GetFocusedGroup();
+  }
+
+  void RestoreEmptiedSpaces() {
+    TabStripModel* model = SpacesModel(browser_);
+    if (!model || model->closing_all() || model->empty()) {
+      to_restore_.clear();
+      return;
+    }
+    std::vector<KnownSpace> spaces;
+    spaces.swap(to_restore_);
+    for (const KnownSpace& space : spaces) {
+      NavigateParams params(browser_, GURL(chrome::kChromeUINewTabURL),
+                            ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
+      params.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+      params.tabstrip_index = std::min(space.start, model->count());
+      Navigate(&params);
+      const int index =
+          model->GetIndexOfWebContents(params.navigated_or_inserted_contents);
+      if (index == TabStripModel::kNoTab) {
+        continue;
+      }
+      // New tabs join the space on screen; this one starts its own again.
+      const tab_groups::TabGroupId id = model->AddToNewGroup({index});
+      NameSpace(model, id, space.title, space.color);
+      if (space.was_current) {
+        model->SetFocusedGroup(id);
+      }
+    }
   }
 
   // Arc's rule: every tab that isn't a favorite (pinned) is in a space, and
@@ -528,9 +601,19 @@ class SpaceBar : public views::View,
     }
   }
 
+  struct KnownSpace {
+    std::u16string title;
+    tab_groups::TabGroupColorId color;
+    int start;
+    bool was_current;
+  };
+
   raw_ptr<BrowserWindowInterface> browser_;
   bool update_pending_ = false;
   bool groups_ready_ = false;
+  std::map<tab_groups::TabGroupId, KnownSpace> known_;
+  std::optional<tab_groups::TabGroupId> last_current_;
+  std::vector<KnownSpace> to_restore_;
   base::ScopedObservation<tab_groups::TabGroupSyncService,
                           tab_groups::TabGroupSyncService::Observer>
       sync_observation_{this};
@@ -595,6 +678,18 @@ void NewSpace(BrowserWindowInterface* browser) {
   NameSpace(model, id, u"Space " + base::NumberToString16(count + 1),
             kSpaceColors[count % std::size(kSpaceColors)]);
   model->SetFocusedGroup(id);
+}
+
+void DeleteSpace(BrowserWindowInterface* browser) {
+  TabStripModel* model = SpacesModel(browser);
+  if (!model || SpacesInOrder(model).size() < 2 ||
+      !model->GetFocusedGroup().has_value()) {
+    return;
+  }
+  const tab_groups::TabGroupId id = *model->GetFocusedGroup();
+  SwitchSpace(browser, /*forward=*/false);
+  SpacesBeingDeleted().insert(id);
+  model->CloseAllTabsInGroup(id);
 }
 
 void SelectSpace(BrowserWindowInterface* browser, int index) {

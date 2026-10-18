@@ -189,6 +189,10 @@ class ResultRow : public views::Button {
     tab_arrow_ = tab_->AddChildView(std::make_unique<views::ImageView>());
     tab_arrow_->SetPreferredSize(gfx::Size(20, 20));
 
+    // A command's shortcut, as Mori 3's rows show it.
+    shortcut_ = AddChildView(std::make_unique<views::Label>());
+    shortcut_->SetFontList(SizedFont(12, gfx::Font::Weight::NORMAL));
+
     SetPreferredSize(gfx::Size(0, kRowHeight));
     SetFocusBehavior(FocusBehavior::NEVER);
   }
@@ -196,8 +200,11 @@ class ResultRow : public views::Button {
   void SetContent(const ui::ImageModel& icon,
                   const std::u16string& title,
                   const std::u16string& source,
-                  bool tab) {
+                  bool tab,
+                  const std::u16string& shortcut) {
     icon_model_ = icon;
+    shortcut_->SetText(shortcut);
+    shortcut_->SetVisible(!shortcut.empty());
     title_->SetText(title);
     source_->SetText(source);
     dash_->SetVisible(!source.empty());
@@ -249,6 +256,7 @@ class ResultRow : public views::Button {
         c.muted, highlighted_ ? c.highlight : c.panel, 0.7f));
     source_->SetEnabledColor(secondary);
     tab_label_->SetEnabledColor(secondary);
+    shortcut_->SetEnabledColor(secondary);
     tab_arrow_->SetImage(ui::ImageModel::FromVectorIcon(
         vector_icons::kArrowForwardIcon, c.muted, 12));
     tab_arrow_->SetBackground(views::CreateRoundedRectBackground(c.chip, 4));
@@ -269,6 +277,7 @@ class ResultRow : public views::Button {
   raw_ptr<views::View> tab_ = nullptr;
   raw_ptr<views::Label> tab_label_ = nullptr;
   raw_ptr<views::ImageView> tab_arrow_ = nullptr;
+  raw_ptr<views::Label> shortcut_ = nullptr;
 };
 
 BEGIN_METADATA(ResultRow)
@@ -569,9 +578,9 @@ class CommandBar : public views::View,
       }
       row->SetHighlighted(i == selected_);
       if (i < static_cast<int>(commands_.size())) {
-        const Command& command = *commands_[i];
+        const CommandItem& command = commands_[i];
         row->SetContent(ui::ImageModel::FromVectorIcon(*command.icon),
-                        std::u16string(command.title), u"", false);
+                        command.title, u"", false, command.shortcut);
         continue;
       }
       const AutocompleteMatch& match = matches_[i - commands_.size()];
@@ -607,7 +616,7 @@ class CommandBar : public views::View,
           source = host;
         }
       }
-      row->SetContent(icon, title, source, IsTabMatch(match));
+      row->SetContent(icon, title, source, IsTabMatch(match), u"");
     }
     const bool has_rows = count > 0;
     hairline_->SetVisible(has_rows);
@@ -640,9 +649,9 @@ class CommandBar : public views::View,
       return;
     }
     if (index < static_cast<int>(commands_.size())) {
-      const Command* command = commands_[index];
+      base::RepeatingClosure run = commands_[index].run;
       Hide();
-      command->run(browser_view_->browser());
+      run.Run();
       return;
     }
     AutocompleteMatch match = matches_[index - commands_.size()];
@@ -721,7 +730,7 @@ class CommandBar : public views::View,
   std::u16string engine_name_;
   std::vector<raw_ptr<ResultRow>> rows_;
   std::vector<AutocompleteMatch> matches_;
-  std::vector<const Command*> commands_;
+  std::vector<CommandItem> commands_;
   bool input_is_url_ = false;
   int selected_ = 0;
   base::ScopedObservation<AutocompleteController,

@@ -21,7 +21,12 @@ enum CommandId {
   kCommandTogglePin,
   kCommandSelectSpace1,
   kCommandSelectSpace9 = kCommandSelectSpace1 + 8,
-  kCommandLast = kCommandSelectSpace9,
+  // Ctrl+Tab and Ctrl+Shift+Tab: recent tabs (mori_tab_switcher.h).
+  kCommandSwitchRecentTab,
+  kCommandSwitchRecentTabBack,
+  // Ctrl+/: the shortcut cheatsheet.
+  kCommandShowShortcuts,
+  kCommandLast = kCommandShowShortcuts,
 };
 
 bool IsMoriCommand(int command_id);
