@@ -17,6 +17,8 @@
 #include "base/scoped_observation.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "cc/paint/paint_flags.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
@@ -59,6 +61,14 @@
 #include "ui/color/color_id.h"
 #include "ui/base/models/image_model.h"
 #include "ui/events/event.h"
+#include "ui/events/event_observer.h"
+#include "ui/views/event_monitor.h"
+#include "ui/views/widget/widget.h"
+#include "ui/aura/window.h"
+#include "ui/gfx/geometry/point_conversions.h"
+#include "content/public/browser/web_contents.h"
+#include "chrome/browser/ui/tabs/tab_enums.h"
+#include <string_view>
 #include "ui/gfx/font_list.h"
 #include "url/gurl.h"
 
@@ -162,6 +172,9 @@ constexpr int kRowContentInset = 7;
 constexpr int kLabelHeight = 24;
 constexpr int kDividerHeight = 20;
 
+constexpr base::TimeDelta kAutoArchiveAfter = base::Hours(24);
+constexpr base::TimeDelta kArchiveCheckInterval = base::Minutes(10);
+
 // Mori 3's muted sidebar text (the space label, "New Tab").
 SkColor MutedColor(const views::View* view) {
   const SkColor frame = view->GetColorProvider()->GetColor(ui::kColorFrameActive);
@@ -208,12 +221,114 @@ class SpaceLabel : public views::Label {
 BEGIN_METADATA(SpaceLabel)
 END_METADATA
 
-// A 1px line in white (or black) at low opacity, as Mori 3's divider.
-class SpaceDivider : public views::View {
+// "↓ Clear" at the end of the divider: closes the space's tabs (Zen's
+// Clear, Arc's archive of Today).
+class ClearButton : public views::Button {
+  METADATA_HEADER(ClearButton, views::Button)
+
+ public:
+  explicit ClearButton(PressedCallback callback)
+      : views::Button(std::move(callback)) {
+    auto* layout = SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kHorizontal,
+        gfx::Insets::TLBR(0, 8, 0, 2), 3));
+    layout->set_cross_axis_alignment(
+        views::BoxLayout::CrossAxisAlignment::kCenter);
+    icon_ = AddChildView(std::make_unique<views::ImageView>());
+    label_ = AddChildView(std::make_unique<views::Label>(u"Clear"));
+    label_->SetFontList(views::Label::GetDefaultFontList()
+                            .DeriveWithSizeDelta(
+                                11 - views::Label::GetDefaultFontList()
+                                         .GetFontSize())
+                            .DeriveWithWeight(gfx::Font::Weight::MEDIUM));
+    SetTooltipText(u"Close every tab in this space");
+    SetAccessibleName(u"Clear");
+  }
+
+  void OnThemeChanged() override {
+    views::Button::OnThemeChanged();
+    UpdateColors();
+  }
+  void StateChanged(ButtonState old_state) override { UpdateColors(); }
+
+ private:
+  // Half the muted colour at rest, the full one under the pointer.
+  void UpdateColors() {
+    if (!GetColorProvider()) {
+      return;
+    }
+    const SkColor frame =
+        GetColorProvider()->GetColor(ui::kColorFrameActive);
+    const SkColor muted = MutedColor(this);
+    const SkColor color =
+        GetState() == STATE_HOVERED || GetState() == STATE_PRESSED
+            ? muted
+            : color_utils::AlphaBlend(muted, frame, 0.5f);
+    icon_->SetImage(
+        ui::ImageModel::FromVectorIcon(LucideIcon("arrow-down"), color, 10));
+    label_->SetEnabledColor(color);
+  }
+
+  raw_ptr<views::ImageView> icon_ = nullptr;
+  raw_ptr<views::Label> label_ = nullptr;
+};
+
+BEGIN_METADATA(ClearButton)
+END_METADATA
+
+// A 1px line in white (or black) at low opacity, as Mori 3's divider. While
+// the pointer is over the sidebar and the space has tabs to clear, its end
+// turns into "Clear".
+class SpaceDivider : public views::View, public ui::EventObserver {
   METADATA_HEADER(SpaceDivider, views::View)
 
  public:
-  SpaceDivider() { SetPreferredSize(gfx::Size(0, kDividerHeight)); }
+  explicit SpaceDivider(views::Button::PressedCallback clear) {
+    SetPreferredSize(gfx::Size(0, kDividerHeight));
+    clear_ = AddChildView(std::make_unique<ClearButton>(std::move(clear)));
+    clear_->SetVisible(false);
+  }
+
+  void SetClearable(bool clearable) {
+    clearable_ = clearable;
+    UpdateClear();
+  }
+
+  void AddedToWidget() override {
+    // An application monitor: a window monitor misses moves over the page.
+    monitor_ = views::EventMonitor::CreateApplicationMonitor(
+        this, GetWidget()->GetNativeWindow(),
+        {ui::EventType::kMouseMoved, ui::EventType::kMouseExited});
+  }
+  void RemovedFromWidget() override { monitor_.reset(); }
+
+  // ui::EventObserver:
+  using views::View::OnEvent;
+  void OnEvent(const ui::Event& event) override {
+    const views::View* sidebar = Sidebar();
+    // Only this window's events; their root location is in its coordinates.
+    auto* target = static_cast<aura::Window*>(event.target());
+    if (!sidebar || !event.IsLocatedEvent() || !target || !GetWidget() ||
+        target->GetRootWindow() !=
+            GetWidget()->GetNativeWindow()->GetRootWindow()) {
+      return;
+    }
+    // An exit also comes when the pointer crosses from the page onto the
+    // sidebar; where it is decides.
+    gfx::Point point =
+        gfx::ToFlooredPoint(event.AsLocatedEvent()->root_location_f());
+    views::View::ConvertPointFromWidget(sidebar, &point);
+    const bool over = sidebar->GetLocalBounds().Contains(point);
+    if (over != pointer_over_sidebar_) {
+      pointer_over_sidebar_ = over;
+      UpdateClear();
+    }
+  }
+
+  void Layout(PassKey) override {
+    const gfx::Size size = clear_->GetPreferredSize();
+    clear_->SetBounds(width() - size.width(), 0, size.width(), height());
+  }
 
   void OnPaint(gfx::Canvas* canvas) override {
     const ui::ColorProvider* colors = GetColorProvider();
@@ -221,8 +336,33 @@ class SpaceDivider : public views::View {
     const bool dark = color_utils::IsDark(frame);
     const SkColor line = color_utils::AlphaBlend(
         dark ? SK_ColorWHITE : SK_ColorBLACK, frame, dark ? 0.09f : 0.10f);
-    canvas->FillRect(gfx::Rect(4, height() / 2, width() - 4, 1), line);
+    const int end = clear_->GetVisible() ? clear_->x() : width();
+    canvas->FillRect(gfx::Rect(4, height() / 2, end - 4, 1), line);
   }
+
+ private:
+  // The vertical tab strip this divider sits in.
+  const views::View* Sidebar() const {
+    for (const views::View* v = parent(); v; v = v->parent()) {
+      if (std::string_view(v->GetClassName()) == "VerticalTabStripRegionView") {
+        return v;
+      }
+    }
+    return nullptr;
+  }
+
+  void UpdateClear() {
+    const bool show = clearable_ && pointer_over_sidebar_;
+    if (show != clear_->GetVisible()) {
+      clear_->SetVisible(show);
+      SchedulePaint();
+    }
+  }
+
+  raw_ptr<ClearButton> clear_ = nullptr;
+  bool clearable_ = false;
+  bool pointer_over_sidebar_ = false;
+  std::unique_ptr<views::EventMonitor> monitor_;
 };
 
 BEGIN_METADATA(SpaceDivider)
@@ -285,7 +425,9 @@ class MoriSpaceHeader : public views::View, public TabStripModelObserver {
         views::BoxLayout::Orientation::kVertical));
     label_ = AddChildView(std::make_unique<SpaceLabel>(base::BindRepeating(
         &MoriSpaceHeader::EditSpace, base::Unretained(this))));
-    divider_ = AddChildView(std::make_unique<SpaceDivider>());
+    divider_ = AddChildView(std::make_unique<SpaceDivider>(base::BindRepeating(
+        [](BrowserWindowInterface* browser) { ClearSpace(browser); },
+        browser)));
     AddChildView(std::make_unique<NewTabRow>(base::BindRepeating(
         [](BrowserWindowInterface* browser) {
           // Opens the command bar (see the IDC_NEW_TAB hook).
@@ -331,6 +473,15 @@ class MoriSpaceHeader : public views::View, public TabStripModelObserver {
     label_->SetProperty(views::kMarginsKey,
                         gfx::Insets::TLBR(has_favorites ? 3 : 5, 0, 0, 0));
     divider_->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(9, 0, 3, 0));
+    // Nothing to clear in a space holding just a new tab.
+    const gfx::Range tabs =
+        model->group_model()->GetTabGroup(*space)->ListTabs();
+    content::WebContents* first = model->GetWebContentsAt(tabs.start());
+    divider_->SetClearable(
+        tabs.length() > 1 ||
+        (first && first->GetLastCommittedURL() !=
+                      GURL(chrome::kChromeUINewTabURL) &&
+         first->GetVisibleURL() != GURL(chrome::kChromeUINewTabURL)));
     SetVisible(true);
     InvalidateLayout();
   }
@@ -376,6 +527,10 @@ class SpaceBar : public views::View,
       sync_observation_.Observe(service);
     } else {
       groups_ready_ = true;
+    if (!archive_timer_.IsRunning()) {
+      archive_timer_.Start(FROM_HERE, kArchiveCheckInterval, this,
+                           &SpaceBar::ArchiveIdleTabs);
+    }
     }
     if (auto* state = tabs::VerticalTabStripStateController::From(browser_)) {
       collapse_subscription_ = state->RegisterOnCollapseChanged(
@@ -388,6 +543,10 @@ class SpaceBar : public views::View,
   // tab_groups::TabGroupSyncService::Observer:
   void OnInitialized() override {
     groups_ready_ = true;
+    if (!archive_timer_.IsRunning()) {
+      archive_timer_.Start(FROM_HERE, kArchiveCheckInterval, this,
+                           &SpaceBar::ArchiveIdleTabs);
+    }
     ScheduleUpdate();
   }
   void OnWillBeDestroyed() override { sync_observation_.Reset(); }
@@ -443,6 +602,36 @@ class SpaceBar : public views::View,
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
         base::BindOnce(&SpaceBar::Update, weak_factory_.GetWeakPtr()));
+  }
+
+  // Arc's auto-archive (Mori 3's default of 24 hours): space tabs nobody
+  // looked at for a day close. Favorites, sound and the tab on screen stay;
+  // closed tabs stay in History and Reopen Closed Tab.
+  void ArchiveIdleTabs() {
+    TabStripModel* model = SpacesModel(browser_);
+    if (!model || !groups_ready_) {
+      return;
+    }
+    const base::Time cutoff = base::Time::Now() - kAutoArchiveAfter;
+    std::vector<tabs::TabHandle> idle;
+    for (int i = 0; i < model->count(); ++i) {
+      tabs::TabInterface* tab = model->GetTabAtIndex(i);
+      content::WebContents* contents = tab->GetContents();
+      if (i == model->active_index() || tab->IsPinned() || !tab->GetGroup() ||
+          tab->IsSplit() || !contents || contents->IsCurrentlyAudible() ||
+          !contents->GetLastCommittedURL().SchemeIsHTTPOrHTTPS() ||
+          contents->GetLastActiveTime() > cutoff) {
+        continue;
+      }
+      idle.push_back(tab->GetHandle());
+    }
+    for (const tabs::TabHandle& handle : idle) {
+      tabs::TabInterface* tab = handle.Get();
+      const int index = tab ? model->GetIndexOfTab(tab) : TabStripModel::kNoTab;
+      if (index != TabStripModel::kNoTab) {
+        model->CloseWebContentsAt(index, TabCloseTypes::CLOSE_NONE);
+      }
+    }
   }
 
   void Update() {
@@ -614,6 +803,7 @@ class SpaceBar : public views::View,
   std::map<tab_groups::TabGroupId, KnownSpace> known_;
   std::optional<tab_groups::TabGroupId> last_current_;
   std::vector<KnownSpace> to_restore_;
+  base::RepeatingTimer archive_timer_;
   base::ScopedObservation<tab_groups::TabGroupSyncService,
                           tab_groups::TabGroupSyncService::Observer>
       sync_observation_{this};
@@ -678,6 +868,44 @@ void NewSpace(BrowserWindowInterface* browser) {
   NameSpace(model, id, u"Space " + base::NumberToString16(count + 1),
             kSpaceColors[count % std::size(kSpaceColors)]);
   model->SetFocusedGroup(id);
+}
+
+void ClearSpace(BrowserWindowInterface* browser) {
+  TabStripModel* model = SpacesModel(browser);
+  const std::optional<tab_groups::TabGroupId> space =
+      model ? model->GetFocusedGroup() : std::nullopt;
+  if (!space || !model->group_model()->ContainsTabGroup(*space)) {
+    return;
+  }
+  std::vector<tabs::TabHandle> old_tabs;
+  const gfx::Range range =
+      model->group_model()->GetTabGroup(*space)->ListTabs();
+  for (size_t i = range.start(); i < range.end(); ++i) {
+    old_tabs.push_back(model->GetTabAtIndex(i)->GetHandle());
+  }
+  // The space keeps a new tab on screen, as Arc's empty space.
+  NavigateParams params(browser, GURL(chrome::kChromeUINewTabURL),
+                        ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
+  params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
+  params.tabstrip_index =
+      model->group_model()->GetTabGroup(*space)->ListTabs().start();
+  Navigate(&params);
+  const int index =
+      model->GetIndexOfWebContents(params.navigated_or_inserted_contents);
+  if (index == TabStripModel::kNoTab) {
+    return;
+  }
+  if (model->GetTabGroupForTab(index) != space) {
+    model->AddToExistingGroup({index}, *space);
+  }
+  for (const tabs::TabHandle& handle : old_tabs) {
+    tabs::TabInterface* tab = handle.Get();
+    const int old_index =
+        tab ? model->GetIndexOfTab(tab) : TabStripModel::kNoTab;
+    if (old_index != TabStripModel::kNoTab) {
+      model->CloseWebContentsAt(old_index, TabCloseTypes::CLOSE_USER_GESTURE);
+    }
+  }
 }
 
 void DeleteSpace(BrowserWindowInterface* browser) {

@@ -37,6 +37,10 @@ void ShowSpaceOfActiveTab(BrowserWindowInterface* browser);
 // Makes a new space with one new tab and shows it.
 void NewSpace(BrowserWindowInterface* browser);
 
+// Closes every tab of the space on screen, leaving it a new tab (the
+// divider's "Clear").
+void ClearSpace(BrowserWindowInterface* browser);
+
 // Deletes the space on screen and its tabs (there has to be another space).
 // Otherwise a space whose last tab goes away comes back with a new tab.
 void DeleteSpace(BrowserWindowInterface* browser);
