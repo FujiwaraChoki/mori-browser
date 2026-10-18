@@ -1,6 +1,7 @@
 # Mori on Linux: build on Chromium itself, not CEF
 
-Status: decided 2026-10-17. Step 1 (stock build) done the same day; step 2 not started.
+Status: decided 2026-10-17. Step 1 (stock build) done the same day; step 2
+(Mori window spike) done 2026-10-18.
 
 ## Context
 
@@ -81,18 +82,20 @@ a Chromium build.
    **Done 2026-10-17** (see "Step 1 setup" and "Step 1 results" below).
 2. Spike a Mori window: a custom browser window with a Views sidebar and
    command bar around real Chromium tabs, with an extension installed and
-   working.
+   working. **Done 2026-10-18** (see "Step 2 results").
 3. Port features from Mori 3's model and the Mori 2 bridge.
 
 ## Step 1 setup
 
+- Mori's own files are tracked in `linux/` (see `linux/README.md`): build
+  scripts, patches, the Views sources in `linux/mori/` and the test harness.
 - Checkout: `ungoogled-chromium-linux/` in this worktree (git-ignored). It is
   a clone of `ungoogled-chromium-portablelinux` (with the `ungoogled-chromium`
   submodule) at 155.0.8059.84-1. Sources are in
   `ungoogled-chromium-linux/build/src`, build output in `out/Default`.
-- `mori-fetch.sh` downloads the source tarball and applies pruning, patches
+- `linux/fetch.sh` downloads the source tarball and applies pruning, patches
   and domain substitution, using the portable repo's `scripts/shared.sh`.
-- `mori-build.sh` builds natively on Arch, without the portable repo's Debian
+- `linux/build.sh` builds natively on Arch, without the portable repo's Debian
   Docker image:
   - It downloads Chromium's own clang, Rust and Debian bullseye sysroot.
   - Tools the portable patches expect in `/usr/bin` are installed locally
@@ -120,12 +123,61 @@ a Chromium build.
   `managed_profile_creation_controller.cc`, but a test-only call to it in
   `profile_management_disclaimer_service.cc` survives in non-official
   builds. `mori-patches/0001-drop-unreachable-managed-profile-test-path.patch`
-  removes the call. `mori-build.sh` applies `mori-patches/*.patch`.
+  removes the call. `linux/build.sh` applies `linux/patches/*.patch`.
 - "Your browser is managed" appears because this machine has
   `/etc/chromium/policies/managed/color.json` (Omarchy theming). A Mori-branded
   build reads its own policy directory.
-- Test harness (headless sway; `start.sh`, `shot.sh`, `key.sh`, `stop.sh`):
-  `ungoogled-chromium-linux/harness/`.
+- Test harness (headless sway): `linux/harness/`.
+
+## Step 2 results
+
+Mori's code sits in `linux/mori/` (linked into the tree as
+`chrome/browser/ui/views/mori/`). Chromium files get small patches that call
+into it, so a Chromium upgrade means rebasing a few hunks, not a fork:
+
+- `0002-mori-hooks`: Ctrl+T and Ctrl+L open Mori's command bar; Mori's
+  sources and colour mixer join the build.
+- `0003-mori-profile-and-policy-dirs`: the profile is `~/.config/mori`, and
+  policies come from `/etc/mori/policies`, not Chromium's. This also stops
+  Omarchy's Chromium theme policy from marking Mori as managed.
+- `0004-mori-content-card-layout`: with tabs in the sidebar, the page is an
+  inset card with rounded corners.
+- `0005-mori-default-prefs`: tabs in the sidebar and no bookmarks bar by
+  default.
+- Also in `0005`: the default search
+  engine is DuckDuckGo, because ungoogled-chromium replaces Google with
+  "No Search".
+
+What the spike shows:
+
+- **Sidebar.** Chromium 155 ships a vertical tab strip, so the sidebar's tab
+  list is Chromium's own, with dragging, groups, pinning and context menus.
+  Mori restyles it rather than replacing it. Spaces, favorites and Today are
+  step 3 and will be Mori views around this list.
+- **Command bar** (`mori_command_bar.cc`). A floating field over the page, in
+  a child widget like Chromium's find bar. Results come from Chromium's
+  autocomplete: what was typed, history, bookmarks, search and open tabs
+  ("Switch to tab"). Ctrl+T opens a result in a new tab. Ctrl+L starts from
+  the current URL and replaces the page. When the input looks like an
+  address, the typed address ranks above open tabs.
+- **Look** (`mori_color_mixer.cc`, `mori_layout.h`). Mori 3's Zen palette
+  (`#131313` window in dark mode, `#E9E9E9` in light mode) is one surface
+  for the sidebar and toolbar, with the page as a rounded card. Installed
+  themes and the GTK theme are left alone.
+- **Extensions.** An unpacked MV3 extension's content script runs, and its
+  popup opens from the toolbar (`Ctrl+Shift+Y` in the test extension).
+- **Rebuilds** after a change to Mori's code take one to three minutes at
+  idle priority.
+
+Notes for step 3:
+
+- The command bar's widget must not be activatable (like the find bar).
+  Otherwise the browser window loses activation when it opens, focus clears,
+  and the bar closes at once.
+- The bar stays open when the window loses focus and closes when focus moves
+  elsewhere in the window, for example into the page.
+- Product rules such as result ordering are still C++. They belong in
+  mori-core once Chromium's Rust build is wired up.
 
 ## Risks
 

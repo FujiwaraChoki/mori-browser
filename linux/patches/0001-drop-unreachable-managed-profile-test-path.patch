@@ -1,0 +1,32 @@
+--- a/chrome/browser/enterprise/signin/profile_management_disclaimer_service.cc
++++ b/chrome/browser/enterprise/signin/profile_management_disclaimer_service.cc
+@@ -11,6 +11,7 @@
+ #include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/metrics/histogram_functions.h"
++#include "base/notreached.h"
+ #include "base/metrics/user_metrics.h"
+ #include "base/metrics/user_metrics_action.h"
+ #include "chrome/browser/browser_process.h"
+@@ -514,18 +515,9 @@
+ 
+   if (profile_separation_policies_for_testing_.has_value() ||
+       user_choice_for_testing_.has_value()) {
+-    CHECK_IS_TEST();
+-    state_->profile_creation_controller =
+-        ManagedProfileCreationController::CreateManagedProfileForTesting(
+-            &profile_.get(), GetExtendedAccountInfo(state_->account_id),
+-            // The access point always has a value if the account_id is set.
+-            *state_->access_point,
+-            base::BindOnce(&ProfileManagementDisclaimerService::
+-                               OnManagedProfileCreationResult,
+-                           weak_ptr_factory_.GetWeakPtr()),
+-            profile_separation_policies_for_testing_,
+-            user_choice_for_testing_);
+-    return;
++    // ungoogled-chromium drops managed_profile_creation_controller.cc
++    // from the build; this test-only path is unreachable in Mori.
++    NOTREACHED();
+   }
+ 
+   state_->user_cloud_signin_restriction_policy_fetcher =

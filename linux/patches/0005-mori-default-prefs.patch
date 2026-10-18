@@ -1,0 +1,38 @@
+--- a/chrome/browser/ui/tabs/tab_strip_prefs.cc
++++ b/chrome/browser/ui/tabs/tab_strip_prefs.cc
+@@ -24,7 +24,8 @@
+   registry->RegisterBooleanPref(prefs::kOrganizerPanelPinnedToTabstrip, true);
+   registry->RegisterBooleanPref(prefs::kEverythingMenuPinnedToTabstrip, true);
+   registry->RegisterBooleanPref(prefs::kTabScrollButtonsPinnedToTabstrip, true);
+-  registry->RegisterBooleanPref(prefs::kVerticalTabsEnabled, false);
++  // Mori: tabs live in the sidebar.
++  registry->RegisterBooleanPref(prefs::kVerticalTabsEnabled, true);
+   registry->RegisterBooleanPref(
+       prefs::kVerticalTabsExpandOnHoverEnabled,
+       tabs::kVerticalTabsExpandOnHoverDefaultEnabled.Get());
+--- a/components/bookmarks/browser/bookmark_utils.cc
++++ b/components/bookmarks/browser/bookmark_utils.cc
+@@ -451,7 +451,8 @@
+ 
+ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
+   registry->RegisterBooleanPref(
+-      prefs::kShowBookmarkBar, true,
++      // Mori: no bookmarks bar by default; bookmarks live in the sidebar.
++      prefs::kShowBookmarkBar, false,
+       user_prefs::PrefRegistrySyncable::SYNCABLE_PREF);
+   // `BookmarkBarVisibilityState::kOnlyShowOnNtp` is equivalent to
+   // `kShowBookmarkBar` set to false.
+--- a/components/search_engines/template_url_prepopulate_data.cc
++++ b/components/search_engines/template_url_prepopulate_data.cc
+@@ -317,8 +317,10 @@
+     PrefService& prefs,
+     const std::vector<raw_ptr<const PrepopulatedEngine>>&
+         regional_prepopulated_engines) {
++  // Mori: ungoogled-chromium turns Google into "No Search", so default to
++  // DuckDuckGo. Users can pick any engine in settings.
+   return FindPrepopulatedEngineInternal(prefs, regional_prepopulated_engines,
+-                                        google.id,
++                                        duckduckgo.id,
+                                         /*use_first_as_fallback=*/true);
+ }
+ 

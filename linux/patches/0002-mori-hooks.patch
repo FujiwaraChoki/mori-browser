@@ -1,0 +1,72 @@
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -57,6 +57,7 @@
+ #include "chrome/browser/ui/actions/command_action_updater.h"
+ #include "chrome/browser/ui/browser_actions.h"
+ #include "chrome/browser/ui/browser_commands.h"
++#include "chrome/browser/ui/views/mori/mori_command_bar.h"
+ #include "chrome/browser/ui/browser_element_identifiers.h"
+ #include "chrome/browser/ui/browser_select_file_dialog_controller.h"
+ #include "chrome/browser/ui/browser_window.h"
+@@ -752,6 +753,10 @@
+       CloseWindow(browser_);
+       break;
+     case IDC_NEW_TAB: {
++      if (mori::ShowCommandBar(browser_.get(),
++                               mori::CommandBarMode::kNewTab)) {
++        break;
++      }
+       NewTab(browser_, NewTabTypes::kNewTabCommand);
+       break;
+     }
+@@ -1104,6 +1109,10 @@
+         break;
+       }
+       base::RecordAction(base::UserMetricsAction("Accel_Focus_Location"));
++      if (mori::ShowCommandBar(browser_.get(),
++                               mori::CommandBarMode::kCurrentTab)) {
++        break;
++      }
+       FocusLocationBar(browser_);
+       break;
+     case IDC_FOCUS_SEARCH:
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -2721,6 +2721,8 @@
+       "views/frame/browser_root_view.cc",
+       "views/frame/browser_view.cc",
+       "views/frame/browser_view.h",
++      "views/mori/mori_command_bar.cc",
++      "views/mori/mori_command_bar.h",
+       "views/frame/browser_widget.cc",
+       "views/frame/browser_widget.h",
+       "views/frame/browser_window_factory.cc",
+--- a/chrome/browser/ui/color/BUILD.gn
++++ b/chrome/browser/ui/color/BUILD.gn
+@@ -22,6 +22,8 @@
+     "chrome_color_mixer.h",
+     "chrome_color_mixers.cc",
+     "chrome_color_mixers.h",
++    "../views/mori/mori_color_mixer.cc",
++    "../views/mori/mori_color_mixer.h",
+     "chrome_color_provider_utils.cc",
+     "chrome_color_provider_utils.h",
+     "material_chrome_color_mixer.cc",
+--- a/chrome/browser/ui/color/chrome_color_mixers.cc
++++ b/chrome/browser/ui/color/chrome_color_mixers.cc
+@@ -23,6 +23,7 @@
+ #include "chrome/browser/ui/color/omnibox_color_mixer.h"
+ #include "chrome/browser/ui/color/product_specifications_color_mixer.h"
+ #include "chrome/browser/ui/color/tab_strip_color_mixer.h"
++#include "chrome/browser/ui/views/mori/mori_color_mixer.h"
+ #include "ui/color/color_provider_utils.h"
+ 
+ namespace {
+@@ -87,6 +88,7 @@
+ 
+   // Must be the last one in order to override other mixer colors.
+   AddNativeChromeColorMixer(provider, key);
++  mori::AddMoriColorMixer(provider, key);
+ 
+   if (key.custom_theme) {
+     key.custom_theme->AddColorMixers(provider, key);
