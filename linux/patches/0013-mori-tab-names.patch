@@ -1,0 +1,92 @@
+--- a/chrome/browser/ui/tab_ui_helper.cc
++++ b/chrome/browser/ui/tab_ui_helper.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/ui/tab_ui_helper.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_tab_names.h"
++
+ #include <optional>
+ 
+ #include "base/byte_size.h"
+@@ -125,6 +127,11 @@
+ }
+ 
+ std::u16string TabUIHelper::GetTitle() const {
++  // Mori: the user's name for the tab, if any.
++  if (std::optional<std::u16string> name = mori::GetTabName(web_contents())) {
++    return *name;
++  }
++
+   if (auto* tab_features = tab().GetTabFeatures()) {
+     const tab_groups::SavedTabGroupWebContentsListener* wc_listener =
+         tab_features->saved_tab_group_web_contents_listener();
+--- a/chrome/browser/ui/browser_tabrestore.cc
++++ b/chrome/browser/ui/browser_tabrestore.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/ui/browser_tabrestore.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_tab_names.h"
++
+ #include <map>
+ #include <memory>
+ #include <utility>
+@@ -83,6 +85,7 @@
+                                extension_app_id);
+ 
+   glic::RestoreGlicStateFromExtraData(web_contents.get(), extra_data);
++  mori::RestoreTabName(web_contents.get(), extra_data);
+   send_tab_to_self::SendTabToSelfActivationTracker::RestoreFromExtraData(
+       web_contents.get(), extra_data);
+ 
+--- a/chrome/browser/sessions/session_service_base.cc
++++ b/chrome/browser/sessions/session_service_base.cc
+@@ -4,6 +4,9 @@
+ 
+ #include "chrome/browser/sessions/session_service_base.h"
+ 
++#include "base/strings/utf_string_conversions.h"
++#include "chrome/browser/ui/views/mori/mori_tab_names.h"
++
+ #include <stddef.h>
+ 
+ #include <memory>
+@@ -613,6 +616,12 @@
+   sessions::SessionTabHelper* session_tab_helper =
+       sessions::SessionTabHelper::FromWebContents(tab);
+   const SessionID session_id(session_tab_helper->session_id());
++  // Mori: a tab's name outlives rewrites of the session file.
++  if (std::optional<std::u16string> name = mori::GetTabName(tab)) {
++    command_storage_manager()->AppendRebuildCommand(
++        sessions::CreateAddTabExtraDataCommand(session_id, mori::kTabNameKey,
++                                               base::UTF16ToUTF8(*name)));
++  }
+   command_storage_manager()->AppendRebuildCommand(
+       sessions::CreateSetTabWindowCommand(window_id, session_id));
+ 
+--- a/chrome/browser/ui/views/tabs/common/tab_view.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_view.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/ui/views/tabs/common/tab_view.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_tab_names.h"
++
+ #include <optional>
+ #include <string>
+ 
+@@ -600,6 +602,13 @@
+   RecordMousePressedInTab();
+   UpdateHoverCard(nullptr, TabSlotController::HoverCardUpdateType::kEvent);
+ 
++  // Mori: a double-click names the tab (Arc's Rename Tab).
++  if (event.IsOnlyLeftMouseButton() && event.GetClickCount() == 2 &&
++      !event.IsShiftDown() && !IsSelectionModifierDown(event)) {
++    mori::BeginTabRename(this);
++    return true;
++  }
++
+   // Capture the selection model before selection changes.
+   const ui::ListSelectionModel original_selection_model =
+       controller->GetSelectionModel();

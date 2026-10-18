@@ -74,6 +74,12 @@ GROUPS = {
     "0011-capture-overlay-offset": [
         "chrome/browser/image_editor/screenshot_flow.cc",
     ],
+    "0013-mori-tab-names": [
+        "chrome/browser/ui/tab_ui_helper.cc",
+        "chrome/browser/ui/browser_tabrestore.cc",
+        "chrome/browser/sessions/session_service_base.cc",
+        "chrome/browser/ui/views/tabs/common/tab_view.cc",
+    ],
     "0012-bubbles-stay-in-window": [
         "ui/views/bubble/bubble_dialog_delegate_view.cc",
     ],

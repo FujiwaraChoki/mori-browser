@@ -15,6 +15,7 @@
 #include "chrome/browser/ui/views/mori/mori_command_ids.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
+#include "chrome/browser/ui/views/mori/mori_tab_names.h"
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
@@ -130,6 +131,8 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
             u"pin unpin tab favourite", tab->IsPinned() ? "pin-off" : "pin",
             kCommandTogglePin);
     command(u"Duplicate Tab", u"copy clone", "copy", IDC_DUPLICATE_TAB);
+    action(u"Rename Tab", u"title name", "pencil",
+           base::BindRepeating(&RenameActiveTab, browser));
     command(u"Bookmark Page", u"star favorite", "star",
             IDC_BOOKMARK_THIS_TAB);
     command(u"Split View", u"side by side split screen", "columns-2",

@@ -93,15 +93,20 @@ fn main() {
     }
     thread::sleep(Duration::from_millis(60));
     match args.get(1).map(String::as_str) {
-        Some("click") => {
+        Some(kind @ ("click" | "dblclick")) => {
             let button = if args.get(4).map(String::as_str) == Some("right") { 0x111 } else { 0x110 };
-            pointer.button(now_ms(), button, wayland_client::protocol::wl_pointer::ButtonState::Pressed);
-            pointer.frame();
-            flush(&mut queue, &mut state);
-            thread::sleep(Duration::from_millis(40));
-            pointer.button(now_ms(), button, wayland_client::protocol::wl_pointer::ButtonState::Released);
-            pointer.frame();
-            flush(&mut queue, &mut state);
+            for i in 0..(if kind == "dblclick" { 2 } else { 1 }) {
+                if i > 0 {
+                    thread::sleep(Duration::from_millis(80));
+                }
+                pointer.button(now_ms(), button, wayland_client::protocol::wl_pointer::ButtonState::Pressed);
+                pointer.frame();
+                flush(&mut queue, &mut state);
+                thread::sleep(Duration::from_millis(40));
+                pointer.button(now_ms(), button, wayland_client::protocol::wl_pointer::ButtonState::Released);
+                pointer.frame();
+                flush(&mut queue, &mut state);
+            }
         }
         // drag X Y X2 Y2: press at X Y, glide to X2 Y2, release.
         Some("drag") => {
