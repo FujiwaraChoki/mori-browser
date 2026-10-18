@@ -83,6 +83,9 @@ GROUPS = {
     "0014-mori-boosts": [
         "chrome/browser/ui/tab_helpers.cc",
     ],
+    "0015-mori-space-wash": [
+        "chrome/browser/ui/views/frame/themed_background.cc",
+    ],
     "0012-bubbles-stay-in-window": [
         "ui/views/bubble/bubble_dialog_delegate_view.cc",
     ],

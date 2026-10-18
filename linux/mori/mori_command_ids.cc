@@ -16,6 +16,7 @@
 #include "chrome/browser/ui/views/mori/mori_boosts.h"
 #include "chrome/browser/ui/views/mori/mori_cheatsheet.h"
 #include "chrome/browser/ui/views/mori/mori_peek.h"
+#include "chrome/browser/ui/views/mori/mori_space_editor.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "chrome/browser/ui/views/mori/mori_tab_switcher.h"
 #include "components/tabs/public/tab_interface.h"
@@ -151,13 +152,10 @@ void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id) {
     case kCommandBoostSite:
       EditBoost(browser);
       break;
-    case kCommandEditTheme: {
-      NavigateParams params(browser, GURL("chrome://settings/appearance"),
-                            ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
-      params.disposition = WindowOpenDisposition::SINGLETON_TAB;
-      Navigate(&params);
+    case kCommandEditTheme:
+      // The space's own theme, as Mori 3's "Edit Theme…".
+      EditSpace(browser);
       break;
-    }
   }
 }
 

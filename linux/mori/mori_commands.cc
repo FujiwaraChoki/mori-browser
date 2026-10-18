@@ -14,6 +14,7 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/mori/mori_command_ids.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
+#include "chrome/browser/ui/views/mori/mori_space_editor.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "chrome/browser/ui/views/mori/mori_tab_names.h"
 #include "components/tab_groups/tab_group_visual_data.h"
@@ -111,14 +112,8 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
            base::BindRepeating(&DeleteSpace, browser));
   }
   if (GetCurrentSpace(browser)) {
-    action(u"Rename Space", u"context color colour", "pencil",
-           base::BindRepeating(
-               [](BrowserWindowInterface* b) {
-                 if (auto space = GetCurrentSpace(b)) {
-                   b->GetTabStripModel()->OpenTabGroupEditor(*space);
-                 }
-               },
-               browser));
+    action(u"Edit Space", u"rename context color colour theme icon emoji",
+           "pencil", base::BindRepeating(&EditSpace, browser));
   }
   command(u"Developer Tools", u"inspect console devtools", "code",
           IDC_DEV_TOOLS);

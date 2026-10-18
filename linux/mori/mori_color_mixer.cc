@@ -14,10 +14,14 @@
 namespace mori {
 namespace {
 
+// The sidebar's surfaces are translucent, as in Mori 3, so a space's
+// gradient wash shows through them; over the plain window they come out as
+// the greys Zen uses.
 struct Palette {
   SkColor window;          // Sidebar, toolbar and the margin around the page.
   SkColor selected;        // The active tab.
   SkColor hover;           // A hovered tab.
+  SkColor tile;            // A favorite at rest.
   SkColor field;           // The address field.
   SkColor field_hover;
   SkColor popover;         // Command bar and suggestion lists.
@@ -37,10 +41,11 @@ struct Palette {
 constexpr Palette kDark = {
     .window = SkColorSetRGB(0x13, 0x13, 0x13),
     // Mori 3: white at 17% (selected), 7% (hover), 12% (pill and tiles).
-    .selected = SkColorSetRGB(0x3B, 0x3B, 0x3B),
-    .hover = SkColorSetRGB(0x24, 0x24, 0x24),
-    .field = SkColorSetRGB(0x2F, 0x2F, 0x2F),
-    .field_hover = SkColorSetRGB(0x3B, 0x3B, 0x3B),
+    .selected = SkColorSetA(SK_ColorWHITE, 0x2B),
+    .hover = SkColorSetA(SK_ColorWHITE, 0x12),
+    .tile = SkColorSetA(SK_ColorWHITE, 0x1F),
+    .field = SkColorSetA(SK_ColorWHITE, 0x1F),
+    .field_hover = SkColorSetA(SK_ColorWHITE, 0x2B),
     .popover = SkColorSetRGB(0x1B, 0x1B, 0x1D),
     .card = SkColorSetRGB(0x2B, 0x2B, 0x2B),
     .foreground = SkColorSetRGB(0xEE, 0xEE, 0xEF),
@@ -57,11 +62,13 @@ constexpr Palette kDark = {
 
 constexpr Palette kLight = {
     .window = SkColorSetRGB(0xE9, 0xE9, 0xE9),
-    // Mori 3: white at 72% (selected), black at 5% (hover), 7% (pill).
-    .selected = SkColorSetRGB(0xF9, 0xF9, 0xF9),
-    .hover = SkColorSetRGB(0xDD, 0xDD, 0xDD),
-    .field = SkColorSetRGB(0xD9, 0xD9, 0xD9),
-    .field_hover = SkColorSetRGB(0xD3, 0xD3, 0xD3),
+    // Mori 3: white at 72% (selected), black at 5% (hover), 7% (pill and
+    // tiles).
+    .selected = SkColorSetA(SK_ColorWHITE, 0xB8),
+    .hover = SkColorSetA(SK_ColorBLACK, 0x0D),
+    .tile = SkColorSetA(SK_ColorBLACK, 0x12),
+    .field = SkColorSetA(SK_ColorBLACK, 0x12),
+    .field_hover = SkColorSetA(SK_ColorBLACK, 0x1A),
     .popover = SkColorSetRGB(0xFB, 0xFB, 0xFB),
     .card = SkColorSetRGB(0xFB, 0xFB, 0xFB),
     .foreground = SkColorSetRGB(0x1D, 0x1F, 0x22),
@@ -120,8 +127,8 @@ void AddMoriColorMixer(ui::ColorProvider* provider,
   mixer[kColorToolbarButtonIconDisabled] = {p.toolbar_icon_disabled};
 
   // Tabs. Like Arc, only the active and hovered tabs get a fill.
-  mixer[kColorTabBackgroundInactiveFrameActive] = {p.window};
-  mixer[kColorTabBackgroundInactiveFrameInactive] = {p.window};
+  mixer[kColorTabBackgroundInactiveFrameActive] = {p.tile};
+  mixer[kColorTabBackgroundInactiveFrameInactive] = {p.tile};
   mixer[kColorTabBackgroundSelectedFrameActive] = {p.hover};
   mixer[kColorTabBackgroundSelectedFrameInactive] = {p.hover};
   mixer[kColorTabBackgroundSelectedHoverFrameActive] = {p.hover};
@@ -141,8 +148,10 @@ void AddMoriColorMixer(ui::ColorProvider* provider,
 
   // Address field and suggestions.
   // The site icon sits in the pill without Chromium's round chip.
-  mixer[kColorOmniboxIconBackground] = {p.field};
-  mixer[kColorOmniboxIconBackgroundTonal] = {p.field};
+  // The chip sits on the field, which is translucent; a second coat of it
+  // would show.
+  mixer[kColorOmniboxIconBackground] = {SK_ColorTRANSPARENT};
+  mixer[kColorOmniboxIconBackgroundTonal] = {SK_ColorTRANSPARENT};
   mixer[kColorOmniboxIconForeground] = {p.toolbar_icon};
   mixer[kColorOmniboxIconForegroundTonal] = {p.toolbar_icon};
   mixer[kColorLocationBarBackground] = {p.field};

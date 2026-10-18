@@ -1,6 +1,8 @@
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
 
 #include "chrome/browser/ui/views/mori/mori_icons.h"
+#include "chrome/browser/ui/views/mori/mori_space_editor.h"
+#include "chrome/browser/ui/views/mori/mori_space_themes.h"
 
 #include <algorithm>
 #include <map>
@@ -9,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
@@ -130,10 +133,12 @@ class SpaceButton : public views::Button {
 
  public:
   SpaceButton(PressedCallback callback,
-              tab_groups::TabGroupColorId color,
+              std::string symbol,
               const std::u16string& title,
               bool current)
-      : views::Button(std::move(callback)), color_(color), current_(current) {
+      : views::Button(std::move(callback)),
+        symbol_(std::move(symbol)),
+        current_(current) {
     SetTooltipText(title);
     GetViewAccessibility().SetName(title);
     SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));
@@ -150,15 +155,23 @@ class SpaceButton : public views::Button {
                    : kColorTabBackgroundInactiveHoverFrameActive));
       canvas->DrawRoundRect(bounds, kButtonCornerRadius, flags);
     }
-    flags.setColor(
-        colors->GetColor(GetTabGroupTabStripColorId(color_, true)));
-    canvas->DrawCircle(bounds.CenterPoint(), current_ ? kDotRadius + 1
-                                                      : kDotRadius,
-                       flags);
+    // Mori 3 (Zen): the space's symbol, or a dot, bright when current.
+    const bool dark = color_utils::IsDark(colors->GetColor(ui::kColorFrameActive));
+    const SkColor color =
+        current_ ? (dark ? SkColorSetRGB(0xEE, 0xEE, 0xEF)
+                         : SkColorSetRGB(0x1D, 0x1F, 0x22))
+                 : (dark ? SkColorSetRGB(0x7A, 0x7B, 0x7D)
+                         : SkColorSetRGB(0x8A, 0x8C, 0x8E));
+    if (!symbol_.empty()) {
+      PaintSpaceSymbol(canvas, symbol_, GetLocalBounds(), 14, color);
+      return;
+    }
+    flags.setColor(color);
+    canvas->DrawCircle(bounds.CenterPoint(), 4, flags);
   }
 
  private:
-  tab_groups::TabGroupColorId color_;
+  std::string symbol_;
   bool current_;
 };
 
@@ -204,7 +217,10 @@ class SpaceLabel : public views::Label {
     SetEnabledColor(MutedColor(this));
   }
 
-  // Double-click or right-click renames or recolours the space.
+  // Labels only take clicks when their text is selectable.
+  bool GetCanProcessEventsWithinSubtree() const override { return true; }
+
+  // Double-click or right-click edits the space.
   bool OnMousePressed(const ui::MouseEvent& event) override {
     if (event.IsRightMouseButton() ||
         (event.IsLeftMouseButton() && event.GetClickCount() == 2)) {
@@ -219,6 +235,33 @@ class SpaceLabel : public views::Label {
 };
 
 BEGIN_METADATA(SpaceLabel)
+END_METADATA
+
+// Mori 3: a symbol the user picked, 13px, before the space's name.
+class SpaceSymbol : public views::View {
+  METADATA_HEADER(SpaceSymbol, views::View)
+
+ public:
+  static constexpr int kSize = 13;
+
+  SpaceSymbol() { SetPreferredSize(gfx::Size(kSize, kLabelHeight)); }
+
+  void SetSymbol(std::string symbol) {
+    symbol_ = std::move(symbol);
+    SetVisible(!symbol_.empty());
+    SchedulePaint();
+  }
+
+  void OnPaint(gfx::Canvas* canvas) override {
+    PaintSpaceSymbol(canvas, symbol_, GetLocalBounds(), kSize,
+                     MutedColor(this));
+  }
+
+ private:
+  std::string symbol_;
+};
+
+BEGIN_METADATA(SpaceSymbol)
 END_METADATA
 
 // "↓ Clear" at the end of the divider: closes the space's tabs (Zen's
@@ -423,8 +466,19 @@ class MoriSpaceHeader : public views::View, public TabStripModelObserver {
       : browser_(browser) {
     SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical));
-    label_ = AddChildView(std::make_unique<SpaceLabel>(base::BindRepeating(
-        &MoriSpaceHeader::EditSpace, base::Unretained(this))));
+    label_row_ = AddChildView(std::make_unique<views::View>());
+    auto* row_layout =
+        label_row_->SetLayoutManager(std::make_unique<views::BoxLayout>(
+            views::BoxLayout::Orientation::kHorizontal,
+            gfx::Insets::TLBR(0, kRowContentInset, 0, 0), 6));
+    row_layout->set_cross_axis_alignment(
+        views::BoxLayout::CrossAxisAlignment::kCenter);
+    symbol_ = label_row_->AddChildView(std::make_unique<SpaceSymbol>());
+    label_ = label_row_->AddChildView(std::make_unique<SpaceLabel>(
+        base::BindRepeating(&MoriSpaceHeader::EditSpace,
+                            base::Unretained(this))));
+    label_->SetBorder(nullptr);
+    row_layout->SetFlexForView(label_, 1);
     divider_ = AddChildView(std::make_unique<SpaceDivider>(base::BindRepeating(
         [](BrowserWindowInterface* browser) { ClearSpace(browser); },
         browser)));
@@ -437,6 +491,9 @@ class MoriSpaceHeader : public views::View, public TabStripModelObserver {
     if (TabStripModel* model = SpacesModel(browser_)) {
       model->AddObserver(this);
     }
+    theme_subscription_ = AddSpaceThemeObserver(
+        browser_, base::BindRepeating(&MoriSpaceHeader::Update,
+                                      base::Unretained(this)));
     Update();
   }
 
@@ -467,11 +524,12 @@ class MoriSpaceHeader : public views::View, public TabStripModelObserver {
     }
     label_->SetText(
         model->group_model()->GetTabGroup(*space)->visual_data()->title());
+    symbol_->SetSymbol(GetSpaceTheme(browser_, *space).symbol);
     // Mori 3 puts the label's top 11px under the favorites (the tab strip
     // already adds 8px there) or 5px under the address field.
     const bool has_favorites = model->IndexOfFirstNonPinnedTab() > 0;
-    label_->SetProperty(views::kMarginsKey,
-                        gfx::Insets::TLBR(has_favorites ? 3 : 5, 0, 0, 0));
+    label_row_->SetProperty(views::kMarginsKey,
+                            gfx::Insets::TLBR(has_favorites ? 3 : 5, 0, 0, 0));
     divider_->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(9, 0, 3, 0));
     // Nothing to clear in a space holding just a new tab.
     const gfx::Range tabs =
@@ -486,18 +544,25 @@ class MoriSpaceHeader : public views::View, public TabStripModelObserver {
     InvalidateLayout();
   }
 
+  // After the click that asked for it, so its release doesn't take the
+  // editor's focus.
   void EditSpace() {
-    if (TabStripModel* model = SpacesModel(browser_)) {
-      if (std::optional<tab_groups::TabGroupId> space =
-              model->GetFocusedGroup()) {
-        model->OpenTabGroupEditor(*space);
-      }
-    }
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(
+                       [](base::WeakPtr<BrowserWindowInterface> browser) {
+                         if (browser) {
+                           mori::EditSpace(browser.get());
+                         }
+                       },
+                       browser_->GetWeakPtr()));
   }
 
   raw_ptr<BrowserWindowInterface> browser_;
+  raw_ptr<views::View> label_row_ = nullptr;
+  raw_ptr<SpaceSymbol> symbol_ = nullptr;
   raw_ptr<SpaceLabel> label_ = nullptr;
   raw_ptr<SpaceDivider> divider_ = nullptr;
+  base::CallbackListSubscription theme_subscription_;
 };
 
 BEGIN_METADATA(MoriSpaceHeader)
@@ -527,16 +592,24 @@ class SpaceBar : public views::View,
       sync_observation_.Observe(service);
     } else {
       groups_ready_ = true;
-    if (!archive_timer_.IsRunning()) {
-      archive_timer_.Start(FROM_HERE, kArchiveCheckInterval, this,
-                           &SpaceBar::ArchiveIdleTabs);
-    }
+      if (!archive_timer_.IsRunning()) {
+        archive_timer_.Start(FROM_HERE, kArchiveCheckInterval, this,
+                             &SpaceBar::ArchiveIdleTabs);
+      }
     }
     if (auto* state = tabs::VerticalTabStripStateController::From(browser_)) {
       collapse_subscription_ = state->RegisterOnCollapseChanged(
           base::BindRepeating(&SpaceBar::OnCollapseChanged,
                               base::Unretained(this)));
     }
+    // New symbols show here; a new gradient washes over the chrome.
+    theme_subscription_ = AddSpaceThemeObserver(
+        browser_, base::BindRepeating(
+                      [](SpaceBar* bar) {
+                        bar->ScheduleUpdate();
+                        RepaintSpaceWash(bar->browser_);
+                      },
+                      base::Unretained(this)));
     ScheduleUpdate();
   }
 
@@ -577,6 +650,8 @@ class SpaceBar : public views::View,
       std::optional<tab_groups::TabGroupId> new_focused_group,
       std::optional<tab_groups::TabGroupId> old_focused_group) override {
     ScheduleUpdate();
+    // The chrome takes the new space's wash.
+    RepaintSpaceWash(browser_);
   }
   void OnTabStripModelChanged(TabStripModel* tab_strip_model,
                               const TabStripModelChange& change,
@@ -769,7 +844,7 @@ class SpaceBar : public views::View,
       AddChildView(std::make_unique<SpaceButton>(
           base::BindRepeating(&SpaceBar::ShowSpace, base::Unretained(this),
                               id),
-          visuals->color(), title, current == id));
+          GetSpaceTheme(browser_, id).symbol, title, current == id));
     }
     auto* after = AddChildView(std::make_unique<views::View>());
     layout->SetFlexForView(after, 1);
@@ -804,6 +879,7 @@ class SpaceBar : public views::View,
   std::optional<tab_groups::TabGroupId> last_current_;
   std::vector<KnownSpace> to_restore_;
   base::RepeatingTimer archive_timer_;
+  base::CallbackListSubscription theme_subscription_;
   base::ScopedObservation<tab_groups::TabGroupSyncService,
                           tab_groups::TabGroupSyncService::Observer>
       sync_observation_{this};
@@ -868,6 +944,16 @@ void NewSpace(BrowserWindowInterface* browser) {
   NameSpace(model, id, u"Space " + base::NumberToString16(count + 1),
             kSpaceColors[count % std::size(kSpaceColors)]);
   model->SetFocusedGroup(id);
+  // Mori 3 asks for the new space's name, symbol and theme.
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE,
+      base::BindOnce(
+          [](base::WeakPtr<BrowserWindowInterface> browser) {
+            if (browser) {
+              EditSpace(browser.get());
+            }
+          },
+          browser->GetWeakPtr()));
 }
 
 void ClearSpace(BrowserWindowInterface* browser) {

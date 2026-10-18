@@ -448,6 +448,20 @@
  }
  
  // static
+@@ -1427,8 +1427,11 @@
+   }
+ 
+   // Keep the views::Textfield in sync. It needs an opaque background to
+-  // correctly enable subpixel AA.
+-  omnibox_view_->SetBackgroundColor(background_color_);
++  // correctly enable subpixel AA. Mori: a translucent field (over a space's
++  // wash) is painted once, here, not again under the text.
++  omnibox_view_->SetBackgroundColor(
++      SkColorGetA(background_color_) == SK_AlphaOPAQUE ? background_color_
++                                                       : SK_ColorTRANSPARENT);
+ 
+   // The divider between indicators and request chips should have the same color
+   // as the omnibox.
 --- a/chrome/browser/ui/layout_constants.cc
 +++ b/chrome/browser/ui/layout_constants.cc
 @@ -118,11 +118,11 @@
