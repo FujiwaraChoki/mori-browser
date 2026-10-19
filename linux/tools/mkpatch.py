@@ -60,6 +60,7 @@ GROUPS = {
         "chrome/browser/ui/views/tabs/common/tab_group_view_layout.cc",
         "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc",
         "chrome/browser/ui/views/tabs/common/tab_view_vertical_layout.cc",
+        "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.cc",
         "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc",
         "chrome/browser/ui/views/bookmarks/bookmark_page_action_controller.cc",
     ],

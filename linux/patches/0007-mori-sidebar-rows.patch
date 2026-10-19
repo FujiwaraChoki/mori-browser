@@ -164,6 +164,28 @@
    }
  
    NOTREACHED() << "Unknown tab child view";
+--- a/chrome/browser/ui/tabs/vertical_tab_strip_state_controller.cc
++++ b/chrome/browser/ui/tabs/vertical_tab_strip_state_controller.cc
+@@ -79,10 +79,16 @@
+             base::Unretained(this)));
+   }
+ 
+-  if (restored_state_collapsed.has_value()) {
+-    SetCollapsed(restored_state_collapsed.value());
++  // Mori: Chromium's icon-only collapsed sidebar isn't part of Mori (Ctrl+S
++  // hides the sidebar instead), so a collapse saved by the session or the
++  // profile isn't restored.
++  if (restored_state_collapsed.has_value() && !*restored_state_collapsed) {
++    SetCollapsed(false);
+   }
+-  if (restored_state_uncollapsed_width.has_value()) {
++  // Mori: 240 is Chromium's default width, saved by builds from before
++  // Mori had its own; it reads as unset.
++  if (restored_state_uncollapsed_width.has_value() &&
++      *restored_state_uncollapsed_width != 240) {
+     SetUncollapsedWidth(restored_state_uncollapsed_width.value());
+   }
+ 
 --- a/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc
 +++ b/chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc
 @@ -106,6 +106,8 @@

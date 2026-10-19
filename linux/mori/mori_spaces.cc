@@ -2,6 +2,7 @@
 
 #include "chrome/browser/ui/views/mori/mori_assistant.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
+#include "chrome/browser/ui/views/mori/mori_sidebar.h"
 #include "chrome/browser/ui/views/mori/mori_space_editor.h"
 #include "chrome/browser/ui/views/mori/mori_space_themes.h"
 
@@ -603,6 +604,11 @@ class SpaceBar : public views::View,
       collapse_subscription_ = state->RegisterOnCollapseChanged(
           base::BindRepeating(&SpaceBar::OnCollapseChanged,
                               base::Unretained(this)));
+      // Chromium's icon-only collapsed sidebar isn't Mori's; a profile or
+      // session that saved it opens expanded.
+      if (state->IsCollapsed()) {
+        state->RequestCollapse(false);
+      }
     }
     // New symbols show here; a new gradient washes over the chrome.
     theme_subscription_ = AddSpaceThemeObserver(
@@ -664,7 +670,29 @@ class SpaceBar : public views::View,
   }
 
  private:
+  // Collapsing (Chromium's button or shortcut) hides the sidebar the Mori
+  // way instead, as Ctrl+S does.
   void OnCollapseChanged(tabs::VerticalTabStripCollapseState state) {
+    auto* controller = tabs::VerticalTabStripStateController::From(browser_);
+    if (controller && controller->IsCollapsed()) {
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE,
+          base::BindOnce(
+              [](base::WeakPtr<BrowserWindowInterface> browser) {
+                auto* controller =
+                    browser ? tabs::VerticalTabStripStateController::From(
+                                  browser.get())
+                            : nullptr;
+                if (!controller || !controller->IsCollapsed()) {
+                  return;
+                }
+                controller->RequestCollapse(false);
+                if (!IsSidebarHiddenIn(browser.get())) {
+                  ToggleSidebarHidden(browser.get());
+                }
+              },
+              browser_->GetWeakPtr()));
+    }
     ScheduleUpdate();
   }
 
