@@ -1,0 +1,17 @@
+--- a/chrome/browser/profiles/profile_attributes_storage.cc
++++ b/chrome/browser/profiles/profile_attributes_storage.cc
+@@ -290,6 +290,14 @@
+                using_default_name.value());
+     }
+ 
++    // Mori: a profile still named by Chromium's default ("Your Chromium")
++    // takes Mori's ("Your Mori").
++    if (using_default_name.value() && name && *name == "Your Chromium") {
++      info.Set(ProfileAttributesEntry::kNameKey,
++               l10n_util::GetStringUTF16(
++                   IDS_PROFILE_MENU_PLACEHOLDER_PROFILE_NAME));
++    }
++
+     // For profiles that don't have the "using default avatar" state set yet,
+     // assume it's the same as the "using default name" state.
+     if (!info.FindBool(ProfileAttributesEntry::kIsUsingDefaultAvatarKey)) {

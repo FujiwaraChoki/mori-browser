@@ -339,7 +339,9 @@ Still to port from Mori 3:
   needs Mori's own bookkeeping per saved group.
 - Downloads as Mori 3's popover (Chromium's bubble shows now).
 - Content blocking (uBlock Origin, once MV2 support is checked).
-- Branding: the name, icon and window class.
+- Branding: the icon and a .desktop file. The name
+  is done: patch 0023 (made by linux/tools/rebrand_strings.py) calls the
+  browser Mori in Chromium's strings, and run.sh sets the "mori" app ID.
 
 ## Risks
 

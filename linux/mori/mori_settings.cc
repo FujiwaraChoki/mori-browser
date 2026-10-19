@@ -1198,16 +1198,16 @@ class SettingsSheet : public views::View {
     text->AddChildView(std::make_unique<ThemedLabel>(
         u"Mori", 13, false, gfx::Font::Weight::SEMIBOLD));
     text->AddChildView(std::make_unique<ThemedLabel>(
-        u"Chromium " +
+        u"Built on Chromium " +
             base::UTF8ToUTF16(std::string(version_info::GetVersionNumber())),
         11, true));
 
-    Card* more = Section(column, u"Chromium");
+    Card* more = Section(column, u"More settings");
     Hint(more, u"Everything Mori doesn't show here: languages, downloads, "
                u"accessibility, system and more.");
     more->AddChildView(Buttons([&] {
       std::vector<std::unique_ptr<views::View>> buttons;
-      buttons.push_back(TextButton(u"All Chromium Settings…", false,
+      buttons.push_back(TextButton(u"All Settings…", false,
                                    Open("chrome://settings")));
       buttons.push_back(
           TextButton(u"Extensions…", false, Command(IDC_MANAGE_EXTENSIONS)));
