@@ -100,8 +100,12 @@ constexpr AcceleratorMapping kMoriAccelerators[] = {
     {ui::VKEY_P, kCtrl | kShift, kCommandTogglePin},
     {ui::VKEY_C, kCtrl | kShift, IDC_COPY_URL},
     {ui::VKEY_D, kCtrl | kShift, IDC_DUPLICATE_TAB},
+#if !BUILDFLAG(IS_WIN)
+    // Not on Windows, where Ctrl+Alt is AltGr and types characters (AltGr+S
+    // is "ś" on Polish keyboards); the menu and command bar still have them.
     {ui::VKEY_S, kCtrl | kAlt, kCommandSleepBackgroundTabs},
     {ui::VKEY_R, kCtrl | kAlt, IDC_SHOW_READING_MODE_SIDE_PANEL},
+#endif
     // Arc: Ctrl+Tab goes through recent tabs, not the strip's order.
     {ui::VKEY_TAB, kCtrl, kCommandSwitchRecentTab},
     {ui::VKEY_TAB, kCtrl | kShift, kCommandSwitchRecentTabBack},

@@ -374,6 +374,32 @@ macOS tree; this machine can't cross-build it). What differs:
 - Codex is also looked for in /opt/homebrew/bin, and its directory goes on
   its PATH, since apps opened from the Dock get a minimal one.
 
+## Windows
+
+Windows Chromium uses Aura, as Linux does, so the Views code and Mori's
+input handling carry over unchanged. Like macOS, it is written but not yet
+built or run (that needs Windows and Visual Studio). What differs:
+
+- Window frame: Windows draws its window buttons at the top right, where
+  the page card would be. When the frame reports them (its trailing
+  exclusion), the card starts below them, leaving a strip as in Zen, and
+  BrowserView answers the strip as window frame, so it drags the window
+  (patches 0004 and 0020). Linux, with no buttons, and macOS, with them at
+  the left, keep the card at the top.
+- Shortcuts are Linux's (Ctrl), except Ctrl+Alt+S and Ctrl+Alt+R: on
+  Windows Ctrl+Alt is AltGr, which types characters on many keyboards.
+- Codex runs through pipes and a job object (closing the job ends codex
+  and the node it starts); npm's codex.cmd runs through cmd.exe, and Mori
+  also looks in %APPDATA%\npm, WinGet's and Scoop's folders. One reader
+  and writer serve all three systems, on base::File.
+- The profile is %LOCALAPPDATA%\Mori\User Data and policies come from
+  SOFTWARE\Policies\Mori (patch 0026: the install's product name).
+- Import reads Zen and Firefox from %APPDATA% and Arc from its packaged
+  app's folder under %LOCALAPPDATA%\Packages.
+- Overlay scrollbars and reopening the last session are on, as on Linux.
+- The executable and installer keep Chromium's names (chrome.exe, the
+  ChromiumHTM ProgID) until a full rename can be tested on Windows.
+
 ## Risks
 
 - Following Chromium means rebasing Mori's patches every four weeks.

@@ -57,13 +57,14 @@
  
 --- a/chrome/browser/prefs/session_startup_pref.cc
 +++ b/chrome/browser/prefs/session_startup_pref.cc
-@@ -63,7 +63,8 @@
+@@ -63,7 +63,9 @@
  
  // static
  SessionStartupPref::Type SessionStartupPref::GetDefaultStartupType() {
 -#if BUILDFLAG(IS_CHROMEOS)
 +  // Mori: reopen the last session, with its spaces, like Arc.
-+#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
++#if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) || \
++    BUILDFLAG(IS_WIN)
    return SessionStartupPref::LAST;
  #else
  #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)

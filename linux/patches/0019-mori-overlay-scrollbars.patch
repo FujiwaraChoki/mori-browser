@@ -4,7 +4,7 @@
      BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_IOS) || BUILDFLAG(IS_MAC)
  constexpr base::FeatureState kOverlayScrollbarFeatureState =
      base::FEATURE_ENABLED_BY_DEFAULT;
-+#elif BUILDFLAG(IS_LINUX)
++#elif BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
 +// Mori: thin scrollbars over the page that show while scrolling, as in
 +// Mori 3, Arc and Zen.
 +constexpr base::FeatureState kOverlayScrollbarFeatureState =
@@ -18,8 +18,8 @@
  constinit const base::FeatureParam<ScrollbarMode> kScrollbarMode{
 -    &kOverlayScrollbar, "mode", ScrollbarMode::kDevice, &kScrollbarModeOptions};
 +    &kOverlayScrollbar, "mode",
-+#if BUILDFLAG(IS_LINUX)
-+    // Mori: whatever the desktop prefers.
++#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
++    // Mori: always over the page, whatever the desktop prefers.
 +    ScrollbarMode::kOverlay,
 +#else
 +    ScrollbarMode::kDevice,

@@ -1,35 +1,57 @@
 #include "chrome/browser/ui/views/mori/mori_codex.h"
 
-#include <fcntl.h>
-#include <pwd.h>
-#include <signal.h>
-#include <unistd.h>
-
 #include <utility>
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/containers/span.h"
 #include "base/environment.h"
+#include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/memory/ref_counted.h"
 #include "base/path_service.h"
-#include "base/posix/eintr_wrapper.h"
 #include "base/process/launch.h"
 #include "base/process/process.h"
 #include "base/strings/string_split.h"
+#include "base/strings/string_util.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/threading/platform_thread.h"
+#include "build/build_config.h"
+
+#if BUILDFLAG(IS_WIN)
+#include <windows.h>
+
+#include "base/base_paths_win.h"
+#include "base/win/scoped_handle.h"
+#else
+#include <fcntl.h>
+#include <pwd.h>
+#include <signal.h>
+#include <unistd.h>
+#endif
 
 namespace mori {
 namespace {
 
-// $HOME, or the account's home when the browser was started without one.
+#if BUILDFLAG(IS_WIN)
+constexpr char kPathSeparator[] = ";";
+#else
+constexpr char kPathSeparator[] = ":";
+#endif
+
+// The account's home directory ($HOME, or the account's when the browser
+// was started without one; %USERPROFILE% on Windows).
 base::FilePath HomeDir() {
+#if BUILDFLAG(IS_WIN)
+  base::FilePath home;
+  base::PathService::Get(base::DIR_HOME, &home);
+  return home;
+#else
   auto env = base::Environment::Create();
   if (std::optional<std::string> home = env->GetVar("HOME");
       home && !home->empty()) {
@@ -39,25 +61,66 @@ base::FilePath HomeDir() {
     return base::FilePath(entry->pw_dir);
   }
   return base::FilePath();
+#endif
+}
+
+bool IsRunnable(const base::FilePath& path) {
+#if BUILDFLAG(IS_WIN)
+  return base::PathExists(path) && !base::DirectoryExists(path);
+#else
+  return access(path.value().c_str(), X_OK) == 0 &&
+         !base::DirectoryExists(path);
+#endif
 }
 
 // Where to look for `codex`, as Mori 3 does: $CODEX_BIN, $PATH, then the
 // per-user install places a desktop-launched browser may not have on its
-// PATH (npm, bun, mise).
+// PATH (npm, bun, mise; Homebrew; on Windows npm, Scoop and WinGet).
 std::optional<base::FilePath> FindCodex() {
   auto env = base::Environment::Create();
   std::vector<base::FilePath> candidates;
   if (std::optional<std::string> bin = env->GetVar("CODEX_BIN");
       bin && !bin->empty()) {
-    candidates.emplace_back(*bin);
+    candidates.push_back(base::FilePath::FromUTF8Unsafe(*bin));
   }
+#if BUILDFLAG(IS_WIN)
+  const std::vector<const char*> names = {"codex.exe", "codex.cmd"};
+#else
+  const std::vector<const char*> names = {"codex"};
+#endif
   if (std::optional<std::string> path = env->GetVar("PATH")) {
-    for (const std::string& dir : base::SplitString(
-             *path, ":", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
-      candidates.push_back(base::FilePath(dir).Append("codex"));
+    for (const std::string& dir :
+         base::SplitString(*path, kPathSeparator, base::TRIM_WHITESPACE,
+                           base::SPLIT_WANT_NONEMPTY)) {
+      for (const char* name : names) {
+        candidates.push_back(
+            base::FilePath::FromUTF8Unsafe(dir).AppendASCII(name));
+      }
     }
   }
-  if (const base::FilePath home = HomeDir(); !home.empty()) {
+  const base::FilePath home = HomeDir();
+#if BUILDFLAG(IS_WIN)
+  base::FilePath roaming;
+  if (base::PathService::Get(base::DIR_ROAMING_APP_DATA, &roaming)) {
+    candidates.push_back(roaming.AppendASCII("npm").AppendASCII("codex.cmd"));
+  }
+  base::FilePath local;
+  if (base::PathService::Get(base::DIR_LOCAL_APP_DATA, &local)) {
+    candidates.push_back(local.AppendASCII("Microsoft")
+                             .AppendASCII("WinGet")
+                             .AppendASCII("Links")
+                             .AppendASCII("codex.exe"));
+  }
+  if (!home.empty()) {
+    candidates.push_back(
+        home.AppendASCII("scoop").AppendASCII("shims").AppendASCII(
+            "codex.exe"));
+    candidates.push_back(
+        home.AppendASCII(".local").AppendASCII("bin").AppendASCII(
+            "codex.exe"));
+  }
+#else
+  if (!home.empty()) {
     for (const char* dir :
          {".local/bin", ".bun/bin", ".npm-global/bin",
           ".local/share/mise/installs/codex/latest/bin"}) {
@@ -69,28 +132,47 @@ std::optional<base::FilePath> FindCodex() {
   candidates.emplace_back("/opt/homebrew/bin/codex");
   candidates.emplace_back("/usr/local/bin/codex");
   candidates.emplace_back("/usr/bin/codex");
+#endif
   for (const base::FilePath& candidate : candidates) {
-    if (access(candidate.value().c_str(), X_OK) == 0 &&
-        !base::DirectoryExists(candidate)) {
+    if (IsRunnable(candidate)) {
       return candidate;
     }
   }
   return std::nullopt;
 }
 
-// pipe2(O_CLOEXEC) where there is one (not macOS).
-bool CloseOnExecPipe(int fds[2]) {
+// A pipe whose `child` end is given to Codex and whose other end stays
+// here: not inherited by other children Chromium starts.
+bool MakePipe(bool child_reads, base::File* child, base::File* ours) {
+#if BUILDFLAG(IS_WIN)
+  SECURITY_ATTRIBUTES attributes = {sizeof(attributes), nullptr, TRUE};
+  HANDLE read_end = nullptr;
+  HANDLE write_end = nullptr;
+  if (!CreatePipe(&read_end, &write_end, &attributes, 0)) {
+    return false;
+  }
+  HANDLE our_end = child_reads ? write_end : read_end;
+  SetHandleInformation(our_end, HANDLE_FLAG_INHERIT, 0);
+  *child = base::File(child_reads ? read_end : write_end);
+  *ours = base::File(our_end);
+  return true;
+#else
+  // pipe2(O_CLOEXEC) where there is one (not macOS).
+  int fds[2];
   if (pipe(fds) != 0) {
     return false;
   }
-  for (int i = 0; i < 2; ++i) {
-    if (fcntl(fds[i], F_SETFD, FD_CLOEXEC) != 0) {
+  for (int fd : fds) {
+    if (fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
       close(fds[0]);
       close(fds[1]);
       return false;
     }
   }
+  *child = base::File(child_reads ? fds[0] : fds[1]);
+  *ours = base::File(child_reads ? fds[1] : fds[0]);
   return true;
+#endif
 }
 
 }  // namespace
@@ -144,15 +226,9 @@ class CodexServer::Io : public base::RefCountedThreadSafe<CodexServer::Io> {
       return;
     }
     base::CreateDirectory(working_dir);
-    int in[2];
-    int out[2];
-    if (!CloseOnExecPipe(in)) {
-      Closed("Couldn't start Codex (no pipes).");
-      return;
-    }
-    if (!CloseOnExecPipe(out)) {
-      close(in[0]);
-      close(in[1]);
+    base::File child_in, child_out, our_in, our_out;
+    if (!MakePipe(/*child_reads=*/true, &child_in, &our_in) ||
+        !MakePipe(/*child_reads=*/false, &child_out, &our_out)) {
       Closed("Couldn't start Codex (no pipes).");
       return;
     }
@@ -161,9 +237,43 @@ class CodexServer::Io : public base::RefCountedThreadSafe<CodexServer::Io> {
                    base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
     base::LaunchOptions options;
     options.current_directory = working_dir;
+    base::CommandLine command(*codex);
+#if BUILDFLAG(IS_WIN)
+    // npm installs a .cmd script, which only cmd.exe runs.
+    if (codex->MatchesExtension(FILE_PATH_LITERAL(".cmd")) ||
+        codex->MatchesExtension(FILE_PATH_LITERAL(".bat"))) {
+      base::FilePath system;
+      base::PathService::Get(base::DIR_SYSTEM, &system);
+      command = base::CommandLine(system.AppendASCII("cmd.exe"));
+      command.AppendArg("/d");
+      command.AppendArg("/c");
+      command.AppendArgPath(*codex);
+    }
+    if (!log.IsValid()) {
+      log = base::File(base::FilePath(L"NUL"),
+                       base::File::FLAG_OPEN | base::File::FLAG_WRITE);
+    }
+    SetHandleInformation(log.GetPlatformFile(), HANDLE_FLAG_INHERIT,
+                         HANDLE_FLAG_INHERIT);
+    options.stdin_handle = child_in.GetPlatformFile();
+    options.stdout_handle = child_out.GetPlatformFile();
+    options.stderr_handle = log.GetPlatformFile();
+    options.handles_to_inherit = {options.stdin_handle, options.stdout_handle,
+                                  options.stderr_handle};
+    options.start_hidden = true;
+    // Closing the job ends codex and whatever it started (node, helpers).
+    job_.Set(CreateJobObject(nullptr, nullptr));
+    if (job_.is_valid() &&
+        base::SetJobObjectLimitFlags(job_.get(),
+                                     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE)) {
+      options.job_handle = job_.get();
+    }
+#else
     options.new_process_group = true;
-    options.fds_to_remap.emplace_back(in[0], STDIN_FILENO);
-    options.fds_to_remap.emplace_back(out[1], STDOUT_FILENO);
+    options.fds_to_remap.emplace_back(child_in.GetPlatformFile(),
+                                      STDIN_FILENO);
+    options.fds_to_remap.emplace_back(child_out.GetPlatformFile(),
+                                      STDOUT_FILENO);
     if (log.IsValid()) {
       options.fds_to_remap.emplace_back(log.GetPlatformFile(), STDERR_FILENO);
     }
@@ -171,33 +281,37 @@ class CodexServer::Io : public base::RefCountedThreadSafe<CodexServer::Io> {
     if (const base::FilePath home = HomeDir(); !home.empty()) {
       options.environment["HOME"] = home.value();
     }
+#endif
     // Codex's own directory first: an npm install is a script that needs
     // the `node` next to it, which a desktop-launched browser's PATH (the
     // Dock's, on macOS) may not have.
     {
-      std::string path = codex->DirName().value();
-      if (std::optional<std::string> inherited =
-              base::Environment::Create()->GetVar("PATH");
-          inherited && !inherited->empty()) {
-        path += ":" + *inherited;
-      } else {
-        path += ":/usr/local/bin:/usr/bin:/bin";
-      }
-      options.environment["PATH"] = path;
+      base::NativeEnvironmentString path = codex->DirName().value();
+      std::optional<std::string> inherited =
+          base::Environment::Create()->GetVar("PATH");
+#if BUILDFLAG(IS_WIN)
+      path += L";" + base::FilePath::FromUTF8Unsafe(
+                         inherited.value_or(std::string()))
+                         .value();
+#else
+      path += ":" + (inherited && !inherited->empty()
+                         ? *inherited
+                         : std::string("/usr/local/bin:/usr/bin:/bin"));
+#endif
+      options.environment[FILE_PATH_LITERAL("PATH")] = path;
     }
-    base::CommandLine command(*codex);
     command.AppendArg("app-server");
     process_ = base::LaunchProcess(command, options);
-    close(in[0]);
-    close(out[1]);
+    // The child has its ends now.
+    child_in.Close();
+    child_out.Close();
     if (!process_.IsValid()) {
-      close(in[1]);
-      close(out[0]);
       Closed("Couldn't start Codex.");
       return;
     }
-    stdin_ = in[1];
-    reader_->PostTask(FROM_HERE, base::BindOnce(&Io::ReadLoop, this, out[0]));
+    stdin_ = std::move(our_in);
+    reader_->PostTask(FROM_HERE,
+                      base::BindOnce(&Io::ReadLoop, this, std::move(our_out)));
     for (std::string& line : queued_) {
       WriteOnRunner(std::move(line));
     }
@@ -205,57 +319,58 @@ class CodexServer::Io : public base::RefCountedThreadSafe<CodexServer::Io> {
   }
 
   // Blocks on the server's stdout until it closes.
-  void ReadLoop(int fd) {
+  void ReadLoop(base::File out) {
     std::string buffer;
-    char chunk[16384];
+    uint8_t chunk[16384];
     while (true) {
-      const ssize_t n = HANDLE_EINTR(read(fd, chunk, sizeof(chunk)));
-      if (n <= 0) {
+      const std::optional<size_t> n =
+          out.ReadAtCurrentPosNoBestEffort(base::span(chunk));
+      if (!n || *n == 0) {
         break;
       }
-      buffer.append(chunk, static_cast<size_t>(n));
+      buffer.append(reinterpret_cast<const char*>(chunk), *n);
       size_t newline;
       while ((newline = buffer.find('\n')) != std::string::npos) {
         std::string line = buffer.substr(0, newline);
         buffer.erase(0, newline + 1);
+        // Windows line endings.
+        if (!line.empty() && line.back() == '\r') {
+          line.pop_back();
+        }
         if (!line.empty()) {
           ui_->PostTask(FROM_HERE, base::BindOnce(&CodexServer::OnLine, server_,
                                                   std::move(line)));
         }
       }
     }
-    close(fd);
+    out.Close();
     Closed("The local Codex app server disconnected.");
   }
 
   void WriteOnRunner(std::string line) {
-    if (stdin_ < 0) {
+    if (!stdin_.IsValid()) {
       if (!process_.IsValid()) {
         queued_.push_back(std::move(line));
       }
       return;
     }
     line.push_back('\n');
-    const char* data = line.data();
-    size_t left = line.size();
-    while (left > 0) {
-      const ssize_t n = HANDLE_EINTR(write(stdin_, data, left));
-      if (n <= 0) {
-        return;
-      }
-      data += n;
-      left -= static_cast<size_t>(n);
-    }
+    stdin_.WriteAtCurrentPos(base::as_byte_span(line));
   }
 
   void Kill() {
-    if (stdin_ >= 0) {
-      close(stdin_);
-      stdin_ = -1;
-    }
+    // Codex exits when its input closes; give it a moment.
+    stdin_.Close();
     if (!process_.IsValid()) {
       return;
     }
+#if BUILDFLAG(IS_WIN)
+    if (!process_.WaitForExitWithTimeout(base::Seconds(2), nullptr)) {
+      process_.Terminate(/*exit_code=*/1, /*wait=*/false);
+    }
+    // Ends whatever it started too.
+    job_.Close();
+#else
     // The whole group: codex may have started helpers.
     kill(-process_.Pid(), SIGTERM);
     for (int i = 0; i < 20; ++i) {
@@ -267,6 +382,7 @@ class CodexServer::Io : public base::RefCountedThreadSafe<CodexServer::Io> {
     }
     kill(-process_.Pid(), SIGKILL);
     process_.WaitForExitWithTimeout(base::Seconds(1), nullptr);
+#endif
   }
 
   scoped_refptr<base::SequencedTaskRunner> ui_;
@@ -274,7 +390,10 @@ class CodexServer::Io : public base::RefCountedThreadSafe<CodexServer::Io> {
   scoped_refptr<base::SequencedTaskRunner> runner_;
   scoped_refptr<base::SingleThreadTaskRunner> reader_;
   base::Process process_;
-  int stdin_ = -1;
+  base::File stdin_;
+#if BUILDFLAG(IS_WIN)
+  base::win::ScopedHandle job_;
+#endif
   std::vector<std::string> queued_;
 };
 

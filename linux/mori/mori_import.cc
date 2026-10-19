@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "build/build_config.h"
+#include "base/files/file_enumerator.h"
 #include "base/base_paths.h"
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
@@ -178,6 +179,15 @@ std::optional<base::FilePath> ProfileFromIni(const base::FilePath& root) {
 }
 
 std::optional<base::FilePath> FindMozillaProfile(ImportSource source) {
+#if BUILDFLAG(IS_WIN)
+  base::FilePath roaming;
+  base::PathService::Get(base::DIR_ROAMING_APP_DATA, &roaming);
+  const base::FilePath root =
+      source == ImportSource::kZen
+          ? roaming.AppendASCII("zen")
+          : roaming.AppendASCII("Mozilla").AppendASCII("Firefox");
+  return ProfileFromIni(root);
+#else
   base::FilePath home;
   base::PathService::Get(base::DIR_HOME, &home);
 #if BUILDFLAG(IS_MAC)
@@ -202,6 +212,7 @@ std::optional<base::FilePath> FindMozillaProfile(ImportSource source) {
     }
   }
   return std::nullopt;
+#endif
 }
 
 const std::string* Str(const base::DictValue& dict, std::string_view key) {
@@ -415,13 +426,34 @@ Imported ReadArc() {
   base::FilePath home;
   base::PathService::Get(base::DIR_HOME, &home);
   std::string text;
-  // Arc runs on macOS; elsewhere, a copy of its file.
+#if BUILDFLAG(IS_WIN)
+  // Arc for Windows is a packaged app:
+  // Packages\TheBrowserCompany.Arc_<id>\LocalCache\Local\Arc.
+  base::FilePath local;
+  if (base::PathService::Get(base::DIR_LOCAL_APP_DATA, &local)) {
+    base::FileEnumerator packages(local.AppendASCII("Packages"),
+                                  /*recursive=*/false,
+                                  base::FileEnumerator::DIRECTORIES,
+                                  FILE_PATH_LITERAL("TheBrowserCompany.Arc*"));
+    for (base::FilePath package = packages.Next();
+         !package.empty() && text.empty(); package = packages.Next()) {
+      if (!base::ReadFileToString(package.AppendASCII("LocalCache")
+                                      .AppendASCII("Local")
+                                      .AppendASCII("Arc")
+                                      .AppendASCII("StorableSidebar.json"),
+                                  &text)) {
+        text.clear();
+      }
+    }
+  }
+#endif
+  // Arc's own file on macOS (and Windows, above); elsewhere, a copy of it.
   for (const char* where : {
 #if BUILDFLAG(IS_MAC)
            "Library/Application Support/Arc/StorableSidebar.json",
 #endif
            "StorableSidebar.json", "Downloads/StorableSidebar.json"}) {
-    if (base::ReadFileToString(home.AppendASCII(where), &text)) {
+    if (!text.empty() || base::ReadFileToString(home.AppendASCII(where), &text)) {
       break;
     }
   }
@@ -578,7 +610,7 @@ void Apply(base::WeakPtr<BrowserWindowInterface> weak_browser,
                          : source == ImportSource::kFirefox ? u"Firefox"
                                                             : u"Arc";
   if (!imported.found) {
-#if BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_WIN)
     ShowToast(browser, std::u16string(u"No ") + name + u" data found");
 #else
     ShowToast(browser, source == ImportSource::kArc

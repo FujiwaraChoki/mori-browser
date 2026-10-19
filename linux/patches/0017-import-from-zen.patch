@@ -21,15 +21,22 @@
  #include "chrome/grit/generated_resources.h"
  #include "components/user_data_importer/common/importer_data_types.h"
  #include "ui/base/l10n/l10n_util.h"
-@@ -157,6 +163,68 @@
+@@ -157,6 +163,76 @@
    }
  }
  
-+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
++#if !BUILDFLAG(IS_CHROMEOS)
 +// Mori: Zen Browser is Firefox underneath; its profiles import the same way.
 +void DetectZenProfiles(
 +    const std::string& locale,
 +    std::vector<user_data_importer::SourceProfile>* profiles) {
++#if BUILDFLAG(IS_WIN)
++  base::FilePath home;
++  if (!base::PathService::Get(base::DIR_ROAMING_APP_DATA, &home)) {
++    return;
++  }
++  for (const char* root : {"zen"}) {
++#else
 +  base::FilePath home;
 +  if (!base::PathService::Get(base::DIR_HOME, &home)) {
 +    return;
@@ -39,6 +46,7 @@
 +       {"Library/Application Support/zen"}) {
 +#else
 +       {".config/zen", ".zen", ".var/app/app.zen_browser.zen/.zen"}) {
++#endif
 +#endif
 +    const base::FilePath dir = home.AppendASCII(root);
 +    std::string content;
@@ -85,12 +93,20 @@
 +    return;
 +  }
 +}
-+#endif  // BUILDFLAG(IS_LINUX)
++#endif  // !BUILDFLAG(IS_CHROMEOS)
 +
  std::vector<user_data_importer::SourceProfile> DetectSourceProfilesWorker(
      const std::string& locale,
      bool include_interactive_profiles) {
-@@ -183,8 +251,12 @@
+@@ -175,6 +251,7 @@
+     DetectBuiltinWindowsProfiles(&profiles);
+     DetectFirefoxProfiles(locale, &profiles);
+   }
++  DetectZenProfiles(locale, &profiles);
+ #elif BUILDFLAG(IS_MAC)
+   if (shell_integration::IsFirefoxDefaultBrowser()) {
+     DetectFirefoxProfiles(locale, &profiles);
+@@ -183,8 +260,12 @@
      DetectSafariProfiles(&profiles);
      DetectFirefoxProfiles(locale, &profiles);
    }

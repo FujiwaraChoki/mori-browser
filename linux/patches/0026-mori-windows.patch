@@ -1,0 +1,13 @@
+--- a/chrome/install_static/chromium_install_modes.h
++++ b/chrome/install_static/chromium_install_modes.h
+@@ -21,7 +21,9 @@
+ 
+ // The brand-specific product name to be included as a component of the install
+ // and user data directory paths.
+-inline constexpr wchar_t kProductPathName[] = L"Chromium";
++// Mori: its own install, profile (%LOCALAPPDATA%\Mori\User Data) and
++// registry key, so it never opens or migrates Chromium's.
++inline constexpr wchar_t kProductPathName[] = L"Mori";
+ 
+ // The brand-specific safe browsing client name.
+ inline constexpr char kSafeBrowsingName[] = "chromium";

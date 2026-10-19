@@ -103,7 +103,7 @@ GROUPS = {
     "0019-mori-overlay-scrollbars": [
         "ui/native_theme/features/native_theme_features.cc",
     ],
-    "0020-mori-find-bar": [
+    "0020-mori-browser-view": [
         "chrome/browser/ui/views/frame/browser_view.cc",
     ],
     "0021-mori-quiet-address-field": [
@@ -163,6 +163,9 @@ GROUPS = {
         "chrome/browser/global_keyboard_shortcuts_mac.mm",
         "chrome/common/chrome_paths_mac.mm",
         "chrome/app/app-Info.plist",
+    ],
+    "0026-mori-windows": [
+        "chrome/install_static/chromium_install_modes.h",
     ],
     "0018-mori-context-menus": [
         "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.cc",

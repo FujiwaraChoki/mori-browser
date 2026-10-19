@@ -1,0 +1,36 @@
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -1219,6 +1219,13 @@
+   gfx::Rect contents_bounds = multi_contents_view_->ConvertRectToWidget(
+       multi_contents_view_->GetLocalBounds());
+ 
++  // Mori: the address field is in the sidebar; find opens at the page's top
++  // right, inside the card, as in Mori 3.
++  if (ShouldDrawVerticalTabStrip()) {
++    contents_bounds.Inset(gfx::Insets::TLBR(8, 0, 0, 8));
++    return multi_contents_view_->GetMirroredRect(contents_bounds);
++  }
++
+   // If the location bar is visible use it to position the bounding box,
+   // otherwise use the contents container.
+   auto* const immersive_mode_controller =
+@@ -4774,6 +4781,19 @@
+     }
+   }
+ 
++  // Mori: the strip above the page card (where Windows puts the window
++  // buttons) is frame: the caller finds the buttons, and the rest drags the
++  // window.
++  if (ShouldDrawVerticalTabStrip() && multi_contents_view_ &&
++      multi_contents_view_->GetVisible()) {
++    const gfx::Rect card = views::View::ConvertRectToTarget(
++        multi_contents_view_, this, multi_contents_view_->GetLocalBounds());
++    if (point_in_browser_view_coords.x() >= card.x() &&
++        point_in_browser_view_coords.y() < card.y()) {
++      return HTNOWHERE;
++    }
++  }
++
+   // If the point's y coordinate is below the top of the topmost view and
+   // otherwise within the bounds of this view, the point is considered to be
+   // within the client area.

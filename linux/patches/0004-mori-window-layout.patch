@@ -166,7 +166,7 @@
        IsParentedTo(views().top_container, views().browser_view)) {
      auto& top_container_layout =
          layout.AddChild(views().top_container, gfx::Rect());
-@@ -1167,11 +1238,29 @@
+@@ -1167,11 +1238,38 @@
      content_right =
          std::min(content_right, browser_params.visual_client_area.right());
    }
@@ -174,10 +174,19 @@
 +                           content_right - content_left,
 +                           params.visual_client_area.height());
 +  if (mori_content_card) {
++    int top = mori_sidebar_toolbar || mori_sidebar_hidden
++                  ? mori::kContentCardMargin
++                  : 0;
++    // Mori: window buttons at the top right (Windows) sit in a strip above
++    // the page, as in Zen, which also drags the window. (On macOS they're
++    // at the left, in the sidebar's toolbar.)
++    if (params.trailing_exclusion.content.width() > 0) {
++      top = std::max(top, base::ClampCeil(
++                              params.trailing_exclusion.ContentWithPadding()
++                                  .height()));
++    }
 +    content_bounds.Inset(gfx::Insets::TLBR(
-+        mori_sidebar_toolbar || mori_sidebar_hidden ? mori::kContentCardMargin
-+                                                    : 0,
-+        mori_sidebar_hidden ? mori::kContentCardMargin : 0,
++        top, mori_sidebar_hidden ? mori::kContentCardMargin : 0,
 +        mori::kContentCardMargin, mori::kContentCardMargin));
 +  }
 +  // Mori: the assistant docks beside the page as a card of its own.
@@ -200,7 +209,7 @@
  
    // Maybe expand and clip the web contents to avoid issues during animation.
    if (features::UseSidePanelFlyoverAnimation()) {
-@@ -1231,6 +1320,10 @@
+@@ -1231,6 +1329,10 @@
        }
      }
      views().multi_contents_view->SetBackgroundRadii(content_corners);
@@ -211,7 +220,7 @@
    }
  
    // Make final visual adjustments required for child views to paint.
-@@ -1259,6 +1352,12 @@
+@@ -1259,6 +1361,12 @@
            tabstrip_bounds->x();
      }
  
@@ -224,7 +233,7 @@
      views().vertical_tab_strip_region_view->SetToolbarHeightForLayout(
          std::max(0, toolbar_height));
      views().vertical_tab_strip_region_view->SetCaptionButtonWidthForLayout(
-@@ -1374,7 +1473,9 @@
+@@ -1374,7 +1482,9 @@
    }
  
    // Lay out the bookmarks bar if one is present.
@@ -235,7 +244,7 @@
    if (IsParentedTo(views().bookmark_bar, views().top_container)) {
      const gfx::Rect bookmarks_bounds(
          params.visual_client_area.x(), params.visual_client_area.y(),
-@@ -1473,6 +1574,47 @@
+@@ -1473,6 +1583,47 @@
    layout_data_ = std::make_unique<TransientLayoutData>(params);
    layout_data_->window_state = delegate().GetBrowserWindowState();
    layout_data_->tab_strip_type = delegate().GetTabStripType();
@@ -283,7 +292,7 @@
    layout_data_->horizontal_layout =
        CalculateHorizontalLayout(layout_data_->revised_params);
    layout_data_->vertical_tab_strip_animation =
-@@ -1600,7 +1742,12 @@
+@@ -1600,7 +1751,12 @@
      // Apply shadow for expand-on-hover.
      auto* const shadow_frame =
          views().vertical_tab_strip_region_view->shadow_frame();
