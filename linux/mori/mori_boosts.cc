@@ -133,6 +133,14 @@ class BoostStore {
     Changed();
   }
 
+  std::vector<std::string> Hosts() const {
+    std::vector<std::string> hosts;
+    for (const Boost& boost : boosts_) {
+      hosts.push_back(boost.host);
+    }
+    return hosts;
+  }
+
   base::CallbackListSubscription AddObserver(base::RepeatingClosure closure) {
     return observers_.Add(std::move(closure));
   }
@@ -721,6 +729,14 @@ void EditBoost(BrowserWindowInterface* browser) {
         kBoostEditorKey, std::make_unique<BoostEditor>(browser_view));
   }
   editor->Open();
+}
+
+std::vector<std::string> ListBoostedSites(Profile* profile) {
+  return BoostStore::For(profile)->Hosts();
+}
+
+void RemoveBoost(Profile* profile, const std::string& host) {
+  BoostStore::For(profile)->Remove(host);
 }
 
 }  // namespace mori

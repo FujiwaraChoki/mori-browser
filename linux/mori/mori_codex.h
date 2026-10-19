@@ -25,6 +25,9 @@
 
 namespace mori {
 
+// Where `codex` is installed, if it is (blocking: checks files).
+std::optional<base::FilePath> FindCodexBinary();
+
 class CodexServer {
  public:
   class Delegate {

@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/mori/mori_assistant.h"
 #include "chrome/browser/ui/views/mori/mori_command_ids.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_sidebar.h"
@@ -40,17 +41,19 @@ void BuildAppMenu(ui::SimpleMenuModel* model, BrowserWindowInterface* browser) {
                          Icon("rotate-ccw"));
   model->AddItemWithIcon(kCommandSleepBackgroundTabs, u"Sleep Background Tabs",
                          Icon("moon"));
+  model->AddItemWithIcon(kCommandPeekClipboard, u"Peek a Link", Icon("eye"));
   model->AddSeparator(ui::NORMAL_SEPARATOR);
+  model->AddItemWithIcon(kCommandToggleAssistant,
+                         IsAssistantOpen(browser) ? u"Hide Assistant"
+                                                  : u"Show Assistant",
+                         Icon("sparkles"));
   model->AddItemWithIcon(IDC_TOGGLE_VERTICAL_TABS,
                          IsSidebarHiddenIn(browser) ? u"Show Sidebar"
                                                   : u"Hide Sidebar",
                          Icon("panel-left-close"));
   model->AddItemWithIcon(kCommandEditTheme, u"Edit Theme…", Icon("palette"));
   model->AddSeparator(ui::NORMAL_SEPARATOR);
-  model->AddItemWithIcon(IDC_SHOW_HISTORY, u"History", Icon("clock"));
   model->AddItemWithIcon(IDC_SHOW_DOWNLOADS, u"Downloads", Icon("download"));
-  model->AddItemWithIcon(IDC_SHOW_BOOKMARK_MANAGER, u"Bookmarks",
-                         Icon("bookmark"));
   model->AddItemWithIcon(IDC_MANAGE_EXTENSIONS, u"Extensions", Icon("puzzle"));
   model->AddSeparator(ui::NORMAL_SEPARATOR);
   model->AddItemWithIcon(IDC_OPTIONS, u"Settings", Icon("settings"));

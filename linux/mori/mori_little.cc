@@ -1,5 +1,7 @@
 #include "chrome/browser/ui/views/mori/mori_little.h"
 
+#include <algorithm>
+
 #include <map>
 #include <memory>
 #include <string>
@@ -75,8 +77,13 @@ class Settings {
   bool links_in_little() const { return links_in_little_; }
   void set_links_in_little(bool little) {
     links_in_little_ = little;
-    file_.Write(base::Value(base::DictValue().Set(
-        "external_links", little ? "little_window" : "current_space")));
+    Save();
+  }
+
+  int archive_after_hours() const { return archive_after_hours_; }
+  void set_archive_after_hours(int hours) {
+    archive_after_hours_ = hours;
+    Save();
   }
 
  private:
@@ -86,11 +93,24 @@ class Settings {
               value->GetDict().FindString("external_links")) {
         links_in_little_ = *links != "current_space";
       }
+      if (std::optional<int> hours =
+              value->GetDict().FindInt("archive_after_hours")) {
+        archive_after_hours_ = std::max(0, *hours);
+      }
     }
   }
 
-  // Mori 3's default.
+  void Save() {
+    file_.Write(base::Value(
+        base::DictValue()
+            .Set("external_links",
+                 links_in_little_ ? "little_window" : "current_space")
+            .Set("archive_after_hours", archive_after_hours_)));
+  }
+
+  // Mori 3's defaults.
   bool links_in_little_ = true;
+  int archive_after_hours_ = 24;
   // Last: its load callback uses the members above.
   JsonFile file_;
 };
@@ -142,6 +162,14 @@ std::u16string OpenLabel(BrowserWindowInterface* little) {
 }
 
 }  // namespace
+
+int ArchiveAfterHours(Profile* profile) {
+  return Settings::For(profile)->archive_after_hours();
+}
+
+void SetArchiveAfterHours(Profile* profile, int hours) {
+  Settings::For(profile)->set_archive_after_hours(hours);
+}
 
 bool LinksOpenInLittle(Profile* profile) {
   return Settings::For(profile)->links_in_little();

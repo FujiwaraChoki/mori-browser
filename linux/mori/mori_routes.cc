@@ -79,6 +79,8 @@ class RouteStore {
     Save();
   }
 
+  const std::vector<Route>& routes() const { return routes_; }
+
  private:
   void OnLoaded(std::optional<base::Value> value) {
     if (!value || !value->is_list()) {
@@ -169,6 +171,10 @@ void RouteExternalTab(BrowserWindowInterface* browser,
                                            ->visual_data()
                                            ->title());
   }
+}
+
+std::vector<Route> ListRoutes(BrowserWindowInterface* browser) {
+  return RouteStore::For(browser->GetProfile())->routes();
 }
 
 }  // namespace mori

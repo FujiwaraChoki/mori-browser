@@ -1,0 +1,16 @@
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -1219,6 +1219,13 @@
+   gfx::Rect contents_bounds = multi_contents_view_->ConvertRectToWidget(
+       multi_contents_view_->GetLocalBounds());
+ 
++  // Mori: the address field is in the sidebar; find opens at the page's top
++  // right, inside the card, as in Mori 3.
++  if (ShouldDrawVerticalTabStrip()) {
++    contents_bounds.Inset(gfx::Insets::TLBR(8, 0, 0, 8));
++    return multi_contents_view_->GetMirroredRect(contents_bounds);
++  }
++
+   // If the location bar is visible use it to position the bounding box,
+   // otherwise use the contents container.
+   auto* const immersive_mode_controller =

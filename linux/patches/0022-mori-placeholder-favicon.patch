@@ -1,0 +1,55 @@
+--- a/chrome/browser/favicon/favicon_utils.cc
++++ b/chrome/browser/favicon/favicon_utils.cc
+@@ -4,6 +4,13 @@
+ 
+ #include "chrome/browser/favicon/favicon_utils.h"
+ 
++#include "base/no_destructor.h"
++#include "cc/paint/paint_flags.h"
++#include "ui/gfx/canvas.h"
++#include "ui/gfx/geometry/rect_f.h"
++#include "ui/gfx/image/canvas_image_source.h"
++#include "ui/gfx/image/image_skia.h"
++
+ #include "base/hash/sha1.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/favicon/favicon_service_factory.h"
+@@ -54,11 +61,34 @@
+ }
+ 
+ // Gets the appropriate light or dark rasterized default favicon.
++// Mori: Mori 3's placeholder for pages without an icon, a soft rounded
++// square, in place of Chromium's globe.
++class MoriPlaceholderSource : public gfx::CanvasImageSource {
++ public:
++  explicit MoriPlaceholderSource(bool is_dark)
++      : gfx::CanvasImageSource(gfx::Size(gfx::kFaviconSize, gfx::kFaviconSize)),
++        is_dark_(is_dark) {}
++
++  void Draw(gfx::Canvas* canvas) override {
++    cc::PaintFlags flags;
++    flags.setAntiAlias(true);
++    flags.setColor(
++        SkColorSetA(is_dark_ ? SK_ColorWHITE : SK_ColorBLACK, 0x33));
++    canvas->DrawRoundRect(gfx::RectF(1, 1, 14, 14), 3, flags);
++  }
++
++ private:
++  const bool is_dark_;
++};
++
+ gfx::Image GetDefaultFaviconForColorScheme(bool is_dark) {
+-  const int resource_id =
+-      is_dark ? IDR_DEFAULT_FAVICON_DARK : IDR_DEFAULT_FAVICON;
+-  return ui::ResourceBundle::GetSharedInstance().GetNativeImageNamed(
+-      resource_id);
++  static base::NoDestructor<gfx::Image> dark(gfx::ImageSkia(
++      std::make_unique<MoriPlaceholderSource>(true),
++      gfx::Size(gfx::kFaviconSize, gfx::kFaviconSize)));
++  static base::NoDestructor<gfx::Image> light(gfx::ImageSkia(
++      std::make_unique<MoriPlaceholderSource>(false),
++      gfx::Size(gfx::kFaviconSize, gfx::kFaviconSize)));
++  return is_dark ? *dark : *light;
+ }
+ 
+ }  // namespace

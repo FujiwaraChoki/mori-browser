@@ -1,0 +1,14 @@
+--- a/chrome/browser/ui/views/location_bar/cookie_controls/cookie_controls_page_action_controller.cc
++++ b/chrome/browser/ui/views/location_bar/cookie_controls/cookie_controls_page_action_controller.cc
+@@ -239,8 +239,9 @@
+ }
+ 
+ bool CookieControlsPageActionController::ShouldShowIcon() const {
+-  return controls_state_ != CookieControlsState::kHidden ||
+-         bubble_delegate_->HasBubble();
++  // Mori: no eye in the address field, as in Mori 3; a site's cookies are
++  // in its info bubble (the lock).
++  return bubble_delegate_->HasBubble();
+ }
+ 
+ void CookieControlsPageActionController::UpdateIconVisibility() {

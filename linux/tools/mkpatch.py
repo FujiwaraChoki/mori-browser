@@ -100,6 +100,24 @@ GROUPS = {
         "third_party/blink/renderer/core/loader/navigation_policy.cc",
         "chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc",
     ],
+    "0019-mori-overlay-scrollbars": [
+        "ui/native_theme/features/native_theme_features.cc",
+    ],
+    "0020-mori-find-bar": [
+        "chrome/browser/ui/views/frame/browser_view.cc",
+    ],
+    "0021-mori-quiet-address-field": [
+        "chrome/browser/ui/views/location_bar/cookie_controls/cookie_controls_page_action_controller.cc",
+    ],
+    "0022-mori-placeholder-favicon": [
+        "chrome/browser/favicon/favicon_utils.cc",
+    ],
+    "0018-mori-context-menus": [
+        "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.cc",
+        "chrome/browser/ui/views/frame/browser_widget.cc",
+        "chrome/browser/renderer_context_menu/render_view_context_menu.cc",
+        "chrome/browser/ui/views/renderer_context_menu/render_view_context_menu_views.cc",
+    ],
 }
 
 

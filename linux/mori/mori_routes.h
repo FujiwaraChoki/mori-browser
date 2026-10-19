@@ -7,6 +7,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 class BrowserWindowInterface;
 class GURL;
@@ -31,6 +32,9 @@ std::optional<Route> RouteFor(BrowserWindowInterface* browser,
 // Pages of `url`'s site go to the space on screen from now on.
 void RouteSiteToCurrentSpace(BrowserWindowInterface* browser, const GURL& url);
 void RemoveRoute(BrowserWindowInterface* browser, const std::string& host);
+
+// Every rule, oldest first (for settings).
+std::vector<Route> ListRoutes(BrowserWindowInterface* browser);
 
 // A tab opened from another app (`first` is the one shown): moves it into
 // its rule's space and, for the first, shows that space.

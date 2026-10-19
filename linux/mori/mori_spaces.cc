@@ -2,6 +2,8 @@
 
 #include "chrome/browser/ui/views/mori/mori_assistant.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
+#include "chrome/browser/ui/views/mori/mori_little.h"
+#include "chrome/browser/ui/views/mori/mori_new_tab.h"
 #include "chrome/browser/ui/views/mori/mori_sidebar.h"
 #include "chrome/browser/ui/views/mori/mori_space_editor.h"
 #include "chrome/browser/ui/views/mori/mori_space_themes.h"
@@ -18,6 +20,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/no_destructor.h"
 #include "base/scoped_observation.h"
 #include "base/strings/string_number_conversions.h"
@@ -188,7 +191,6 @@ constexpr int kRowContentInset = 7;
 constexpr int kLabelHeight = 24;
 constexpr int kDividerHeight = 20;
 
-constexpr base::TimeDelta kAutoArchiveAfter = base::Hours(24);
 constexpr base::TimeDelta kArchiveCheckInterval = base::Minutes(10);
 
 // Mori 3's muted sidebar text (the space label, "New Tab").
@@ -669,6 +671,21 @@ class SpaceBar : public views::View,
     }
   }
 
+  void AddedToWidget() override {
+    views::View::AddedToWidget();
+    // Mori 3's new tab page, in this window (once the window is set up:
+    // the sidebar joins it while the BrowserView is still being built).
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE,
+        base::BindOnce(
+            [](base::WeakPtr<BrowserWindowInterface> browser) {
+              if (browser) {
+                WatchNewTabPages(browser.get());
+              }
+            },
+            browser_->GetWeakPtr()));
+  }
+
  private:
   // Collapsing (Chromium's button or shortcut) hides the sidebar the Mori
   // way instead, as Ctrl+S does.
@@ -717,7 +734,11 @@ class SpaceBar : public views::View,
     if (!model || !groups_ready_) {
       return;
     }
-    const base::Time cutoff = base::Time::Now() - kAutoArchiveAfter;
+    const int hours = ArchiveAfterHours(browser_->GetProfile());
+    if (hours <= 0) {
+      return;
+    }
+    const base::Time cutoff = base::Time::Now() - base::Hours(hours);
     std::vector<tabs::TabHandle> idle;
     for (int i = 0; i < model->count(); ++i) {
       tabs::TabInterface* tab = model->GetTabAtIndex(i);

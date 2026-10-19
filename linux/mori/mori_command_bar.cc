@@ -29,6 +29,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/mori/mori_commands.h"
+#include "chrome/browser/ui/views/mori/mori_new_tab.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "chrome/browser/ui/views/theme_copying_widget.h"
 #include "components/keyed_service/core/service_access_type.h"
@@ -38,6 +39,10 @@
 #include "components/omnibox/browser/autocomplete_match.h"
 #include "components/omnibox/browser/autocomplete_result.h"
 #include "components/omnibox/browser/favicon_cache.h"
+#include "base/task/cancelable_task_tracker.h"
+#include "components/history/core/browser/history_service.h"
+#include "components/history/core/browser/history_types.h"
+#include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/class_property.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -83,6 +88,10 @@ namespace {
 // Zen's.
 constexpr size_t kMaxResults = 10;
 constexpr size_t kMaxCommands = 3;
+// Before anything is typed (Mori 3): the space's other tabs, most recent
+// first, then pages from history.
+constexpr size_t kIdleRows = 8;
+constexpr size_t kIdleTabs = 5;
 constexpr int kPanelRadius = 10;
 constexpr int kInputRowHeight = 62;
 constexpr int kInputTextSize = 17;
@@ -409,17 +418,14 @@ class CommandBar : public views::View,
     std::u16string text;
     content::WebContents* contents =
         browser_view_->browser()->GetTabStripModel()->GetActiveWebContents();
-    if (mode == CommandBarMode::kCurrentTab && contents) {
+    if (mode == CommandBarMode::kCurrentTab && contents &&
+        !IsNewTabPage(contents->GetVisibleURL())) {
       text = base::UTF8ToUTF16(contents->GetVisibleURL().spec());
     }
     field_->SetText(text);
     field_->SelectAll(false);
-    selected_ = 0;
-    controller_->Stop(AutocompleteStopReason::kClobbered);
-    matches_.clear();
-    commands_.clear();
-    UpdateResults();
-    UpdateBounds();
+    ShowIdle();
+    GetWidget()->StackAtTop();
     GetWidget()->Show();
     field_->RequestFocus();
   }
@@ -487,13 +493,10 @@ class CommandBar : public views::View,
       }
     }
     if (text.empty()) {
-      controller_->Stop(AutocompleteStopReason::kClobbered);
-      matches_.clear();
-      commands_.clear();
-      UpdateResults();
-      UpdateBounds();
+      ShowIdle();
       return;
     }
+    idle_ = false;
     AutocompleteInput input(text, text.size(),
                             metrics::OmniboxEventProto::OTHER,
                             ChromeAutocompleteSchemeClassifier(profile_));
@@ -505,6 +508,90 @@ class CommandBar : public views::View,
     }
     input_is_url_ = input.type() == metrics::OmniboxInputType::URL;
     controller_->Start(input);
+  }
+
+  // Nothing typed yet: recent tabs and pages, none highlighted.
+  void ShowIdle() {
+    controller_->Stop(AutocompleteStopReason::kClobbered);
+    history_tracker_.TryCancelAll();
+    idle_ = true;
+    selected_ = -1;
+    commands_.clear();
+    matches_.clear();
+    BrowserWindowInterface* browser = browser_view_->browser();
+    TabStripModel* model = browser->GetTabStripModel();
+    const std::optional<tab_groups::TabGroupId> space =
+        GetCurrentSpace(browser);
+    std::vector<tabs::TabInterface*> tabs;
+    for (int i = 0; i < model->count(); ++i) {
+      tabs::TabInterface* tab = model->GetTabAtIndex(i);
+      const GURL& url = tab->GetContents()->GetLastCommittedURL();
+      if (tab != model->GetActiveTab() && url.SchemeIsHTTPOrHTTPS() &&
+          (!space || tab->IsPinned() || tab->GetGroup() == space)) {
+        tabs.push_back(tab);
+      }
+    }
+    std::ranges::stable_sort(tabs, [](tabs::TabInterface* a,
+                                      tabs::TabInterface* b) {
+      return a->GetContents()->GetLastActiveTimeTicks() >
+             b->GetContents()->GetLastActiveTimeTicks();
+    });
+    for (tabs::TabInterface* tab : tabs) {
+      if (matches_.size() == kIdleTabs) {
+        break;
+      }
+      content::WebContents* contents = tab->GetContents();
+      AddIdleMatch(AutocompleteMatchType::OPEN_TAB,
+                   contents->GetLastCommittedURL(), contents->GetTitle());
+    }
+    UpdateResults();
+    UpdateBounds();
+    if (history::HistoryService* history = HistoryServiceFactory::GetForProfile(
+            profile_, ServiceAccessType::EXPLICIT_ACCESS)) {
+      history::QueryOptions options;
+      options.max_count = kIdleRows * 2;
+      options.duplicate_policy = history::QueryOptions::REMOVE_ALL_DUPLICATES;
+      history->QueryHistory(u"", options,
+                            base::BindOnce(&CommandBar::OnIdleHistory,
+                                           weak_factory_.GetWeakPtr()),
+                            &history_tracker_);
+    }
+  }
+
+  void AddIdleMatch(AutocompleteMatchType::Type type,
+                    const GURL& url,
+                    const std::u16string& title) {
+    AutocompleteMatch match(nullptr, 0, false, type);
+    match.destination_url = url;
+    match.contents = base::UTF8ToUTF16(url.spec());
+    match.description = title;
+    match.transition = ui::PAGE_TRANSITION_TYPED;
+    matches_.push_back(std::move(match));
+  }
+
+  void OnIdleHistory(history::QueryResults results) {
+    if (!idle_) {
+      return;
+    }
+    for (const history::URLResult& result : results) {
+      if (matches_.size() == kIdleRows) {
+        break;
+      }
+      const GURL url = result.url();
+      const bool listed = std::ranges::any_of(
+          matches_, [&](const AutocompleteMatch& m) {
+            return m.destination_url == url;
+          });
+      content::WebContents* contents =
+          browser_view_->browser()->GetTabStripModel()->GetActiveWebContents();
+      if (listed || !url.SchemeIsHTTPOrHTTPS() ||
+          (contents && contents->GetLastCommittedURL() == url)) {
+        continue;
+      }
+      AddIdleMatch(AutocompleteMatchType::HISTORY_URL, url, result.title());
+    }
+    UpdateResults();
+    UpdateBounds();
   }
 
   // Commands come first, then Chromium's suggestions.
@@ -630,11 +717,16 @@ class CommandBar : public views::View,
     if (count == 0) {
       return;
     }
-    selected_ = (selected_ + delta + count) % count;
+    selected_ = selected_ < 0 ? (delta > 0 ? 0 : count - 1)
+                              : (selected_ + delta + count) % count;
     UpdateResults();
   }
 
   void OpenSelected() {
+    if (selected_ < 0) {
+      Hide();
+      return;
+    }
     if (VisibleMatches() == 0) {
       if (field_->GetText().empty()) {
         Hide();
@@ -732,6 +824,9 @@ class CommandBar : public views::View,
   std::vector<AutocompleteMatch> matches_;
   std::vector<CommandItem> commands_;
   bool input_is_url_ = false;
+  // Nothing typed since the bar opened (or the field was cleared).
+  bool idle_ = false;
+  base::CancelableTaskTracker history_tracker_;
   int selected_ = 0;
   base::ScopedObservation<AutocompleteController,
                           AutocompleteController::Observer>

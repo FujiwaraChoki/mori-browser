@@ -44,6 +44,9 @@ void BeginTabRename(views::View* tab_view);
 // The same for the active tab of `browser` (the "Rename Tab" command).
 void RenameActiveTab(BrowserWindowInterface* browser);
 
+// Starts renaming `tab`'s row (its menu's "Rename…").
+void RenameTab(BrowserWindowInterface* browser, tabs::TabInterface* tab);
+
 }  // namespace mori
 
 #endif  // CHROME_BROWSER_UI_VIEWS_MORI_MORI_TAB_NAMES_H_

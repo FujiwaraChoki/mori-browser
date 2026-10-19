@@ -1,17 +1,20 @@
 --- a/chrome/browser/ui/browser_command_controller.cc
 +++ b/chrome/browser/ui/browser_command_controller.cc
-@@ -57,6 +57,10 @@
+@@ -57,6 +57,13 @@
  #include "chrome/browser/ui/actions/command_action_updater.h"
  #include "chrome/browser/ui/browser_actions.h"
  #include "chrome/browser/ui/browser_commands.h"
 +#include "chrome/browser/ui/views/mori/mori_command_bar.h"
 +#include "chrome/browser/ui/views/mori/mori_command_ids.h"
++#include "chrome/browser/ui/views/mori/mori_library.h"
++#include "chrome/browser/ui/views/mori/mori_menu.h"
++#include "chrome/browser/ui/views/mori/mori_settings.h"
 +#include "chrome/browser/ui/views/mori/mori_sidebar.h"
 +#include "chrome/browser/ui/views/mori/mori_spaces.h"
  #include "chrome/browser/ui/browser_element_identifiers.h"
  #include "chrome/browser/ui/browser_select_file_dialog_controller.h"
  #include "chrome/browser/ui/browser_window.h"
-@@ -531,6 +535,15 @@
+@@ -531,6 +538,15 @@
    }
  #endif
  
@@ -27,7 +30,7 @@
    return command_id == IDC_CLOSE_TAB || command_id == IDC_CLOSE_WINDOW ||
           command_id == IDC_NEW_INCOGNITO_WINDOW ||
           command_id == IDC_NEW_ISOLATED_WINDOW || command_id == IDC_NEW_TAB ||
-@@ -707,7 +720,9 @@
+@@ -707,7 +723,9 @@
        ToggleTabScrollButtonsPin(browser_);
        break;
      case IDC_TOGGLE_VERTICAL_TABS:
@@ -38,7 +41,7 @@
        break;
      case IDC_TOGGLE_VERTICAL_TABS_COLLAPSE:
  #if !BUILDFLAG(IS_MAC)
-@@ -752,6 +767,10 @@
+@@ -752,6 +770,10 @@
        CloseWindow(browser_);
        break;
      case IDC_NEW_TAB: {
@@ -49,7 +52,17 @@
        NewTab(browser_, NewTabTypes::kNewTabCommand);
        break;
      }
-@@ -1104,6 +1123,10 @@
+@@ -934,7 +956,8 @@
+       SavePage(browser_);
+       break;
+     case IDC_BOOKMARK_THIS_TAB:
+-      BookmarkCurrentTab(browser_);
++      // Mori: Ctrl+D bookmarks or unbookmarks without a dialog (Mori 3).
++      mori::ToggleActiveTabBookmark(browser_.get());
+       break;
+     case IDC_BOOKMARK_ALL_TABS:
+       BookmarkAllTabs(browser_);
+@@ -1104,6 +1127,10 @@
          break;
        }
        base::RecordAction(base::UserMetricsAction("Accel_Focus_Location"));
@@ -60,7 +73,30 @@
        FocusLocationBar(browser_);
        break;
      case IDC_FOCUS_SEARCH:
-@@ -1380,6 +1403,11 @@
+@@ -1255,6 +1282,11 @@
+       ShowAvatarMenu(browser_);
+       break;
+     case IDC_SHOW_HISTORY:
++      // Mori: the library popover (Mori 3), in its windows.
++      if (browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL) {
++        mori::ToggleLibrary(browser_.get());
++        break;
++      }
+       ShowHistory(webui::GetBrowserForOpeningWebUi(browser_));
+       break;
+     case IDC_SHOW_HISTORY_CLUSTERS_SIDE_PANEL:
+@@ -1288,6 +1320,10 @@
+                           chrome::kPerformanceSubPage);
+       break;
+     case IDC_OPTIONS:
++      // Mori: Mori 3's settings sheet over the page.
++      if (mori::ShowSettings(browser_.get())) {
++        break;
++      }
+       ShowSettings(webui::GetBrowserForOpeningWebUi(browser_));
+       break;
+     case IDC_EDIT_SEARCH_ENGINES:
+@@ -1380,6 +1416,11 @@
  
      // Tab group commands.
      case IDC_FOCUS_NEXT_TAB_GROUP:
@@ -72,7 +108,7 @@
        if (base::i18n::IsRTL()) {
          FocusPreviousTabGroup(browser_);
        } else {
-@@ -1389,6 +1417,10 @@
+@@ -1389,6 +1430,10 @@
                                      TabGroupShortcut::kFocusNextTabGroup);
        break;
      case IDC_FOCUS_PREV_TAB_GROUP:
@@ -83,7 +119,7 @@
        if (base::i18n::IsRTL()) {
          FocusNextTabGroup(browser_);
        } else {
-@@ -1595,6 +1627,11 @@
+@@ -1595,6 +1640,11 @@
        break;
      }
      default:
@@ -95,7 +131,7 @@
        LOG(WARNING) << "Received Unimplemented Command: " << id;
        break;
    }
-@@ -1716,6 +1753,11 @@
+@@ -1716,6 +1766,11 @@
      return;
    }
  
@@ -130,7 +166,7 @@
    return *accelerators;
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -2721,6 +2721,54 @@
+@@ -2721,6 +2721,62 @@
        "views/frame/browser_root_view.cc",
        "views/frame/browser_view.cc",
        "views/frame/browser_view.h",
@@ -161,7 +197,15 @@
 +      "views/mori/mori_import.cc",
 +      "views/mori/mori_import.h",
 +      "views/mori/mori_little.cc",
++      "views/mori/mori_library.cc",
++      "views/mori/mori_library.h",
 +      "views/mori/mori_little.h",
++      "views/mori/mori_new_tab.cc",
++      "views/mori/mori_new_tab.h",
++      "views/mori/mori_settings.cc",
++      "views/mori/mori_settings.h",
++      "views/mori/mori_menu.cc",
++      "views/mori/mori_menu.h",
 +      "views/mori/mori_overlay.cc",
 +      "views/mori/mori_overlay.h",
 +      "views/mori/mori_peek.cc",

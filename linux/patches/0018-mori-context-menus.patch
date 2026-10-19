@@ -1,0 +1,113 @@
+--- a/chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_menu.h"
++
+ #include <variant>
+ 
+ #include "base/memory/weak_ptr.h"
+@@ -450,6 +452,12 @@
+     return;
+   }
+ 
++  // Mori: Mori 3's tab menu.
++  mori::ShowTabMenu(browser_view_->browser(),
++                    const_cast<tabs::TabInterface*>(tab), point, source_type,
++                    collection_node->view()->GetWidget());
++  return;
++
+   context_menu_controller_ =
+       std::make_unique<TabContextMenuController>(tab->GetHandle(), this);
+ 
+--- a/chrome/browser/ui/views/frame/browser_widget.cc
++++ b/chrome/browser/ui/views/frame/browser_widget.cc
+@@ -31,6 +31,7 @@
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/glass_frame_service.h"
+ #include "chrome/browser/ui/views/frame/system_menu_model_builder.h"
++#include "chrome/browser/ui/views/mori/mori_menu.h"
+ #include "chrome/browser/ui/views/frame/top_container_view.h"
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+ #include "chrome/common/chrome_switches.h"
+@@ -435,6 +436,12 @@
+   int hit_test = non_client_view()->NonClientHitTest(point_in_view_coords);
+   if (source_type == ui::mojom::MenuSourceType::kKeyboard ||
+       hit_test == HTCAPTION || hit_test == HTNOWHERE) {
++    // Mori: the sidebar's empty space shows Mori's menu, as in Mori 3.
++    if (source_type != ui::mojom::MenuSourceType::kKeyboard &&
++        mori::ShowSidebarMenu(browser_view_->browser(), p, source_type,
++                              source->GetWidget())) {
++      return;
++    }
+     menu_runner_ = std::make_unique<views::MenuRunner>(
+         GetSystemMenuModel(),
+         views::MenuRunner::HAS_MNEMONICS | views::MenuRunner::CONTEXT_MENU,
+--- a/chrome/browser/renderer_context_menu/render_view_context_menu.cc
++++ b/chrome/browser/renderer_context_menu/render_view_context_menu.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/renderer_context_menu/render_view_context_menu.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_menu.h"
++
+ #include <stddef.h>
+ 
+ #include <algorithm>
+@@ -1579,6 +1581,9 @@
+       AppendReadAnythingItem();
+     }
+   }
++
++  // Mori: Mori 3's labels, icons and actions.
++  mori::RestylePageMenu(&menu_model_, GetBrowser(), params_);
+ }
+ 
+ Profile* RenderViewContextMenu::GetProfile() const {
+@@ -3337,6 +3342,10 @@
+ // Menu delegate functions -----------------------------------------------------
+ 
+ bool RenderViewContextMenu::IsCommandIdEnabled(int id) const {
++  // Mori: its items run their own callbacks.
++  if (mori::IsMoriMenuItem(id)) {
++    return true;
++  }
+ #if BUILDFLAG(IS_CHROMEOS)
+   // Disable context menu in locked fullscreen mode to prevent users from
+   // exiting this mode (the menu is not really disabled as the user can still
+@@ -3775,6 +3784,11 @@
+   }
+   command_executed_ = true;
+ 
++  // Mori: its items run their own callbacks.
++  if (mori::IsMoriMenuItem(id)) {
++    return;
++  }
++
+   // Process extension menu items.
+   if (ContextMenuMatcher::IsExtensionsCustomCommandId(id)) {
+     RenderFrameHost* render_frame_host = GetRenderFrameHost();
+--- a/chrome/browser/ui/views/renderer_context_menu/render_view_context_menu_views.cc
++++ b/chrome/browser/ui/views/renderer_context_menu/render_view_context_menu_views.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/ui/views/renderer_context_menu/render_view_context_menu_views.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_menu.h"
++
+ #include <utility>
+ 
+ #include "base/command_line.h"
+@@ -158,6 +160,10 @@
+ bool RenderViewContextMenuViews::GetAcceleratorForCommandId(
+     int command_id,
+     ui::Accelerator* accel) const {
++  // Mori: Mori 3's page menu shows fewer shortcuts.
++  if (mori::HidesPageMenuShortcut(command_id)) {
++    return false;
++  }
+   // There are no formally defined accelerators we can query so we assume
+   // that Ctrl+C, Ctrl+V, Ctrl+X, Ctrl-A, etc do what they normally do.
+   switch (command_id) {

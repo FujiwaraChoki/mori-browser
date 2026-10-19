@@ -146,6 +146,23 @@ void AddMoriColorMixer(ui::ColorProvider* provider,
 
   mixer[kColorNewTabPageBackground] = {p.card};
 
+  // Chromium's bubbles and dialogs (permission prompts, "Restore pages?")
+  // on Mori's menu surface, with Mori 3's blue for the main button, links
+  // and focus.
+  const SkColor primary = SkColorSetRGB(0x29, 0x8E, 0xCD);
+  mixer[ui::kColorAccent] = {primary};
+  mixer[ui::kColorBubbleBackground] = {p.menu};
+  mixer[ui::kColorBubbleBorder] = {p.menu_border};
+  mixer[ui::kColorDialogBackground] = {p.menu};
+  mixer[ui::kColorButtonBackgroundProminent] = {primary};
+  mixer[ui::kColorButtonBackgroundProminentFocused] = {primary};
+  mixer[ui::kColorButtonForegroundProminent] = {SK_ColorWHITE};
+  mixer[ui::kColorButtonBackgroundTonal] = {p.field};
+  mixer[ui::kColorButtonForegroundTonal] = {p.foreground};
+  mixer[ui::kColorButtonBorder] = {p.menu_border};
+  mixer[ui::kColorFocusableBorderFocused] = {primary};
+  mixer[ui::kColorLinkForeground] = {primary};
+
   // Address field and suggestions.
   // The site icon sits in the pill without Chromium's round chip.
   // The chip sits on the field, which is translucent; a second coat of it

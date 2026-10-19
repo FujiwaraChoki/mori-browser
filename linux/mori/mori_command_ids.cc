@@ -80,7 +80,6 @@ constexpr int kAlt = ui::EF_ALT_DOWN;
 constexpr AcceleratorMapping kMoriAccelerators[] = {
     // Arc: hide the sidebar; Zen/Mori 3 compact mode does the same here.
     {ui::VKEY_S, kCtrl, IDC_TOGGLE_VERTICAL_TABS},
-    {ui::VKEY_C, kCtrl | kAlt, IDC_TOGGLE_VERTICAL_TABS},
     // Spaces.
     {ui::VKEY_RIGHT, kCtrl | kAlt, IDC_FOCUS_NEXT_TAB_GROUP},
     {ui::VKEY_LEFT, kCtrl | kAlt, IDC_FOCUS_PREV_TAB_GROUP},

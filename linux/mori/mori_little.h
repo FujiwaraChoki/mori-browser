@@ -29,6 +29,11 @@ void OpenLittle(Profile* profile, const GURL& url);
 bool LinksOpenInLittle(Profile* profile);
 void SetLinksOpenInLittle(Profile* profile, bool little);
 
+// Kept in the same file: hours a space tab may sit unseen before Mori
+// archives (closes) it, Arc's auto-archive; 0 turns it off.
+int ArchiveAfterHours(Profile* profile);
+void SetArchiveAfterHours(Profile* profile, int hours);
+
 // Called as a popup window's toolbar is built: in a Little Mori window, adds
 // its header buttons.
 void MaybeAddLittleHeader(ToolbarView* toolbar, BrowserView* browser_view);

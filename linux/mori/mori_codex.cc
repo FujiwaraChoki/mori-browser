@@ -77,6 +77,10 @@ std::optional<base::FilePath> FindCodex() {
 
 }  // namespace
 
+std::optional<base::FilePath> FindCodexBinary() {
+  return FindCodex();
+}
+
 // The process and its pipes. Writes and shutdown run on `runner_`; a
 // dedicated thread reads the server's stdout and posts each line back.
 class CodexServer::Io : public base::RefCountedThreadSafe<CodexServer::Io> {

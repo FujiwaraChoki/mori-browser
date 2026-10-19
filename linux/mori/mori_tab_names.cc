@@ -317,9 +317,14 @@ void StartTabRename(views::View* view) {
 }  // namespace
 
 void RenameActiveTab(BrowserWindowInterface* browser) {
+  if (tabs::TabInterface* tab = browser->GetTabStripModel()->GetActiveTab()) {
+    RenameTab(browser, tab);
+  }
+}
+
+void RenameTab(BrowserWindowInterface* browser, tabs::TabInterface* tab) {
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
-  tabs::TabInterface* tab = browser->GetTabStripModel()->GetActiveTab();
-  if (!browser_view || !tab) {
+  if (!browser_view) {
     return;
   }
   if (TabView* tab_view = FindTabView(browser_view, tab)) {

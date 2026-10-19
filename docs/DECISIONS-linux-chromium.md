@@ -320,10 +320,24 @@ lives in `linux/mori/` and reaches Chromium through a small patch.
 - **Toasts** (`mori_toast.cc`): Zen's pill for "Opened in <space>", rule
   changes and import results.
 
+Chromium surfaces redrawn as Mori 3's (patches 0018-0022):
+- Right-click menus on tabs, the sidebar's empty space and pages: Mori's
+  items, Lucide icons and Title Case. The page menu keeps Chromium's own
+  entries (spelling, extensions, autofill) and adds Peek, spaces, bookmark,
+  copy link and capture.
+- The library popover (History, Bookmarks, Archive of closed tabs) for the
+  library button and Ctrl+Y.
+- A settings sheet over the page for Ctrl+, bound to Chromium's
+  preferences, with a way through to Chromium's full settings page.
+- The new tab page (logo and search field), the empty command bar (recent
+  tabs and history), the find bar at the page's top right, overlay
+  scrollbars, Ctrl+D as a toast with a yellow star, a grey placeholder
+  favicon, and Mori's blue in Chromium's bubbles and dialogs.
+
 Still to port from Mori 3:
 - Per-space pinned tabs and folders. Chromium's tab groups have neither; it
   needs Mori's own bookkeeping per saved group.
-- A Mori new tab page, in place of Chromium's.
+- Downloads as Mori 3's popover (Chromium's bubble shows now).
 - Content blocking (uBlock Origin, once MV2 support is checked).
 - Branding: the name, icon and window class.
 

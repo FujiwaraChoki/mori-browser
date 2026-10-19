@@ -6,7 +6,11 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_MORI_MORI_BOOSTS_H_
 #define CHROME_BROWSER_UI_VIEWS_MORI_MORI_BOOSTS_H_
 
+#include <string>
+#include <vector>
+
 class BrowserWindowInterface;
+class Profile;
 
 namespace content {
 class WebContents;
@@ -19,6 +23,10 @@ void AttachBoosts(content::WebContents* contents);
 
 // Opens the boost editor for the site of `browser`'s active tab (Ctrl+Shift+B).
 void EditBoost(BrowserWindowInterface* browser);
+
+// The sites with a boost, and removing one (for settings).
+std::vector<std::string> ListBoostedSites(Profile* profile);
+void RemoveBoost(Profile* profile, const std::string& host);
 
 }  // namespace mori
 

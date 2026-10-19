@@ -51,6 +51,10 @@ void Overlay::Show(const gfx::Rect& bounds) {
   gfx::Rect screen = bounds;
   views::View::ConvertRectToScreen(browser_view_, &screen);
   widget_->SetBounds(screen);
+  if (!widget_->IsVisible()) {
+    // Above the page and the panels opened before it.
+    widget_->StackAtTop();
+  }
   widget_->Show();
 }
 

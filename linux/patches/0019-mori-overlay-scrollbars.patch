@@ -1,0 +1,30 @@
+--- a/ui/native_theme/features/native_theme_features.cc
++++ b/ui/native_theme/features/native_theme_features.cc
+@@ -20,6 +20,11 @@
+     BUILDFLAG(IS_FUCHSIA) || BUILDFLAG(IS_IOS) || BUILDFLAG(IS_MAC)
+ constexpr base::FeatureState kOverlayScrollbarFeatureState =
+     base::FEATURE_ENABLED_BY_DEFAULT;
++#elif BUILDFLAG(IS_LINUX)
++// Mori: thin scrollbars over the page that show while scrolling, as in
++// Mori 3, Arc and Zen.
++constexpr base::FeatureState kOverlayScrollbarFeatureState =
++    base::FEATURE_ENABLED_BY_DEFAULT;
+ #else
+ constexpr base::FeatureState kOverlayScrollbarFeatureState =
+     base::FEATURE_DISABLED_BY_DEFAULT;
+@@ -40,7 +45,14 @@
+ //   other platforms
+ BASE_FEATURE(kOverlayScrollbar, kOverlayScrollbarFeatureState);
+ constinit const base::FeatureParam<ScrollbarMode> kScrollbarMode{
+-    &kOverlayScrollbar, "mode", ScrollbarMode::kDevice, &kScrollbarModeOptions};
++    &kOverlayScrollbar, "mode",
++#if BUILDFLAG(IS_LINUX)
++    // Mori: whatever the desktop prefers.
++    ScrollbarMode::kOverlay,
++#else
++    ScrollbarMode::kDevice,
++#endif
++    &kScrollbarModeOptions};
+ 
+ // Disable to keep scrollbars visible forever once shown, and immediately
+ // update scrollbar states instead of animating. This is used to ensure

@@ -44,6 +44,8 @@ struct Replacement {
   std::string_view chromium;
   std::string_view lucide;
   bool filled = false;
+  // Painted in this colour instead of Chromium's, when set.
+  SkColor color = SK_ColorTRANSPARENT;
 };
 
 constexpr Replacement kReplacements[] = {
@@ -71,8 +73,9 @@ constexpr Replacement kReplacements[] = {
     {"kPageInfoCustomIcon", "lock"},
     {"kStarChromeRefreshOldIcon", "star"},
     {"kStarIcon", "star"},
-    {"kStarActiveChromeRefreshOldIcon", "star", true},
-    {"kStarFilledIcon", "star", true},
+    // Mori 3: a bookmarked page's star is a yellow outline.
+    {"kStarActiveChromeRefreshOldIcon", "star", false, SkColorSetRGB(0xFF, 0xB9, 0x00)},
+    {"kStarFilledIcon", "star", false, SkColorSetRGB(0xFF, 0xB9, 0x00)},
     // Tabs and sidebar.
     {"kCloseTabChromeRefreshOldIcon", "x"},
     {"kTabCloseIcon", "x"},
@@ -216,7 +219,8 @@ bool PaintReplacementIcon(gfx::Canvas* canvas,
   canvas->sk_canvas()->scale(scale, scale);
   cc::PaintFlags flags;
   flags.setAntiAlias(true);
-  flags.setColor(color);
+  flags.setColor(replacement->color != SK_ColorTRANSPARENT ? replacement->color
+                                                           : color);
   if (replacement->filled) {
     flags.setStyle(cc::PaintFlags::kFill_Style);
     canvas->DrawPath(BuildPath(lucide->ops), flags);
