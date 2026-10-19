@@ -64,6 +64,9 @@ std::optional<base::FilePath> FindCodex() {
       candidates.push_back(home.AppendASCII(dir).Append("codex"));
     }
   }
+  // Homebrew on Apple silicon (apps opened from the Dock don't get the
+  // shell's PATH), then the system places.
+  candidates.emplace_back("/opt/homebrew/bin/codex");
   candidates.emplace_back("/usr/local/bin/codex");
   candidates.emplace_back("/usr/bin/codex");
   for (const base::FilePath& candidate : candidates) {
@@ -73,6 +76,21 @@ std::optional<base::FilePath> FindCodex() {
     }
   }
   return std::nullopt;
+}
+
+// pipe2(O_CLOEXEC) where there is one (not macOS).
+bool CloseOnExecPipe(int fds[2]) {
+  if (pipe(fds) != 0) {
+    return false;
+  }
+  for (int i = 0; i < 2; ++i) {
+    if (fcntl(fds[i], F_SETFD, FD_CLOEXEC) != 0) {
+      close(fds[0]);
+      close(fds[1]);
+      return false;
+    }
+  }
+  return true;
 }
 
 }  // namespace
@@ -128,7 +146,13 @@ class CodexServer::Io : public base::RefCountedThreadSafe<CodexServer::Io> {
     base::CreateDirectory(working_dir);
     int in[2];
     int out[2];
-    if (pipe2(in, O_CLOEXEC) != 0 || pipe2(out, O_CLOEXEC) != 0) {
+    if (!CloseOnExecPipe(in)) {
+      Closed("Couldn't start Codex (no pipes).");
+      return;
+    }
+    if (!CloseOnExecPipe(out)) {
+      close(in[0]);
+      close(in[1]);
       Closed("Couldn't start Codex (no pipes).");
       return;
     }
@@ -147,8 +171,19 @@ class CodexServer::Io : public base::RefCountedThreadSafe<CodexServer::Io> {
     if (const base::FilePath home = HomeDir(); !home.empty()) {
       options.environment["HOME"] = home.value();
     }
-    if (!base::Environment::Create()->HasVar("PATH")) {
-      options.environment["PATH"] = "/usr/local/bin:/usr/bin:/bin";
+    // Codex's own directory first: an npm install is a script that needs
+    // the `node` next to it, which a desktop-launched browser's PATH (the
+    // Dock's, on macOS) may not have.
+    {
+      std::string path = codex->DirName().value();
+      if (std::optional<std::string> inherited =
+              base::Environment::Create()->GetVar("PATH");
+          inherited && !inherited->empty()) {
+        path += ":" + *inherited;
+      } else {
+        path += ":/usr/local/bin:/usr/bin:/bin";
+      }
+      options.environment["PATH"] = path;
     }
     base::CommandLine command(*codex);
     command.AppendArg("app-server");

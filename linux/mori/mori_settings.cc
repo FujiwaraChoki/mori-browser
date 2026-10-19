@@ -1,5 +1,6 @@
 #include "chrome/browser/ui/views/mori/mori_settings.h"
 
+#include "build/build_config.h"
 #include <algorithm>
 #include <limits>
 #include <memory>
@@ -35,6 +36,7 @@
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/mori/mori_window_events.h"
 #include "chrome/browser/ui/views/mori/mori_assistant.h"
 #include "chrome/browser/ui/views/mori/mori_boosts.h"
 #include "chrome/browser/ui/views/mori/mori_codex.h"
@@ -60,7 +62,6 @@
 #include "components/version_info/version_info.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkPoint.h"
-#include "ui/aura/window.h"
 #include "ui/base/class_property.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -1035,7 +1036,11 @@ class SettingsSheet : public views::View {
               base::BindRepeating(&RemoveBoost, profile(), host));
     }
     if (sites.empty()) {
+#if BUILDFLAG(IS_MAC)
+      Hint(boosts, u"Boost a site from its tab's menu or with ⇧⌘B.");
+#else
       Hint(boosts, u"Boost a site from its tab's menu or with Ctrl+Shift+B.");
+#endif
     }
 
     Card* permissions = Section(column, u"Permissions");
@@ -1249,9 +1254,8 @@ class Settings : public ui::EventObserver, public views::ViewObserver {
     if (!open_) {
       open_ = true;
       static_cast<SettingsSheet*>(overlay_->contents())->Open();
-      monitor_ = views::EventMonitor::CreateApplicationMonitor(
-          this, browser_view_->GetWidget()->GetNativeWindow(),
-          {ui::EventType::kKeyPressed});
+      monitor_ = MonitorWindow(this, browser_view_->GetWidget(),
+                               {ui::EventType::kKeyPressed});
       if (views::View* card = browser_view_->contents_container()) {
         observation_.AddObservation(card);
       }
@@ -1277,11 +1281,9 @@ class Settings : public ui::EventObserver, public views::ViewObserver {
 
   // ui::EventObserver:
   void OnEvent(const ui::Event& event) override {
-    auto* target = static_cast<aura::Window*>(event.target());
     if (event.IsKeyEvent() &&
-        event.AsKeyEvent()->key_code() == ui::VKEY_ESCAPE && target &&
-        target->GetRootWindow() ==
-            browser_view_->GetWidget()->GetNativeWindow()->GetRootWindow()) {
+        event.AsKeyEvent()->key_code() == ui::VKEY_ESCAPE &&
+        IsEventInWindow(event, browser_view_->GetWidget())) {
       PostClose();
     }
   }

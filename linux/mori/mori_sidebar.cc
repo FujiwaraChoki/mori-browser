@@ -9,9 +9,9 @@
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
+#include "chrome/browser/ui/views/mori/mori_window_events.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/geometry/rounded_corners_f.h"
-#include "ui/aura/window.h"
 #include "ui/base/class_property.h"
 #include "ui/events/event.h"
 #include "ui/events/event_observer.h"
@@ -45,9 +45,8 @@ class SidebarState : public ui::EventObserver {
     peeking_ = false;
     hide_timer_.Stop();
     if (hidden_ && browser_view_->GetWidget()) {
-      // An application monitor: a window monitor misses moves over the page.
-      monitor_ = views::EventMonitor::CreateApplicationMonitor(
-          this, browser_view_->GetWidget()->GetNativeWindow(),
+      monitor_ = MonitorWindow(
+          this, browser_view_->GetWidget(),
           {ui::EventType::kMouseMoved, ui::EventType::kMouseDragged,
            ui::EventType::kMouseExited});
     } else {
@@ -65,10 +64,7 @@ class SidebarState : public ui::EventObserver {
       return;
     }
     // Only this window's events; their root location is in its coordinates.
-    auto* target = static_cast<aura::Window*>(event.target());
-    if (!target || !browser_view_->GetWidget() ||
-        target->GetRootWindow() !=
-            browser_view_->GetWidget()->GetNativeWindow()->GetRootWindow()) {
+    if (!IsEventInWindow(event, browser_view_->GetWidget())) {
       return;
     }
     gfx::Point point =
@@ -141,6 +137,8 @@ class SidebarState : public ui::EventObserver {
       tabs->layer()->SetRoundedCornerRadius(
           gfx::RoundedCornersF(0, 0, radius, radius));
     }
+    // macOS: the traffic lights go with the sidebar, as in Arc.
+    SetWindowButtonsVisible(browser_view_->GetWidget(), !hidden_ || peeking_);
     browser_view_->InvalidateLayout();
     browser_view_->SchedulePaint();
   }

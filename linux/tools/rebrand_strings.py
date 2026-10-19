@@ -33,7 +33,16 @@ SKIP = [
     "skills_strings",
 ]
 
+# Messages whose text Mori replaces outright. In Mori tabs always live in
+# the sidebar, and Chromium's vertical-tabs toggle shows or hides it (the
+# macOS View menu's item).
+OVERRIDES = {
+    "IDS_SWITCH_TO_VERTICAL_TAB_MAC": "Toggle Sidebar",
+    "IDS_SWITCH_TO_HORIZONTAL_TAB_MAC": "Toggle Sidebar",
+}
+
 MESSAGE = re.compile(r"(<message\b[^>]*>)(.*?)(</message>)", re.S)
+NAME_ATTR = re.compile(r'name="([A-Z0-9_]+)"')
 NAME = re.compile(
     r"(?<!Google )\b(?:Chromium|Chrome)\b"
     r"(?!OS| OS| Authors| open source| project| Web Store| [Aa]pps?\b"
@@ -41,10 +50,18 @@ NAME = re.compile(
     r'|<ph name="END_LINK_CHROMIUM")')
 
 
+def rebrand_message(m):
+    name = NAME_ATTR.search(m.group(1))
+    if name and name.group(1) in OVERRIDES:
+        body = m.group(2)
+        indent = body[:len(body) - len(body.lstrip())]
+        trail = body[len(body.rstrip()):]
+        return m.group(1) + indent + OVERRIDES[name.group(1)] + trail + m.group(3)
+    return m.group(1) + NAME.sub("Mori", m.group(2)) + m.group(3)
+
+
 def rebrand(text):
-    return MESSAGE.sub(
-        lambda m: m.group(1) + NAME.sub("Mori", m.group(2)) + m.group(3),
-        text)
+    return MESSAGE.sub(rebrand_message, text)
 
 
 def files(src):

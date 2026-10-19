@@ -158,6 +158,12 @@ GROUPS = {
     "0024-mori-default-profile-name": [
         "chrome/browser/profiles/profile_attributes_storage.cc",
     ],
+    "0025-mori-macos": [
+        "chrome/browser/ui/cocoa/accelerators_cocoa.mm",
+        "chrome/browser/global_keyboard_shortcuts_mac.mm",
+        "chrome/common/chrome_paths_mac.mm",
+        "chrome/app/app-Info.plist",
+    ],
     "0018-mori-context-menus": [
         "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.cc",
         "chrome/browser/ui/views/frame/browser_widget.cc",

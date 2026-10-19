@@ -12,6 +12,7 @@
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "base/functional/bind.h"
+#include "build/build_config.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/ui/views/mori/mori_assistant.h"
 #include "chrome/browser/ui/views/mori/mori_boosts.h"
@@ -72,6 +73,7 @@ void PeekClipboard(BrowserWindowInterface* browser) {
           browser->GetWeakPtr()));
 }
 
+#if !BUILDFLAG(IS_MAC)
 constexpr int kCtrl = ui::EF_CONTROL_DOWN;
 constexpr int kShift = ui::EF_SHIFT_DOWN;
 constexpr int kAlt = ui::EF_ALT_DOWN;
@@ -115,6 +117,7 @@ constexpr AcceleratorMapping kMoriAccelerators[] = {
     {ui::VKEY_Y, kCtrl, IDC_SHOW_HISTORY},
     {ui::VKEY_J, kCtrl | kShift, IDC_SHOW_DOWNLOADS},
 };
+#endif  // !BUILDFLAG(IS_MAC)
 
 }  // namespace
 
@@ -164,6 +167,12 @@ void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id) {
 }
 
 void ApplyMoriAccelerators(std::vector<AcceleratorMapping>* accelerators) {
+#if BUILDFLAG(IS_MAC)
+  // macOS takes its shortcuts from the menu bar and
+  // global_keyboard_shortcuts_mac.mm, where Mori's are, with Command for
+  // Control.
+  return;
+#else
   for (const AcceleratorMapping& mori : kMoriAccelerators) {
     std::erase_if(*accelerators, [&](const AcceleratorMapping& existing) {
       return existing.keycode == mori.keycode &&
@@ -171,6 +180,7 @@ void ApplyMoriAccelerators(std::vector<AcceleratorMapping>* accelerators) {
     });
     accelerators->push_back(mori);
   }
+#endif
 }
 
 }  // namespace mori

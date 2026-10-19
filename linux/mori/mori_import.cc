@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "build/build_config.h"
 #include "base/base_paths.h"
 #include "base/containers/span.h"
 #include "base/files/file_path.h"
@@ -179,6 +180,12 @@ std::optional<base::FilePath> ProfileFromIni(const base::FilePath& root) {
 std::optional<base::FilePath> FindMozillaProfile(ImportSource source) {
   base::FilePath home;
   base::PathService::Get(base::DIR_HOME, &home);
+#if BUILDFLAG(IS_MAC)
+  const std::vector<const char*> roots =
+      source == ImportSource::kZen
+          ? std::vector<const char*>{"Library/Application Support/zen"}
+          : std::vector<const char*>{"Library/Application Support/Firefox"};
+#else
   const std::vector<const char*> roots =
       source == ImportSource::kZen
           ? std::vector<const char*>{".config/zen", ".zen",
@@ -187,6 +194,7 @@ std::optional<base::FilePath> FindMozillaProfile(ImportSource source) {
                 ".config/mozilla/firefox", ".mozilla/firefox",
                 ".var/app/org.mozilla.firefox/.mozilla/firefox",
                 "snap/firefox/common/.mozilla/firefox"};
+#endif
   for (const char* root : roots) {
     if (std::optional<base::FilePath> profile =
             ProfileFromIni(home.AppendASCII(root))) {
@@ -407,8 +415,12 @@ Imported ReadArc() {
   base::FilePath home;
   base::PathService::Get(base::DIR_HOME, &home);
   std::string text;
-  for (const char* where :
-       {"StorableSidebar.json", "Downloads/StorableSidebar.json"}) {
+  // Arc runs on macOS; elsewhere, a copy of its file.
+  for (const char* where : {
+#if BUILDFLAG(IS_MAC)
+           "Library/Application Support/Arc/StorableSidebar.json",
+#endif
+           "StorableSidebar.json", "Downloads/StorableSidebar.json"}) {
     if (base::ReadFileToString(home.AppendASCII(where), &text)) {
       break;
     }
@@ -566,11 +578,15 @@ void Apply(base::WeakPtr<BrowserWindowInterface> weak_browser,
                          : source == ImportSource::kFirefox ? u"Firefox"
                                                             : u"Arc";
   if (!imported.found) {
+#if BUILDFLAG(IS_MAC)
+    ShowToast(browser, std::u16string(u"No ") + name + u" data found");
+#else
     ShowToast(browser, source == ImportSource::kArc
                            ? u"Put a copy of Arc's StorableSidebar.json in "
                              u"your home or Downloads folder"
                            : std::u16string(u"No ") + name +
                                  u" profile found");
+#endif
     return;
   }
   TabStripModel* model = browser->GetTabStripModel();

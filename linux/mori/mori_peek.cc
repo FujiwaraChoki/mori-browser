@@ -20,6 +20,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/mori/mori_window_events.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_overlay.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
@@ -49,7 +50,6 @@
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/view.h"
 #include "ui/views/view_observer.h"
-#include "ui/aura/window.h"
 #include "ui/events/event.h"
 #include "ui/events/event_observer.h"
 #include "ui/views/event_monitor.h"
@@ -177,9 +177,8 @@ class PeekView : public views::View,
     contents_->GetController().LoadURLWithParams(load);
     // Escape closes Peek wherever the keyboard focus is.
     if (GetWidget()) {
-      escape_monitor_ = views::EventMonitor::CreateApplicationMonitor(
-          this, GetWidget()->GetNativeWindow(),
-          {ui::EventType::kKeyPressed});
+      escape_monitor_ =
+          MonitorWindow(this, GetWidget(), {ui::EventType::kKeyPressed});
     }
     InvalidateLayout();
   }
@@ -187,13 +186,9 @@ class PeekView : public views::View,
   // ui::EventObserver:
   using views::View::OnEvent;
   void OnEvent(const ui::Event& event) override {
-    auto* target = static_cast<aura::Window*>(event.target());
     if (!contents_ || !event.IsKeyEvent() ||
-        event.AsKeyEvent()->key_code() != ui::VKEY_ESCAPE || !target ||
-        !GetWidget() ||
-        target->GetRootWindow() !=
-            GetWidget()->GetNativeWindow()->GetRootWindow() ||
-        contents_->IsFullscreen()) {
+        event.AsKeyEvent()->key_code() != ui::VKEY_ESCAPE ||
+        !IsEventInWindow(event, GetWidget()) || contents_->IsFullscreen()) {
       return;
     }
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(

@@ -166,7 +166,15 @@
    return *accelerators;
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -2721,6 +2721,62 @@
+@@ -2545,6 +2545,7 @@
+ 
+   if (is_mac) {
+     sources += [
++      "views/mori/mori_window_events_mac.mm",
+       "views/frame/browser_frame_view_factory_mac.mm",
+       "views/frame/browser_frame_view_mac.h",
+       "views/frame/browser_frame_view_mac.mm",
+@@ -2721,6 +2722,64 @@
        "views/frame/browser_root_view.cc",
        "views/frame/browser_view.cc",
        "views/frame/browser_view.h",
@@ -226,6 +234,8 @@
 +      "views/mori/mori_toast.h",
 +      "views/mori/mori_toolbar_layout.cc",
 +      "views/mori/mori_toolbar_layout.h",
++      "views/mori/mori_window_events.cc",
++      "views/mori/mori_window_events.h",
        "views/frame/browser_widget.cc",
        "views/frame/browser_widget.h",
        "views/frame/browser_window_factory.cc",

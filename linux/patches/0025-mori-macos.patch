@@ -1,0 +1,112 @@
+--- a/chrome/browser/ui/cocoa/accelerators_cocoa.mm
++++ b/chrome/browser/ui/cocoa/accelerators_cocoa.mm
+@@ -46,9 +46,9 @@
+     {IDC_PASTE, ui::EF_COMMAND_DOWN, ui::VKEY_V},
+     {IDC_PRINT, ui::EF_COMMAND_DOWN, ui::VKEY_P},
+     {IDC_RESTORE_TAB, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN, ui::VKEY_T},
+-    {IDC_SAVE_PAGE, ui::EF_COMMAND_DOWN, ui::VKEY_S},
+-    {IDC_SHOW_BOOKMARK_BAR, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
+-     ui::VKEY_B},
++    // Mori: Cmd+S hides the sidebar (Arc), Cmd+Shift+B boosts the site;
++    // saving the page and the bookmarks bar have no shortcut.
++    {IDC_TOGGLE_VERTICAL_TABS, ui::EF_COMMAND_DOWN, ui::VKEY_S},
+     {IDC_SHOW_BOOKMARK_MANAGER, ui::EF_COMMAND_DOWN | ui::EF_ALT_DOWN,
+      ui::VKEY_B},
+     {IDC_BOOKMARK_THIS_TAB, ui::EF_COMMAND_DOWN, ui::VKEY_D},
+@@ -99,12 +99,15 @@
+     {IDC_HOME, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN, ui::VKEY_H},
+     {IDC_BACK, ui::EF_COMMAND_DOWN, ui::VKEY_OEM_4},
+     {IDC_FORWARD, ui::EF_COMMAND_DOWN, ui::VKEY_OEM_6},
+-    {IDC_BOOKMARK_ALL_TABS, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
+-     ui::VKEY_D},
++    // Mori: Cmd+Shift+D duplicates the tab, as Ctrl+Shift+D on Linux.
++    {IDC_DUPLICATE_TAB, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN, ui::VKEY_D},
+     {IDC_MINIMIZE_WINDOW, ui::EF_COMMAND_DOWN, ui::VKEY_M},
+-    {IDC_CYCLE_TO_NEXT_TAB, ui::EF_CONTROL_DOWN, ui::VKEY_TAB},
+-    {IDC_CYCLE_TO_PREV_TAB, ui::EF_CONTROL_DOWN | ui::EF_SHIFT_DOWN,
+-     ui::VKEY_TAB},
++    // Mori: Ctrl+Tab is the recent-tabs switcher; the next and previous
++    // tab are Cmd+Option+Down and Up, as in Arc.
++    {IDC_CYCLE_TO_NEXT_TAB, ui::EF_COMMAND_DOWN | ui::EF_ALT_DOWN,
++     ui::VKEY_DOWN},
++    {IDC_CYCLE_TO_PREV_TAB, ui::EF_COMMAND_DOWN | ui::EF_ALT_DOWN,
++     ui::VKEY_UP},
+     {IDC_HELP_PAGE_VIA_MENU, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
+      ui::VKEY_OEM_2},
+     {IDC_TOGGLE_FULLSCREEN_TOOLBAR, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
+--- a/chrome/browser/global_keyboard_shortcuts_mac.mm
++++ b/chrome/browser/global_keyboard_shortcuts_mac.mm
+@@ -17,6 +17,7 @@
+ #include "chrome/browser/ui/cocoa/accelerators_cocoa.h"
+ #include "chrome/browser/ui/tabs/features.h"
+ #include "chrome/browser/ui/ui_features.h"
++#include "chrome/browser/ui/views/mori/mori_command_ids.h"
+ #include "ui/base/accelerators/accelerator.h"
+ #include "ui/base/accelerators/platform_accelerator_cocoa.h"
+ #import "ui/base/cocoa/nsmenu_additions.h"
+@@ -114,6 +115,33 @@
+     std::vector<KeyboardShortcutData> keys({
+     // cmd    shift  cntrl  option vkeycode               command
+     // ---    -----  -----  ------ --------               -------
++      // Mori: Mori 3's shortcuts (mori_command_ids.cc on other systems),
++      // with Command for Control and Arc's keys where macOS needs others.
++      // First, so they win over Chromium's below.
++      {true,  false, false, true,  kVK_RightArrow,        IDC_FOCUS_NEXT_TAB_GROUP},
++      {true,  false, false, true,  kVK_LeftArrow,         IDC_FOCUS_PREV_TAB_GROUP},
++      {false, false, true,  false, kVK_ANSI_1,            mori::kCommandSelectSpace1},
++      {false, false, true,  false, kVK_ANSI_2,            mori::kCommandSelectSpace1 + 1},
++      {false, false, true,  false, kVK_ANSI_3,            mori::kCommandSelectSpace1 + 2},
++      {false, false, true,  false, kVK_ANSI_4,            mori::kCommandSelectSpace1 + 3},
++      {false, false, true,  false, kVK_ANSI_5,            mori::kCommandSelectSpace1 + 4},
++      {false, false, true,  false, kVK_ANSI_6,            mori::kCommandSelectSpace1 + 5},
++      {false, false, true,  false, kVK_ANSI_7,            mori::kCommandSelectSpace1 + 6},
++      {false, false, true,  false, kVK_ANSI_8,            mori::kCommandSelectSpace1 + 7},
++      {false, false, true,  false, kVK_ANSI_9,            mori::kCommandSelectSpace9},
++      {true,  false, false, true,  kVK_DownArrow,         IDC_SELECT_NEXT_TAB},
++      {true,  false, false, true,  kVK_UpArrow,           IDC_SELECT_PREVIOUS_TAB},
++      {true,  true,  false, false, kVK_ANSI_P,            mori::kCommandTogglePin},
++      {true,  true,  false, false, kVK_ANSI_C,            IDC_COPY_URL},
++      {true,  false, false, true,  kVK_ANSI_S,            mori::kCommandSleepBackgroundTabs},
++      {false, false, true,  false, kVK_Tab,               mori::kCommandSwitchRecentTab},
++      {false, true,  true,  false, kVK_Tab,               mori::kCommandSwitchRecentTabBack},
++      {true,  false, false, false, kVK_ANSI_Slash,        mori::kCommandShowShortcuts},
++      {true,  true,  false, false, kVK_ANSI_O,            mori::kCommandPeekClipboard},
++      {true,  true,  false, false, kVK_ANSI_X,            IDC_SHARING_HUB_SCREENSHOT},
++      {true,  true,  false, false, kVK_ANSI_B,            mori::kCommandBoostSite},
++      {true,  true,  false, false, kVK_ANSI_K,            mori::kCommandToggleAssistant},
++
+       {true,  true,  false, false, kVK_ANSI_RightBracket, IDC_SELECT_NEXT_TAB},
+       {true,  true,  false, false, kVK_ANSI_LeftBracket,  IDC_SELECT_PREVIOUS_TAB},
+       {false, false, true,  false, kVK_PageDown,          IDC_SELECT_NEXT_TAB},
+--- a/chrome/common/chrome_paths_mac.mm
++++ b/chrome/common/chrome_paths_mac.mm
+@@ -37,7 +37,8 @@
+ #elif BUILDFLAG(GOOGLE_CHROME_BRANDING)
+       product_dir_name = "Google/Chrome";
+ #else
+-      product_dir_name = "Chromium";
++      // Mori: its own profile, so it never opens or migrates Chromium's.
++      product_dir_name = "Mori";
+ #endif
+     }
+ 
+--- a/chrome/app/app-Info.plist
++++ b/chrome/app/app-Info.plist
+@@ -5,7 +5,7 @@
+ 	<key>CFBundleDevelopmentRegion</key>
+ 	<string>en</string>
+ 	<key>CFBundleDisplayName</key>
+-	<string>${EXECUTABLE_NAME}</string>
++	<string>Mori</string>
+ 	<key>CFBundleDocumentTypes</key>
+ 	<array>
+ 		<dict>
+@@ -156,7 +156,7 @@
+ 	<key>CFBundleInfoDictionaryVersion</key>
+ 	<string>6.0</string>
+ 	<key>CFBundleName</key>
+-	<string>${CHROMIUM_SHORT_NAME}</string>
++	<string>Mori</string>
+ 	<key>CFBundlePackageType</key>
+ 	<string>APPL</string>
+ 	<key>CFBundleSignature</key>

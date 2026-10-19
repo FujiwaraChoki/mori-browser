@@ -1,5 +1,7 @@
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
 
+#include "build/build_config.h"
+#include "chrome/browser/ui/views/mori/mori_window_events.h"
 #include "chrome/browser/ui/views/mori/mori_assistant.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_little.h"
@@ -73,7 +75,6 @@
 #include "ui/events/event_observer.h"
 #include "ui/views/event_monitor.h"
 #include "ui/views/widget/widget.h"
-#include "ui/aura/window.h"
 #include "ui/gfx/geometry/point_conversions.h"
 #include "content/public/browser/web_contents.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
@@ -344,8 +345,8 @@ class SpaceDivider : public views::View, public ui::EventObserver {
 
   void AddedToWidget() override {
     // An application monitor: a window monitor misses moves over the page.
-    monitor_ = views::EventMonitor::CreateApplicationMonitor(
-        this, GetWidget()->GetNativeWindow(),
+    monitor_ = MonitorWindow(
+        this, GetWidget(),
         {ui::EventType::kMouseMoved, ui::EventType::kMouseExited});
   }
   void RemovedFromWidget() override { monitor_.reset(); }
@@ -355,10 +356,8 @@ class SpaceDivider : public views::View, public ui::EventObserver {
   void OnEvent(const ui::Event& event) override {
     const views::View* sidebar = Sidebar();
     // Only this window's events; their root location is in its coordinates.
-    auto* target = static_cast<aura::Window*>(event.target());
-    if (!sidebar || !event.IsLocatedEvent() || !target || !GetWidget() ||
-        target->GetRootWindow() !=
-            GetWidget()->GetNativeWindow()->GetRootWindow()) {
+    if (!sidebar || !event.IsLocatedEvent() ||
+        !IsEventInWindow(event, GetWidget())) {
       return;
     }
     // An exit also comes when the pointer crosses from the page onto the
@@ -874,14 +873,22 @@ class SpaceBar : public views::View,
             },
             browser_.get()),
         LucideIcon("library"), 16);
+#if BUILDFLAG(IS_MAC)
+    library->SetTooltipText(u"History & Bookmarks (⌘Y)");
+#else
     library->SetTooltipText(u"History & Bookmarks (Ctrl+Y)");
+#endif
     library->SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));
     AddChildView(std::move(library));
     // Mori 3: the assistant beside the library.
     auto assistant = views::CreateVectorImageButtonWithNativeTheme(
         base::BindRepeating(&ToggleAssistant, browser_.get()),
         LucideIcon("sparkles"), 16);
+#if BUILDFLAG(IS_MAC)
+    assistant->SetTooltipText(u"Assistant (⇧⌘K)");
+#else
     assistant->SetTooltipText(u"Assistant (Ctrl+Shift+K)");
+#endif
     assistant->SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));
     AddChildView(std::move(assistant));
     // Flexible spacers keep the dots centred and "+" at the end.

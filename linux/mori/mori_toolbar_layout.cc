@@ -1,5 +1,6 @@
 #include "chrome/browser/ui/views/mori/mori_toolbar_layout.h"
 
+#include "build/build_config.h"
 #include <algorithm>
 #include <string_view>
 #include <vector>
@@ -185,7 +186,11 @@ class MoriSidebarToggle : public ToolbarButton {
             },
             browser)) {
     SetVectorIcon(kLeftPanelCloseFlippableIcon);
+#if BUILDFLAG(IS_MAC)
+    SetTooltipText(u"Hide sidebar (⌘S)");
+#else
     SetTooltipText(u"Hide sidebar (Ctrl+S)");
+#endif
     GetViewAccessibility().SetName(u"Toggle sidebar");
   }
 };

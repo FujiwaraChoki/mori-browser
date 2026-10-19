@@ -26,6 +26,7 @@
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/mori/mori_window_events.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_overlay.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
@@ -42,7 +43,6 @@
 #include "components/sessions/core/tab_restore_service.h"
 #include "components/sessions/core/tab_restore_types.h"
 #include "content/public/browser/web_contents.h"
-#include "ui/aura/window.h"
 #include "ui/base/class_property.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -720,8 +720,8 @@ class Library : public ui::EventObserver {
     View()->Open(browser_view_->browser());
     Resize();
     View()->FocusSearch();
-    monitor_ = views::EventMonitor::CreateApplicationMonitor(
-        this, browser_view_->GetWidget()->GetNativeWindow(),
+    monitor_ = MonitorWindow(
+        this, browser_view_->GetWidget(),
         {ui::EventType::kKeyPressed, ui::EventType::kMousePressed});
   }
 
@@ -749,9 +749,7 @@ class Library : public ui::EventObserver {
       return;
     }
     // A press outside the library closes it.
-    auto* target = static_cast<aura::Window*>(event.target());
-    views::Widget* widget = View()->GetWidget();
-    if (!target || !widget || !widget->GetNativeView()->Contains(target)) {
+    if (!IsEventInChildWidget(event, View()->GetWidget())) {
       PostClose();
     }
   }

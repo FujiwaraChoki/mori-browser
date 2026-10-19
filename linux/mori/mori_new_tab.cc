@@ -1,5 +1,6 @@
 #include "chrome/browser/ui/views/mori/mori_new_tab.h"
 
+#include "build/build_config.h"
 #include <memory>
 #include <string>
 
@@ -95,7 +96,12 @@ class NewTabView : public views::View {
     // The shortcut, as key caps.
     const gfx::FontList caps_font = Font(11);
     int right = field.right() - 14;
-    for (const std::u16string& key : {std::u16string(u"L"), std::u16string(u"Ctrl")}) {
+#if BUILDFLAG(IS_MAC)
+    const std::u16string modifier = u"⌘";
+#else
+    const std::u16string modifier = u"Ctrl";
+#endif
+    for (const std::u16string& key : {std::u16string(u"L"), modifier}) {
       const int width = std::max(20, gfx::GetStringWidth(key, caps_font) + 10);
       const gfx::Rect cap(right - width, field.y() + (field.height() - 20) / 2,
                           width, 20);

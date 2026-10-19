@@ -1,5 +1,6 @@
 #include "chrome/browser/ui/views/mori/mori_cheatsheet.h"
 
+#include "build/build_config.h"
 #include <memory>
 #include <string>
 #include <vector>
@@ -66,7 +67,12 @@ std::vector<Group> Groups() {
         {u"Recent tabs", kCommandSwitchRecentTab},
         {u"Next tab", IDC_SELECT_NEXT_TAB},
         {u"Previous tab", IDC_SELECT_PREVIOUS_TAB},
-        {u"Go to tab 1–8", 0, u"Ctrl+1–8"},
+        {u"Go to tab 1–8", 0,
+#if BUILDFLAG(IS_MAC)
+         u"⌘1–8"},
+#else
+         u"Ctrl+1–8"},
+#endif
         {u"Go to last tab", IDC_SELECT_LAST_TAB},
         {u"Add to or remove from Favorites", kCommandTogglePin},
         {u"Duplicate tab", IDC_DUPLICATE_TAB},
@@ -75,7 +81,12 @@ std::vector<Group> Groups() {
       {u"Spaces",
        {{u"Next space", IDC_FOCUS_NEXT_TAB_GROUP},
         {u"Previous space", IDC_FOCUS_PREV_TAB_GROUP},
-        {u"Go to space 1–9", 0, u"Alt+1–9"}}},
+        {u"Go to space 1–9", 0,
+#if BUILDFLAG(IS_MAC)
+         u"⌃1–9"}}},
+#else
+         u"Alt+1–9"}}},
+#endif
       {u"Getting around",
        {{u"Command bar", IDC_FOCUS_LOCATION},
         {u"Back", IDC_BACK},
@@ -84,7 +95,12 @@ std::vector<Group> Groups() {
         {u"Reload, skipping the cache", IDC_RELOAD_BYPASSING_CACHE},
         {u"Stop", IDC_STOP},
         {u"Home page", IDC_HOME},
-        {u"Peek a link", 0, u"Alt+Click"},
+        {u"Peek a link", 0,
+#if BUILDFLAG(IS_MAC)
+         u"⌥Click"},
+#else
+         u"Alt+Click"},
+#endif
         {u"Peek link on clipboard", kCommandPeekClipboard}}},
       {u"Page",
        {{u"Find in page", IDC_FIND},

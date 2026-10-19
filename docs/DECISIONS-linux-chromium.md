@@ -343,6 +343,37 @@ Still to port from Mori 3:
   is done: patch 0023 (made by linux/tools/rebrand_strings.py) calls the
   browser Mori in Chromium's strings, and run.sh sets the "mori" app ID.
 
+## macOS
+
+The Views code is shared with macOS, and the macOS paths are written but
+not yet built or run (that needs a Mac with Xcode and ungoogled-chromium's
+macOS tree; this machine can't cross-build it). What differs:
+
+- Shortcuts: macOS takes them from the menu bar and
+  global_keyboard_shortcuts_mac.mm, not from Mori's accelerator list
+  (mori_command_ids.cc skips it there). Patch 0025 adds Mori's with Command
+  for Control and Arc's keys where macOS needs others: Cmd+S hides the
+  sidebar, Ctrl+1-9 picks a space, Cmd+Option+Left/Right switches spaces,
+  Cmd+Option+Up/Down the tab, Ctrl+Tab is the recent-tabs switcher, and
+  Cmd+Shift+D duplicates. Save Page As, the bookmarks bar and Bookmark All
+  Tabs lose their shortcuts, and the View menu's vertical-tabs item reads
+  "Toggle Sidebar".
+- Window frame: the traffic lights sit at the left of the sidebar
+  toolbar's first row (the layout leaves the frame's leading exclusion
+  free, and macOS centres them in the toolbar's minimum height). They hide
+  with the sidebar and come back when it peeks out, as in Arc
+  (mori_window_events_mac.mm).
+- Input: Mori watches a window's events through mori_window_events.h,
+  which uses an application monitor on Aura and a window monitor on macOS,
+  where there is no Aura.
+- Menus are macOS's native ones, with Mori's items and icons.
+- Import reads Zen, Firefox and Arc from ~/Library/Application Support.
+- The profile is ~/Library/Application Support/Mori; the menu bar and Dock
+  say Mori (the bundle's display name), though the bundle's files keep
+  Chromium's names until a full rename can be tested on a Mac.
+- Codex is also looked for in /opt/homebrew/bin, and its directory goes on
+  its PATH, since apps opened from the Dock get a minimal one.
+
 ## Risks
 
 - Following Chromium means rebasing Mori's patches every four weeks.

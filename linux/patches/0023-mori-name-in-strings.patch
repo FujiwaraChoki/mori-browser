@@ -3254,6 +3254,19 @@
        </message>
        <if expr="use_titlecase">
          <message name="IDS_SHOW_CUSTOMIZE_CHROME_TOOLBAR" desc="The title of the menu item for showing the toolbar section of the Customize Chrome side panel.">
+@@ -10533,10 +10533,10 @@
+       <if expr="use_titlecase">
+         <then>
+           <message name="IDS_SWITCH_TO_VERTICAL_TAB_MAC" desc="In Title Case: The button in context menu that switches to vertical tab view.">
+-            Show Tabs Vertically
++            Toggle Sidebar
+           </message>
+           <message name="IDS_SWITCH_TO_HORIZONTAL_TAB_MAC" desc="In Title Case: The button in context menu that switches to horizontal tab view.">
+-            Show Tabs Horizontally
++            Toggle Sidebar
+           </message>
+           <message name="IDS_COLLAPSE_VERTICAL_TABS" desc="In Title Case: The text for the menu item that collapses the vertical tab strip.">
+             Collapse Tabs
 @@ -10755,7 +10755,7 @@
            Open
          </message>
