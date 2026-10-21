@@ -117,6 +117,8 @@ void AddMoriColorMixer(ui::ColorProvider* provider,
   mixer[ui::kColorMenuItemForegroundHighlighted] = {p.foreground};
   mixer[ui::kColorMenuItemForegroundSecondary] = {p.menu_secondary};
   mixer[ui::kColorMenuSeparator] = {p.menu_separator};
+  // Separators elsewhere too (Chromium tints them with the accent).
+  mixer[ui::kColorSeparator] = {p.menu_separator};
   mixer[ui::kColorMenuIcon] = {p.menu_icon};
 
   mixer[kColorToolbarButtonIcon] = {p.toolbar_icon};

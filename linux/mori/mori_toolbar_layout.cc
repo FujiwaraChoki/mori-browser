@@ -6,14 +6,19 @@
 #include <vector>
 
 #include "base/functional/bind.h"
+#include "base/scoped_observation.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/views/mori/mori_corners.h"
+#include "chrome/browser/ui/views/mori/mori_glass.h"
 #include "chrome/browser/ui/views/toolbar/reload_button.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_button.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/skia_conversions.h"
 #include "ui/gfx/geometry/size.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/proposed_layout.h"
@@ -21,6 +26,8 @@
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/view.h"
+#include "ui/views/view_class_properties.h"
+#include "ui/views/view_observer.h"
 
 DEFINE_UI_CLASS_PROPERTY_KEY(int, kMoriSidebarToolbarLeadingInset, -1)
 
@@ -51,6 +58,23 @@ enum class Slot {
   // Everything else (profile button, home, overflow, ...) is hidden.
   kHidden,
 };
+
+Slot SlotFor(const ToolbarView* toolbar, const views::View* child) {
+  if (child == toolbar->location_bar_view()) {
+    return Slot::kAddress;
+  }
+  // Most of these members are private to ToolbarView; match them by class.
+  const std::string_view name = child->GetClassName();
+  if (name == "BackForwardButton" || child == toolbar->reload_button()) {
+    return Slot::kNavigation;
+  }
+  if (name == "PinnedToolbarActionsContainer" ||
+      name == "ExtensionsToolbarDesktop" || name == "BrowserAppMenuButton" ||
+      name == "MoriSidebarToggle") {
+    return Slot::kLeading;
+  }
+  return Slot::kHidden;
+}
 
 class SidebarToolbarLayout : public views::FlexLayout {
  public:
@@ -89,7 +113,7 @@ class SidebarToolbarLayout : public views::FlexLayout {
       if (!IsChildIncludedInLayout(child)) {
         continue;
       }
-      switch (SlotFor(child)) {
+      switch (SlotFor(toolbar_, child)) {
         case Slot::kNavigation:
           navigation.push_back(child);
           break;
@@ -154,23 +178,6 @@ class SidebarToolbarLayout : public views::FlexLayout {
                      size.width(), height);
   }
 
-  Slot SlotFor(const views::View* child) const {
-    if (child == toolbar_->location_bar_view()) {
-      return Slot::kAddress;
-    }
-    // Most of these members are private to ToolbarView; match them by class.
-    const std::string_view name = child->GetClassName();
-    if (name == "BackForwardButton" || child == toolbar_->reload_button()) {
-      return Slot::kNavigation;
-    }
-    if (name == "PinnedToolbarActionsContainer" ||
-        name == "ExtensionsToolbarDesktop" ||
-        name == "BrowserAppMenuButton" || name == "MoriSidebarToggle") {
-      return Slot::kLeading;
-    }
-    return Slot::kHidden;
-  }
-
   raw_ptr<ToolbarView> toolbar_;
 };
 
@@ -198,11 +205,88 @@ class MoriSidebarToggle : public ToolbarButton {
 BEGIN_METADATA(MoriSidebarToggle)
 END_METADATA
 
+// The glass capsules around the first row's button groups: their corner
+// radius, height (centred in the row) and how far they reach past the
+// first and last buttons.
+constexpr int kCapsuleRadius = 10;
+constexpr int kCapsuleHeight = 32;
+constexpr int kCapsuleEndPadding = 2;
+
+// Glass capsules behind the sidebar toolbar's button groups (Safari's
+// Liquid Glass toolbar): one for the menu and its neighbours, one for back,
+// forward and reload. It covers the toolbar, under its buttons, and takes
+// no part in layout or events.
+class MoriToolbarCapsules : public views::View, public views::ViewObserver {
+  METADATA_HEADER(MoriToolbarCapsules, views::View)
+
+ public:
+  explicit MoriToolbarCapsules(ToolbarView* toolbar) : toolbar_(toolbar) {
+    SetProperty(views::kViewIgnoredByLayoutKey, true);
+    SetCanProcessEventsWithinSubtree(false);
+    observation_.Observe(toolbar);
+  }
+
+  // views::ViewObserver:
+  void OnViewBoundsChanged(views::View* observed) override {
+    SetBoundsRect(gfx::Rect(observed->size()));
+  }
+  void OnViewIsDeleting(views::View* observed) override {
+    observation_.Reset();
+  }
+
+  // views::View:
+  void OnPaint(gfx::Canvas* canvas) override {
+    if (toolbar_->GetProperty(kSidebarToolbarLeadingInsetKey) < 0) {
+      return;
+    }
+    gfx::Rect leading;
+    gfx::Rect navigation;
+    for (const views::View* child : toolbar_->children()) {
+      if (child == this || !child->GetVisible() || child->bounds().IsEmpty()) {
+        continue;
+      }
+      switch (SlotFor(toolbar_, child)) {
+        case Slot::kLeading:
+          leading.Union(child->bounds());
+          break;
+        case Slot::kNavigation:
+          navigation.Union(child->bounds());
+          break;
+        default:
+          break;
+      }
+    }
+    const bool dark = IsDarkChrome(this);
+    for (gfx::Rect group : {leading, navigation}) {
+      if (group.IsEmpty()) {
+        continue;
+      }
+      group.Outset(gfx::Outsets::VH(0, kCapsuleEndPadding));
+      group.set_y(kTopPadding + (kSidebarToolbarRowHeight - kCapsuleHeight) / 2);
+      group.set_height(kCapsuleHeight);
+      PaintGlass(canvas,
+                 SmoothRoundRectPath(gfx::RectToSkRect(group), kCapsuleRadius),
+                 Glass::kRaised, dark);
+    }
+  }
+
+ private:
+  raw_ptr<ToolbarView> toolbar_;
+  base::ScopedObservation<views::View, views::ViewObserver> observation_{this};
+};
+
+BEGIN_METADATA(MoriToolbarCapsules)
+END_METADATA
+
 }  // namespace
 
 std::unique_ptr<views::View> CreateSidebarToggle(
     BrowserWindowInterface* browser) {
   return std::make_unique<MoriSidebarToggle>(browser);
+}
+
+std::unique_ptr<views::View> CreateToolbarCapsules(ToolbarView* toolbar) {
+  return std::make_unique<MoriToolbarCapsules>(toolbar);
 }
 
 std::unique_ptr<views::FlexLayout> CreateToolbarLayout(ToolbarView* toolbar) {

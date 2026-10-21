@@ -1,6 +1,7 @@
 #include "chrome/browser/ui/views/mori/mori_assistant.h"
 
 #include <map>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <set>
@@ -32,6 +33,7 @@
 #include "ui/color/color_provider.h"
 #include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/canvas.h"
+#include "ui/gfx/text_utils.h"
 #include "ui/gfx/color_utils.h"
 #include "ui/gfx/font_list.h"
 #include "ui/gfx/geometry/rect_f.h"
@@ -42,7 +44,7 @@
 #include "ui/views/border.h"
 #include "ui/views/controls/button/image_button.h"
 #include "ui/views/controls/button/image_button_factory.h"
-#include "ui/views/controls/button/md_text_button.h"
+#include "ui/views/controls/button/button.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
 #include "ui/views/controls/scroll_view.h"
@@ -711,6 +713,50 @@ SkColor Primary(const views::View* v) {
                    : SkColorSetRGB(0x29, 0x8E, 0xCD);
 }
 
+// Mori 3's text button: 30px high, 6px corners, 13px medium text; the
+// primary one in Mori's blue, the others a faint wash of the text colour.
+class TextButton : public views::Button {
+  METADATA_HEADER(TextButton, views::Button)
+
+ public:
+  TextButton(PressedCallback callback, std::u16string label, bool primary)
+      : views::Button(std::move(callback)),
+        label_(std::move(label)),
+        primary_(primary) {
+    SetAccessibleName(label_);
+    SetInstallFocusRingOnFocus(true);
+  }
+
+  gfx::Size CalculatePreferredSize(
+      const views::SizeBounds& available_size) const override {
+    return gfx::Size(
+        gfx::GetStringWidth(label_, Font(13, gfx::Font::Weight::MEDIUM)) + 24,
+        30);
+  }
+
+  void PaintButtonContents(gfx::Canvas* canvas) override {
+    const bool hovered = GetState() == STATE_HOVERED ||
+                         GetState() == STATE_PRESSED;
+    const SkColor foreground = Foreground(this);
+    cc::PaintFlags flags;
+    flags.setAntiAlias(true);
+    flags.setColor(primary_ ? SkColorSetA(Primary(this), hovered ? 0xE6 : 0xFF)
+                            : SkColorSetA(foreground, hovered ? 0x1F : 0x12));
+    canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), 6, flags);
+    canvas->DrawStringRectWithFlags(
+        label_, Font(13, gfx::Font::Weight::MEDIUM),
+        primary_ ? SK_ColorWHITE : foreground, GetLocalBounds(),
+        gfx::Canvas::TEXT_ALIGN_CENTER);
+  }
+
+ private:
+  std::u16string label_;
+  bool primary_;
+};
+
+BEGIN_METADATA(TextButton)
+END_METADATA
+
 class InputField : public views::Textfield {
   METADATA_HEADER(InputField, views::Textfield)
 
@@ -737,11 +783,9 @@ class MessagesView : public views::View {
   METADATA_HEADER(MessagesView, views::View)
 
  public:
-  // The scroll view sizes its contents from their preferred size.
-  void ContentsChanged() {
-    PreferredSizeChanged();
-    SizeToPreferredSize();
-  }
+  // The scroll view (bounded) lays it out at its own width, so a message of
+  // the user's sits at the right edge and the empty state is centred.
+  void ContentsChanged() { PreferredSizeChanged(); }
 };
 
 BEGIN_METADATA(MessagesView)
@@ -784,6 +828,8 @@ class AssistantPanel : public views::View, public views::TextfieldController {
     scroll_->SetBackgroundColor(std::nullopt);
     scroll_->SetHorizontalScrollBarMode(
         views::ScrollView::ScrollBarMode::kDisabled);
+    // Bounded, the scroll view gives its contents its own width.
+    scroll_->ClipHeightTo(0, std::numeric_limits<int>::max());
     content_ = scroll_->SetContents(std::make_unique<MessagesView>());
     content_->SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical, gfx::Insets(12), 12));
@@ -809,6 +855,8 @@ class AssistantPanel : public views::View, public views::TextfieldController {
   }
 
   void FocusInput() { input_->RequestFocus(); }
+
+  void Ask(const std::string& prompt) { session_->Send(prompt); }
 
   // views::TextfieldController:
   bool HandleKeyEvent(views::Textfield* sender,
@@ -883,6 +931,8 @@ class AssistantPanel : public views::View, public views::TextfieldController {
     label->SetMultiLine(true);
     label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     label->SetFontList(Font(size, gfx::Font::Weight::NORMAL));
+    // Mori 3's line height (the font list's own is far looser).
+    label->SetLineHeight(size * 3 / 2);
     label->SetEnabledColor(color);
     label->SetSelectable(true);
     label->SetMaximumWidth(kAssistantPanelWidth - 24 - 24);
@@ -917,13 +967,13 @@ class AssistantPanel : public views::View, public views::TextfieldController {
             std::pair{u"Tidy tabs",
                       "Tidy up my tabs: suggest folders and close "
                       "duplicates."}}) {
-        chips->AddChildView(std::make_unique<views::MdTextButton>(
+        chips->AddChildView(std::make_unique<TextButton>(
             base::BindRepeating(
                 [](AssistantSession* session, std::string prompt) {
                   session->Send(prompt);
                 },
                 base::Unretained(session_.get()), std::string(prompt)),
-            label));
+            label, /*primary=*/false));
       }
     }
     for (const Message& message : messages) {
@@ -984,15 +1034,14 @@ class AssistantPanel : public views::View, public views::TextfieldController {
       auto* buttons = approval_->AddChildView(std::make_unique<views::BoxLayoutView>());
       buttons->SetMainAxisAlignment(views::BoxLayout::MainAxisAlignment::kEnd);
       buttons->SetBetweenChildSpacing(8);
-      buttons->AddChildView(std::make_unique<views::MdTextButton>(
+      buttons->AddChildView(std::make_unique<TextButton>(
           base::BindRepeating(&AssistantSession::ResolveApproval,
                               base::Unretained(session_.get()), false),
-          u"Deny"));
-      auto* allow = buttons->AddChildView(std::make_unique<views::MdTextButton>(
+          u"Deny", /*primary=*/false));
+      buttons->AddChildView(std::make_unique<TextButton>(
           base::BindRepeating(&AssistantSession::ResolveApproval,
                               base::Unretained(session_.get()), true),
-          u"Allow"));
-      allow->SetStyle(ui::ButtonStyle::kProminent);
+          u"Allow", /*primary=*/true));
     }
     stop_->SetVisible(session_->busy());
     content_->ContentsChanged();
@@ -1058,6 +1107,16 @@ void ToggleAssistant(BrowserWindowInterface* browser) {
   } else if (content::WebContents* contents =
                  browser->GetTabStripModel()->GetActiveWebContents()) {
     contents->Focus();
+  }
+}
+
+void AskAssistant(BrowserWindowInterface* browser, const std::string& prompt) {
+  if (!IsAssistantOpen(browser)) {
+    ToggleAssistant(browser);
+  }
+  BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
+  if (AssistantPanel* panel = browser_view ? FindPanel(browser_view) : nullptr) {
+    panel->Ask(prompt);
   }
 }
 

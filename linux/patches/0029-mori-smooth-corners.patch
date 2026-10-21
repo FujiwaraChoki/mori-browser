@@ -1,0 +1,219 @@
+--- a/ui/gfx/canvas.cc
++++ b/ui/gfx/canvas.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "ui/gfx/canvas.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++
+ #include <cmath>
+ #include <limits>
+ #include <string_view>
+@@ -332,8 +334,10 @@
+ void Canvas::DrawRoundRect(const RectF& rect,
+                            float radius,
+                            const cc::PaintFlags& flags) {
+-  canvas_->drawRoundRect(RectFToSkRect(rect), SkFloatToScalar(radius),
+-                         SkFloatToScalar(radius), flags);
++  // Mori: Zen's smooth corners (mori_corners.h).
++  canvas_->drawPath(
++      mori::SmoothRoundRectPath(RectFToSkRect(rect), SkFloatToScalar(radius)),
++      flags);
+ }
+ 
+ void Canvas::DrawPath(const SkPath& path, const cc::PaintFlags& flags) {
+--- a/ui/views/background.cc
++++ b/ui/views/background.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "ui/views/background.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++
+ #include <algorithm>
+ #include <optional>
+ #include <string>
+@@ -84,7 +86,8 @@
+                                   {radii.upper_right(), radii.upper_right()},
+                                   {radii.lower_right(), radii.lower_right()},
+                                   {radii.lower_left(), radii.lower_left()}};
+-    const SkPath path = SkPath::RRect(
++    // Mori: Zen's smooth corners (mori_corners.h).
++    const SkPath path = mori::SmoothRRectPath(
+         SkRRect::MakeRectRadii(gfx::RectToSkRect(bounds), sk_radii));
+ 
+     cc::PaintFlags flags;
+--- a/ui/views/painter.cc
++++ b/ui/views/painter.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "ui/views/painter.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++
+ #include <utility>
+ 
+ #include "base/check.h"
+@@ -103,7 +105,8 @@
+        {radii_.lower_right() * scale, radii_.lower_right() * scale},
+        {radii_.lower_left() * scale, radii_.lower_left() * scale}}};
+ 
+-  const SkPath fill_path = SkPath::RRect(SkRRect::MakeRectRadii(
++  // Mori: Zen's smooth corners (mori_corners.h).
++  const SkPath fill_path = mori::SmoothRRectPath(SkRRect::MakeRectRadii(
+       gfx::RectFToSkRect(fill_rect), scaled_radii.data()));
+   canvas->DrawPath(fill_path, flags);
+ 
+@@ -121,7 +124,7 @@
+           scaled_radii[i] - SkVector{stroke_width / 2, stroke_width / 2};
+     }
+ 
+-    const SkPath stroke_path = SkPath::RRect(SkRRect::MakeRectRadii(
++    const SkPath stroke_path = mori::SmoothRRectPath(SkRRect::MakeRectRadii(
+         gfx::RectFToSkRect(stroke_rect), stroke_radii.data()));
+     canvas->DrawPath(stroke_path, flags);
+   }
+--- a/ui/views/controls/highlight_path_generator.cc
++++ b/ui/views/controls/highlight_path_generator.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "ui/views/controls/highlight_path_generator.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++
+ #include <algorithm>
+ #include <utility>
+ 
+@@ -43,7 +45,8 @@
+   // A rounded rectangle must be supplied if using this default implementation.
+   std::optional<gfx::RRectF> round_rect = GetRoundRect(view);
+   DCHECK(round_rect);
+-  return SkPath::RRect(SkRRect{*round_rect});
++  // Mori: Zen's smooth corners (mori_corners.h).
++  return mori::SmoothRRectPath(SkRRect{*round_rect});
+ }
+ 
+ std::optional<gfx::RRectF> HighlightPathGenerator::GetRoundRect(
+--- a/ui/views/controls/menu/menu_item_view.cc
++++ b/ui/views/controls/menu/menu_item_view.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "ui/views/controls/menu/menu_item_view.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++
+ #include <math.h>
+ #include <stddef.h>
+ 
+@@ -1270,7 +1272,8 @@
+     };
+     SkRRect rrect;
+     rrect.setRectRadii(gfx::RectToSkRect(bounds), radii);
+-    canvas->sk_canvas()->drawRRect(rrect, flags);
++    // Mori: Zen's smooth corners (mori_corners.h).
++    canvas->sk_canvas()->drawPath(mori::SmoothRRectPath(rrect), flags);
+   }
+   const auto& config = MenuConfig::instance();
+   if (type_ == Type::kHighlighted || is_alerted_ ||
+@@ -1323,7 +1326,8 @@
+ 
+     SkRRect rounded_rect;
+     rounded_rect.setRectRadii(gfx::RectFToSkRect(highlight_bounds), radii);
+-    canvas->sk_canvas()->drawRRect(rounded_rect, flags);
++    // Mori: Zen's smooth corners (mori_corners.h).
++    canvas->sk_canvas()->drawPath(mori::SmoothRRectPath(rounded_rect), flags);
+   } else if (paint_as_selected) {
+     gfx::Rect item_bounds = GetLocalBounds();
+     if (menu_item_background_.has_value()) {
+--- a/ui/views/animation/ink_drop_painted_layer_delegates.cc
++++ b/ui/views/animation/ink_drop_painted_layer_delegates.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "ui/views/animation/ink_drop_painted_layer_delegates.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++
+ #include <vector>
+ 
+ #include "cc/paint/paint_canvas.h"
+@@ -171,13 +173,14 @@
+   // First the fill color.
+   ui::PaintRecorder recorder(context,
+                              gfx::ToCeiledSize(GetPaintedBounds().size()));
+-  recorder.canvas()->sk_canvas()->drawRRect(r_rect, flags);
++  // Mori: Zen's smooth corners (mori_corners.h).
++  const SkPath path = mori::SmoothRRectPath(r_rect);
++  recorder.canvas()->sk_canvas()->drawPath(path, flags);
+ 
+   // Now the shadow.
+   flags.setLooper(gfx::CreateShadowDrawLooper(shadows_));
+-  recorder.canvas()->sk_canvas()->clipRRect(r_rect, SkClipOp::kDifference,
+-                                            true);
+-  recorder.canvas()->sk_canvas()->drawRRect(r_rect, flags);
++  recorder.canvas()->sk_canvas()->clipPath(path, SkClipOp::kDifference, true);
++  recorder.canvas()->sk_canvas()->drawPath(path, flags);
+ }
+ 
+ }  // namespace views
+--- a/ui/views/controls/focus_ring.cc
++++ b/ui/views/controls/focus_ring.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "ui/views/controls/focus_ring.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++
+ #include <algorithm>
+ #include <memory>
+ #include <optional>
+@@ -91,7 +93,8 @@
+   if (client_rect.IsEmpty()) {
+     client_rect.Outset(kMinFocusRingInset);
+   }
+-  return SkPath::RRect(RectToSkRect(client_rect), corner_radius, corner_radius);
++  // Mori: Zen's smooth corners (mori_corners.h).
++  return mori::SmoothRoundRectPath(RectToSkRect(client_rect), corner_radius);
+ }
+ 
+ }  // namespace
+@@ -269,12 +272,13 @@
+       // the outline thickness on both sides of the FocusRing.
+       paint.setStrokeWidth(halo_thickness_ + 2 * kOutlineThickness);
+       paint.setColor(GetCascadingBackgroundColor(this));
+-      canvas->sk_canvas()->drawRRect(ring_rect, paint);
++      canvas->sk_canvas()->drawPath(mori::SmoothRRectPath(ring_rect), paint);
+     }
+   }
+   paint.setColor(GetPaintColor(this, !invalid_));
+   paint.setStrokeWidth(halo_thickness_);
+-  canvas->sk_canvas()->drawRRect(ring_rect, paint);
++  // Mori: Zen's smooth corners (mori_corners.h).
++  canvas->sk_canvas()->drawPath(mori::SmoothRRectPath(ring_rect), paint);
+ }
+ 
+ SkRRect FocusRing::GetRingRoundRect() const {
+@@ -298,7 +302,23 @@
+     return SkRRect::MakeOval(gfx::RectFToSkRect(rect));
+   }
+ 
+-  CHECK(path.isRRect(&rbounds));
++  if (!path.isRRect(&rbounds)) {
++    // Mori: highlight paths have Zen's smooth corners (mori_corners.h),
++    // which no round rect describes. The ring takes the round rect they are
++    // made from, and OnPaint() draws it smooth again.
++    std::optional<gfx::RRectF> round_rect =
++        path_generator_ ? path_generator_->GetRoundRect(parent())
++                        : std::nullopt;
++    if (!round_rect) {
++      round_rect = HighlightPathGenerator::GetRoundRectForView(parent());
++    }
++    if (round_rect) {
++      rbounds = SkRRect(*round_rect);
++    } else {
++      const SkScalar radius = GetCornerRadius(halo_thickness_);
++      rbounds = SkRRect::MakeRectXY(path.getBounds(), radius, radius);
++    }
++  }
+   AdjustBounds(rbounds);
+   return RingRectFromPathRect(rbounds);
+ }

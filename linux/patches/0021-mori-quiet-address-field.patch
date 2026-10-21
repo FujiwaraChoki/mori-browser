@@ -12,3 +12,73 @@
  }
  
  void CookieControlsPageActionController::UpdateIconVisibility() {
+--- a/chrome/browser/ui/views/omnibox/omnibox_view_views.cc
++++ b/chrome/browser/ui/views/omnibox/omnibox_view_views.cc
+@@ -60,6 +60,7 @@
+ #include "chrome/browser/ui/views/frame/contents_web_view.h"
+ #include "chrome/browser/ui/views/location_bar/icon_label_bubble_view.h"
+ #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
++#include "chrome/browser/ui/views/mori/mori_command_bar.h"
+ #include "chrome/browser/ui/views/omnibox/omnibox_placeholder_util.h"
+ #include "chrome/browser/ui/views/omnibox/omnibox_popup_closer.h"
+ #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_base.h"
+@@ -283,7 +284,12 @@
+ void OmniboxViewViews::Init() {
+   set_controller(this);
+   SetTextInputType(GetPreferredTextInputType());
+-  GetRenderText()->SetElideBehavior(gfx::ELIDE_TAIL);
++  // Mori: a long address fades out, as in Mori 3 and Zen.
++  GetRenderText()->SetElideBehavior(
++      location_bar_view_ && mori::OpensCommandBarFromAddressField(
++                                location_bar_view_->browser())
++          ? gfx::FADE_TAIL
++          : gfx::ELIDE_TAIL);
+   GetRenderText()->set_symmetric_selection_visual_bounds(true);
+   InstallPlaceholderText();
+   scoped_template_url_service_observation_.Observe(
+@@ -437,6 +443,12 @@
+   std::optional<std::u16string> maybe_a11y_placeholder_text;
+   omnibox::ComputePlaceholderText(location_bar_view_, placeholder_text,
+                                   maybe_a11y_placeholder_text);
++  // Mori: Mori 3's placeholder; the command bar names the search engine.
++  if (location_bar_view_ &&
++      mori::OpensCommandBarFromAddressField(location_bar_view_->browser())) {
++    placeholder_text = u"Search...";
++    maybe_a11y_placeholder_text.reset();
++  }
+   SetPlaceholderText(placeholder_text);
+   const std::u16string a11y_text =
+       maybe_a11y_placeholder_text.value_or(placeholder_text);
+@@ -1395,6 +1407,14 @@
+ }
+ 
+ bool OmniboxViewViews::OnMousePressed(const ui::MouseEvent& event) {
++  // Mori: a click on the address opens the command bar (Mori 3).
++  if (event.IsOnlyLeftMouseButton() && location_bar_view_ &&
++      mori::OpensCommandBarFromAddressField(location_bar_view_->browser())) {
++    mori::ShowCommandBar(location_bar_view_->browser(),
++                         mori::CommandBarMode::kCurrentTab);
++    return false;
++  }
++
+   PermitExternalProtocolHandler();
+ 
+   // Clear focus of buttons, but do not clear keyword mode.
+@@ -1610,6 +1630,17 @@
+ }
+ 
+ void OmniboxViewViews::OnGestureEvent(ui::GestureEvent* event) {
++  // Mori: so does a tap.
++  if (location_bar_view_ &&
++      mori::OpensCommandBarFromAddressField(location_bar_view_->browser())) {
++    if (event->type() == ui::EventType::kGestureTap) {
++      mori::ShowCommandBar(location_bar_view_->browser(),
++                           mori::CommandBarMode::kCurrentTab);
++    }
++    event->SetHandled();
++    return;
++  }
++
+   PermitExternalProtocolHandler();
+ 
+   const bool gesture_should_take_focus =

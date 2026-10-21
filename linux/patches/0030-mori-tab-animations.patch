@@ -1,0 +1,113 @@
+--- a/chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.cc
+@@ -14,6 +14,7 @@
+ #include "ui/compositor/layer.h"
+ #include "ui/gfx/animation/animation.h"
+ #include "ui/gfx/animation/tween.h"
++#include "ui/gfx/geometry/transform.h"
+ #include "ui/views/controls/scroll_view.h"
+ #include "ui/views/view.h"
+ #include "ui/views/view_class_properties.h"
+@@ -23,6 +24,32 @@
+ DEFINE_UI_CLASS_PROPERTY_TYPE(
+     TabCollectionAnimatingLayoutManager::SourceLayoutInfo*)
+ 
++namespace {
++
++// Mori: Zen's tab animations (ZenUIManager's animateItemOpen/Close). A tab
++// fades and grows from 0.95 as it opens and shrinks back as it closes, over
++// 120ms (100ms closing), easing out.
++constexpr base::TimeDelta kMoriSidebarAnimation = base::Milliseconds(120);
++constexpr double kMoriSidebarCloseShare = 100.0 / 120.0;
++
++// Scales `view`'s layer about the centre of `bounds` (its bounds this frame).
++void SetMoriScale(views::View* view, const gfx::Rect& bounds, double scale) {
++  if (!view->layer()) {
++    return;
++  }
++  gfx::Transform transform;
++  if (scale != 1.0) {
++    const float cx = bounds.width() / 2.0f;
++    const float cy = bounds.height() / 2.0f;
++    transform.Translate(cx, cy);
++    transform.Scale(scale, scale);
++    transform.Translate(-cx, -cy);
++  }
++  view->layer()->SetTransform(transform);
++}
++
++}  // namespace
++
+ DEFINE_UI_CLASS_PROPERTY_KEY(bool, kHasAnimatingLayoutManagerKey, false)
+ 
+ namespace {
+@@ -85,6 +112,12 @@
+   animation_.SetSlideDuration(
+       gfx::Animation::RichAnimationDuration(base::Milliseconds(200)));
+   animation_.SetTweenType(gfx::Tween::EASE_IN_OUT);
++  // Mori: the sidebar's tabs move on Zen's timing.
++  if (animation_axis_ == AnimationAxis::kVertical) {
++    animation_.SetSlideDuration(
++        gfx::Animation::RichAnimationDuration(kMoriSidebarAnimation));
++    animation_.SetTweenType(gfx::Tween::EASE_OUT);
++  }
+ }
+ 
+ TabCollectionAnimatingLayoutManager::~TabCollectionAnimatingLayoutManager() =
+@@ -519,6 +552,8 @@
+         // being opaque.
+         if (child_view->layer() && (child_view->layer()->opacity() != 1.0f)) {
+           child_view->layer()->SetOpacity(1.0f);
++          // Mori: and back to full size.
++          SetMoriScale(child_view, target_it->second.bounds, 1.0);
+         }
+       } else if (auto start_it = start_view_layout_map_.find(child_view);
+                  start_it != start_view_layout_map_.end()) {
+@@ -533,6 +568,8 @@
+         // opaque.
+         if (child_view->layer() && (child_view->layer()->opacity() != 1.0f)) {
+           child_view->layer()->SetOpacity(1.0f);
++          // Mori: and back to full size.
++          SetMoriScale(child_view, target_it->second.bounds, 1.0);
+         }
+       } else if (!delegate_->ShouldSnapToTarget(*child_view)) {
+         // Added child.
+@@ -561,6 +598,10 @@
+               value, initial_bounds, target_it->second.bounds);
+           if (child_view->layer()) {
+             child_view->layer()->SetOpacity(static_cast<float>(value));
++            if (animation_axis_ == AnimationAxis::kVertical) {
++              SetMoriScale(child_view, interpolated_child.bounds,
++                           0.95 + 0.05 * value);
++            }
+           }
+         }
+       } else {
+@@ -592,6 +633,11 @@
+       // `RemoveNonAnimatingPendingDeleteViews()`.
+       views::ChildLayout interpolated_child = start_it->second;
+       gfx::Rect target_bounds = start_it->second.bounds;
++      // Mori: a closing tab finishes in 100ms of the 120.
++      const double closing =
++          animation_axis_ == AnimationAxis::kVertical
++              ? std::min(1.0, value / kMoriSidebarCloseShare)
++              : value;
+       if (animation_axis_ == AnimationAxis::kVertical) {
+         target_bounds.set_height(0);
+       } else {
+@@ -604,9 +650,13 @@
+         }
+       }
+       interpolated_child.bounds = gfx::Tween::RectValueBetween(
+-          value, start_it->second.bounds, target_bounds);
++          closing, start_it->second.bounds, target_bounds);
+       if (child_view->layer()) {
+-        child_view->layer()->SetOpacity(static_cast<float>(1.0 - value));
++        child_view->layer()->SetOpacity(static_cast<float>(1.0 - closing));
++        if (animation_axis_ == AnimationAxis::kVertical) {
++          SetMoriScale(child_view, interpolated_child.bounds,
++                       1.0 - 0.05 * closing);
++        }
+       }
+ 
+       if (!interpolated_child.bounds.IsEmpty()) {

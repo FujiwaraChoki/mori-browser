@@ -23,36 +23,39 @@
          tab_features->saved_tab_group_web_contents_listener();
 --- a/chrome/browser/ui/browser_tabrestore.cc
 +++ b/chrome/browser/ui/browser_tabrestore.cc
-@@ -4,6 +4,8 @@
+@@ -4,6 +4,9 @@
  
  #include "chrome/browser/ui/browser_tabrestore.h"
  
++#include "chrome/browser/ui/views/mori/mori_folders.h"
 +#include "chrome/browser/ui/views/mori/mori_tab_names.h"
 +
  #include <map>
  #include <memory>
  #include <utility>
-@@ -83,6 +85,7 @@
+@@ -83,6 +86,8 @@
                                 extension_app_id);
  
    glic::RestoreGlicStateFromExtraData(web_contents.get(), extra_data);
 +  mori::RestoreTabName(web_contents.get(), extra_data);
++  mori::RestoreTabFolder(web_contents.get(), extra_data);
    send_tab_to_self::SendTabToSelfActivationTracker::RestoreFromExtraData(
        web_contents.get(), extra_data);
  
 --- a/chrome/browser/sessions/session_service_base.cc
 +++ b/chrome/browser/sessions/session_service_base.cc
-@@ -4,6 +4,9 @@
+@@ -4,6 +4,10 @@
  
  #include "chrome/browser/sessions/session_service_base.h"
  
 +#include "base/strings/utf_string_conversions.h"
++#include "chrome/browser/ui/views/mori/mori_folders.h"
 +#include "chrome/browser/ui/views/mori/mori_tab_names.h"
 +
  #include <stddef.h>
  
  #include <memory>
-@@ -613,6 +616,12 @@
+@@ -613,6 +617,18 @@
    sessions::SessionTabHelper* session_tab_helper =
        sessions::SessionTabHelper::FromWebContents(tab);
    const SessionID session_id(session_tab_helper->session_id());
@@ -61,6 +64,12 @@
 +    command_storage_manager()->AppendRebuildCommand(
 +        sessions::CreateAddTabExtraDataCommand(session_id, mori::kTabNameKey,
 +                                               base::UTF16ToUTF8(*name)));
++  }
++  // Mori: so does its folder.
++  if (std::string folder = mori::GetTabFolderData(tab); !folder.empty()) {
++    command_storage_manager()->AppendRebuildCommand(
++        sessions::CreateAddTabExtraDataCommand(session_id, mori::kTabFolderKey,
++                                               folder));
 +  }
    command_storage_manager()->AppendRebuildCommand(
        sessions::CreateSetTabWindowCommand(window_id, session_id));
@@ -103,3 +112,14 @@
    // Capture the selection model before selection changes.
    const ui::ListSelectionModel original_selection_model =
        controller->GetSelectionModel();
+@@ -1335,6 +1348,10 @@
+                               int hover_card_update_type) {
+   CHECK(collection_node_);
+ 
++  // Mori: no hover cards (preview, memory use) on the sidebar's rows, as in
++  // Arc and Mori 3; the row shows the title.
++  target = nullptr;
++
+   if (TabHoverCardController* hover_card_controller =
+           collection_node_->GetController()->GetHoverCardController()) {
+     hover_card_controller->UpdateHoverCard(

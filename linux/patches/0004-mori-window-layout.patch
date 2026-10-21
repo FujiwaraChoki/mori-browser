@@ -62,7 +62,7 @@
    // Lay out vertical tab strip if visible.
    int collapsed_vertical_tab_strip_adjustment = 0;
    const VerticalTabStripAnimation& vertical_tab_strip_animation =
-@@ -818,9 +843,41 @@
+@@ -818,9 +843,44 @@
              gfx::Insets::TLBR(views::Separator::kThickness, 0, 0, 0));
        }
  
@@ -92,8 +92,11 @@
 +        top_container_layout.bounds =
 +            gfx::Rect(vertical_tab_strip_bounds.origin(),
 +                      top_container_local_bounds.size());
++        // The tabs overlap the toolbar's padding by 1 DIP: at fractional
++        // scales the two layers snap apart and leave a row of bare frame
++        // between them, a dark line through the space's wash.
 +        vertical_tab_strip_bounds.Inset(gfx::Insets::TLBR(
-+            top_container_local_bounds.height(), 0, 0, 0));
++            std::max(0, top_container_local_bounds.height() - 1), 0, 0, 0));
 +      }
 +
        const int inset_amount = horizontal_layout.vertical_tab_strip_width -
@@ -105,7 +108,7 @@
  
        // Let the vertical tab strip animate out over the content.
        if (vertical_tab_strip_animation.current_motion) {
-@@ -838,7 +895,8 @@
+@@ -838,7 +898,8 @@
      }
      layout.AddChild(views().vertical_tab_strip_region_view,
                      vertical_tab_strip_bounds,
@@ -115,7 +118,7 @@
    }
  
    if (IsParentedTo(views().vertical_tab_strip_background_blur_backdrop,
-@@ -855,9 +913,10 @@
+@@ -855,9 +916,10 @@
    if (IsParentedTo(views().vertical_tab_strip_top_corner,
                     views().browser_view)) {
      gfx::Rect corner_bounds;
@@ -127,7 +130,7 @@
  
      // The top corner is drawn when the tabstrip goes all the way to the top.
      if (top_corner_visible) {
-@@ -934,7 +993,16 @@
+@@ -934,7 +996,16 @@
  
    // When the tabstrip isn't at the top or in constrained widths, the top
    // container is laid out before all side panels.
@@ -145,7 +148,7 @@
        IsParentedTo(views().top_container, views().browser_view)) {
      auto& top_container_layout =
          layout.AddChild(views().top_container, gfx::Rect());
-@@ -979,7 +1047,9 @@
+@@ -979,7 +1050,9 @@
      } else {
        main_background_bounds = params.visual_client_area;
      }
@@ -156,7 +159,7 @@
      main_background_layout =
          &layout.AddChild(views().main_background_region, main_background_bounds,
                           main_background_visibility);
-@@ -1070,7 +1140,8 @@
+@@ -1070,7 +1143,8 @@
    // Lay out top container. The top container is laid out after the
    // toolbar-height side panel with a horizontal tabstrip if the browser is wide
    // enough.
@@ -166,7 +169,7 @@
        IsParentedTo(views().top_container, views().browser_view)) {
      auto& top_container_layout =
          layout.AddChild(views().top_container, gfx::Rect());
-@@ -1167,11 +1238,38 @@
+@@ -1167,11 +1241,38 @@
      content_right =
          std::min(content_right, browser_params.visual_client_area.right());
    }
@@ -209,7 +212,7 @@
  
    // Maybe expand and clip the web contents to avoid issues during animation.
    if (features::UseSidePanelFlyoverAnimation()) {
-@@ -1231,6 +1329,10 @@
+@@ -1231,6 +1332,10 @@
        }
      }
      views().multi_contents_view->SetBackgroundRadii(content_corners);
@@ -220,7 +223,7 @@
    }
  
    // Make final visual adjustments required for child views to paint.
-@@ -1259,6 +1361,12 @@
+@@ -1259,6 +1364,12 @@
            tabstrip_bounds->x();
      }
  
@@ -233,7 +236,7 @@
      views().vertical_tab_strip_region_view->SetToolbarHeightForLayout(
          std::max(0, toolbar_height));
      views().vertical_tab_strip_region_view->SetCaptionButtonWidthForLayout(
-@@ -1374,7 +1482,9 @@
+@@ -1374,7 +1485,9 @@
    }
  
    // Lay out the bookmarks bar if one is present.
@@ -244,7 +247,7 @@
    if (IsParentedTo(views().bookmark_bar, views().top_container)) {
      const gfx::Rect bookmarks_bounds(
          params.visual_client_area.x(), params.visual_client_area.y(),
-@@ -1473,6 +1583,47 @@
+@@ -1473,6 +1586,47 @@
    layout_data_ = std::make_unique<TransientLayoutData>(params);
    layout_data_->window_state = delegate().GetBrowserWindowState();
    layout_data_->tab_strip_type = delegate().GetTabStripType();
@@ -292,7 +295,7 @@
    layout_data_->horizontal_layout =
        CalculateHorizontalLayout(layout_data_->revised_params);
    layout_data_->vertical_tab_strip_animation =
-@@ -1600,7 +1751,12 @@
+@@ -1600,7 +1754,12 @@
      // Apply shadow for expand-on-hover.
      auto* const shadow_frame =
          views().vertical_tab_strip_region_view->shadow_frame();
@@ -334,17 +337,19 @@
      initialized_ = true;
      return;
    }
-@@ -631,6 +636,9 @@
+@@ -631,6 +636,11 @@
          l10n_util::GetStringUTF16(IDS_APPMENU_TOOLTIP));
      app_menu_button->SetID(VIEW_ID_APP_MENU);
      app_menu_button_ = AddChildView(std::move(app_menu_button));
 +    // Mori: the sidebar toggle next to the menu (only shown by Mori's
 +    // sidebar toolbar layout).
 +    AddChildView(mori::CreateSidebarToggle(browser_));
++    // Mori: glass capsules behind the sidebar toolbar's button groups.
++    AddChildViewAt(mori::CreateToolbarCapsules(this), 0);
    }
  
    if (base::FeatureList::IsEnabled(contextual_tasks::kContextualTasks) &&
-@@ -1395,7 +1403,9 @@
+@@ -1395,7 +1405,9 @@
        // back button) plus margins.
        // TODO(crbug.com/40663413): Figure out why the height reports incorrectly
        // on some installations.
@@ -355,7 +360,7 @@
          const int max_height = std::max(location_bar_->PreferredSize().height(),
                                          GetBackForwardButtonSize().height()) +
                                 layout_manager_->interior_margin().height();
-@@ -1423,7 +1433,9 @@
+@@ -1423,7 +1435,9 @@
        // back button) plus margins.
        // TODO(crbug.com/40663413): Figure out why the height reports incorrectly
        // on some installations.
@@ -366,7 +371,7 @@
          const int max_height =
              std::max(location_bar_->MinimumSize().height(),
                       GetBackForwardButtonSize(/*minimum_size=*/true).height()) +
-@@ -1561,7 +1573,8 @@
+@@ -1561,7 +1575,8 @@
                                 views::MaximumFlexSizeRule::kUnbounded)
            .WithOrder(location_bar_flex_order);
  
@@ -476,7 +481,35 @@
    resize_area_ = AddChildView(std::make_unique<views::ResizeArea>(this));
 --- a/chrome/browser/ui/views/location_bar/location_bar_view.cc
 +++ b/chrome/browser/ui/views/location_bar/location_bar_view.cc
-@@ -524,8 +524,8 @@
+@@ -35,6 +35,9 @@
+ #include "chrome/browser/ui/browser_window.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++#include "chrome/browser/ui/views/mori/mori_glass.h"
++#include "chrome/browser/ui/views/mori/mori_command_bar.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/content_settings/content_setting_bubble_model.h"
+ #include "chrome/browser/ui/layout_constants.h"
+@@ -107,6 +110,7 @@
+ #include "components/omnibox/browser/omnibox_prefs.h"
+ #include "components/omnibox/browser/page_classification_functions.h"
+ #include "components/omnibox/browser/vector_icons.h"
++#include "components/vector_icons/vector_icons.h"
+ #include "components/omnibox/common/input_state.h"
+ #include "components/omnibox/common/omnibox_feature_configs.h"
+ #include "components/omnibox/common/omnibox_features.h"
+@@ -239,7 +243,8 @@
+                  !v->GetOmniboxController()->IsPopupOpen();
+         }));
+     views::FocusRing::Get(this)->SetOutsetFocusRingDisabled(true);
+-    views::InstallPillHighlightPathGenerator(this);
++    // Mori: the field's 8px corners (ComputeBorderRadius), not a pill.
++    views::InstallRoundRectHighlightPathGenerator(this, gfx::Insets(), 8);
+ 
+ #if BUILDFLAG(OS_LEVEL_GEOLOCATION_PERMISSION_SUPPORTED)
+     if (features::IsOsLevelGeolocationPermissionSupportEnabled()) {
+@@ -524,8 +529,8 @@
  
  // static
  int LocationBarView::ComputeBorderRadius(gfx::Size size) {
@@ -487,7 +520,22 @@
  }
  
  // static
-@@ -1427,8 +1427,11 @@
+@@ -591,6 +596,14 @@
+ 
+ void LocationBarView::FocusLocation(bool is_user_initiated,
+                                     bool clear_focus_if_failed) {
++  // Mori: in Mori's windows the field never takes focus, so it keeps one
++  // look; the command bar edits the address instead (Mori 3's launcher).
++  if (mori::OpensCommandBarFromAddressField(browser_)) {
++    if (is_user_initiated) {
++      mori::ShowCommandBar(browser_, mori::CommandBarMode::kCurrentTab);
++    }
++    return;
++  }
+   if (base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxFullPopup)) {
+     if (IsFullWebUiOmniboxReady()) {
+       // In Full WebUI mode, `LocationBarView` is the focusable Views proxy for
+@@ -1427,8 +1440,11 @@
    }
  
    // Keep the views::Textfield in sync. It needs an opaque background to
@@ -501,9 +549,79 @@
  
    // The divider between indicators and request chips should have the same color
    // as the omnibox.
+@@ -1696,7 +1712,14 @@
+ 
+ void LocationBarView::OnPaintBorder(gfx::Canvas* canvas) {
+   if (!is_popup_mode_) {
+-    return;  // The border is painted by our Background.
++    // The border is painted by our Background. Mori: the field is set into
++    // the sidebar's glass, with its rim (mori_glass.h).
++    mori::PaintGlass(canvas,
++                     mori::SmoothRoundRectPath(
++                         gfx::RectToSkRect(GetLocalBounds()),
++                         ComputeBorderRadius(size())),
++                     mori::Glass::kInset, mori::IsDarkChrome(this));
++    return;
+   }
+ 
+   gfx::Rect bounds(GetContentsBounds());
+@@ -2247,7 +2270,8 @@
+ 
+ SkColor LocationBarView::GetSecurityChipColor(
+     security_state::SecurityLevel security_level) const {
+-  ui::ColorId id = kColorOmniboxText;
++  // Mori: a quiet lock, in Mori 3's muted grey.
++  ui::ColorId id = kColorOmniboxResultsTextDimmed;
+   if (security_level == security_state::DANGEROUS) {
+     id = kColorOmniboxSecurityChipDangerous;
+   }
+@@ -2304,6 +2328,14 @@
+     return GetOmniboxController()->edit_model()->GetAddContextIcon(dip_size);
+   }
+ 
++  // Mori: an empty field shows a magnifier, not the search engine's icon
++  // (Mori 3's "Search..." field).
++  if (mori::OpensCommandBarFromAddressField(browser_) && IsEditingOrEmpty()) {
++    return ui::ImageModel::FromVectorIcon(
++        vector_icons::kSearchIcon, location_icon_view_->GetForegroundColor(),
++        dip_size);
++  }
++
+   return omnibox_view_
+              ? omnibox_view_->GetIcon(
+                    dip_size, location_icon_view_->GetForegroundColor(),
 --- a/chrome/browser/ui/layout_constants.cc
 +++ b/chrome/browser/ui/layout_constants.cc
-@@ -118,11 +118,11 @@
+@@ -69,15 +69,17 @@
+       return 6;
+     case LayoutConstant::kLocationBarPageInfoIconDangerousTrailingPadding:
+       return 10;
++    // Mori: Mori 3's pill keeps 4px after its last action.
+     case LayoutConstant::kLocationBarTrailingDecorationEdgePadding:
+-      return touch_ui ? 3 : 12;
++      return touch_ui ? 3 : 4;
+     case LayoutConstant::kLocationBarTrailingDecorationInnerPadding:
+       return touch_ui ? 3 : 8;
+     case LayoutConstant::kLocationBarHeight:
+       return touch_ui ? 36 : 34;
+     // LINT.IfChange(LocationBarIconSize)
++    // Mori: Mori 3's pill glyphs (lock, magnifier, star) are 14px.
+     case LayoutConstant::kLocationBarIconSize:
+-      return touch_ui ? 20 : 16;
++      return touch_ui ? 20 : 14;
+     // LINT.ThenChange(//chrome/browser/ui/omnibox/omnibox_edit_model.cc:SuperGIconSize)
+     case LayoutConstant::kLocationBarIconLabelBubbleSpaceBesideSeparator:
+       return 8;
+@@ -86,7 +88,7 @@
+     case LayoutConstant::kLocationBarLeadingIconSize:
+       return GetLayoutConstant(LayoutConstant::kLocationBarIconSize);
+     case LayoutConstant::kLocationBarTrailingIconSize:
+-      return 20;
++      return 14;
+     case LayoutConstant::kNewTabButtonLeadingMargin:
+       return 0;
+     case LayoutConstant::kStarRatingIconSize:
+@@ -118,11 +120,11 @@
        return touch_ui ? 4 : 6;
      case LayoutConstant::kTabstripToolbarOverlap:
        return 1;
@@ -518,7 +636,7 @@
      case LayoutConstant::kToolbarDividerCornerRadius:
        return 1;
      case LayoutConstant::kToolbarDividerHeight:
-@@ -147,14 +147,15 @@
+@@ -147,14 +149,16 @@
      case LayoutConstant::kToolbarCornerRadius:
      case LayoutConstant::kVerticalTabCornerRadius:
        return 8;
@@ -526,8 +644,10 @@
      case LayoutConstant::kVerticalTabHeight:
 -      return 30;
 +      return 36;
++    // Mori: Mori 3's favorite tiles are 44px high.
      case LayoutConstant::kVerticalTabPinnedHeight:
-       return 32;
+-      return 32;
++      return 44;
      case LayoutConstant::kVerticalTabMinWidth:
        return 32;
      case LayoutConstant::kVerticalTabStripHorizontalPadding:

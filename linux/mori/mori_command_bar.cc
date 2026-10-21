@@ -15,6 +15,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/autocomplete/chrome_autocomplete_provider_client.h"
@@ -28,7 +29,9 @@
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/mori/mori_assistant.h"
 #include "chrome/browser/ui/views/mori/mori_commands.h"
+#include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_new_tab.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "chrome/browser/ui/views/theme_copying_widget.h"
@@ -210,8 +213,10 @@ class ResultRow : public views::Button {
                   const std::u16string& title,
                   const std::u16string& source,
                   bool tab,
-                  const std::u16string& shortcut) {
+                  const std::u16string& shortcut,
+                  bool accent_icon = false) {
     icon_model_ = icon;
+    accent_icon_ = accent_icon;
     shortcut_->SetText(shortcut);
     shortcut_->SetVisible(!shortcut.empty());
     title_->SetText(title);
@@ -270,14 +275,19 @@ class ResultRow : public views::Button {
         vector_icons::kArrowForwardIcon, c.muted, 12));
     tab_arrow_->SetBackground(views::CreateRoundedRectBackground(c.chip, 4));
     if (icon_model_.IsVectorIcon()) {
+      // Ask Assistant's sparkles are in Mori's blue, as in Mori 3.
+      const SkColor accent = c.dark ? SkColorSetRGB(0x48, 0x95, 0xCA)
+                                    : SkColorSetRGB(0x29, 0x8E, 0xCD);
       icon_->SetImage(ui::ImageModel::FromVectorIcon(
-          *icon_model_.GetVectorIcon().vector_icon(), title, kIconSize));
+          *icon_model_.GetVectorIcon().vector_icon(),
+          accent_icon_ && !on_blue ? accent : title, kIconSize));
     } else {
       icon_->SetImage(icon_model_);
     }
   }
 
   bool highlighted_ = false;
+  bool accent_icon_ = false;
   ui::ImageModel icon_model_;
   raw_ptr<views::ImageView> icon_ = nullptr;
   raw_ptr<views::Label> title_ = nullptr;
@@ -293,7 +303,7 @@ BEGIN_METADATA(ResultRow)
 END_METADATA
 
 // The text field closes the bar when it loses focus, e.g. on a click into
-// the page.
+// the page, and keeps Tab.
 class CommandField : public views::Textfield {
   METADATA_HEADER(CommandField, views::Textfield)
 
@@ -304,6 +314,12 @@ class CommandField : public views::Textfield {
   void OnBlur() override {
     views::Textfield::OnBlur();
     on_blur_.Run();
+  }
+
+  // Tab asks the assistant instead of moving focus.
+  bool SkipDefaultKeyEventProcessing(const ui::KeyEvent& event) override {
+    return event.key_code() == ui::VKEY_TAB ||
+           views::Textfield::SkipDefaultKeyEventProcessing(event);
   }
 
  private:
@@ -356,6 +372,21 @@ class CommandBar : public views::View,
     field_->SetPlaceholderTextColorId(kColorOmniboxResultsTextDimmed);
     field_->GetViewAccessibility().SetName(u"Command bar");
 
+    // Once something is typed: "Tab  Ask Assistant", as in Mori 3.
+    ask_hint_ = input_row->AddChildView(std::make_unique<views::View>());
+    auto* hint_layout =
+        ask_hint_->SetLayoutManager(std::make_unique<views::BoxLayout>(
+            views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 4));
+    hint_layout->set_cross_axis_alignment(
+        views::BoxLayout::CrossAxisAlignment::kCenter);
+    tab_key_ = ask_hint_->AddChildView(std::make_unique<views::Label>(u"Tab"));
+    tab_key_->SetFontList(SizedFont(12, gfx::Font::Weight::NORMAL));
+    tab_key_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(1, 4)));
+    ask_label_ =
+        ask_hint_->AddChildView(std::make_unique<views::Label>(u"Ask Assistant"));
+    ask_label_->SetFontList(SizedFont(12, gfx::Font::Weight::NORMAL));
+    ask_hint_->SetVisible(false);
+
     // A hairline, then the results.
     hairline_ = AddChildView(std::make_unique<views::View>());
     hairline_->SetPreferredSize(gfx::Size(0, 1));
@@ -381,6 +412,9 @@ class CommandBar : public views::View,
         vector_icons::kSearchIcon, c.field_icon, kIconSize));
     hairline_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 10)));
     hairline_->SetBackground(views::CreateSolidBackground(c.hairline));
+    tab_key_->SetEnabledColor(c.muted);
+    tab_key_->SetBackground(views::CreateRoundedRectBackground(c.chip, 4));
+    ask_label_->SetEnabledColor(c.muted);
   }
 
   // The panel: #181818 (white in light mode) with a 1px edge and Mori 3's
@@ -424,6 +458,7 @@ class CommandBar : public views::View,
     }
     field_->SetText(text);
     field_->SelectAll(false);
+    ask_hint_->SetVisible(!text.empty());
     ShowIdle();
     GetWidget()->StackAtTop();
     GetWidget()->Show();
@@ -442,6 +477,7 @@ class CommandBar : public views::View,
   void ContentsChanged(views::Textfield* sender,
                        const std::u16string& new_contents) override {
     selected_ = 0;
+    ask_hint_->SetVisible(!new_contents.empty());
     StartAutocomplete();
   }
 
@@ -462,6 +498,12 @@ class CommandBar : public views::View,
         return true;
       case ui::VKEY_UP:
         MoveSelection(-1);
+        return true;
+      // Tab asks the assistant about what's typed (Mori 3).
+      case ui::VKEY_TAB:
+        if (!key_event.IsShiftDown() && !field_->GetText().empty()) {
+          Ask();
+        }
         return true;
       default:
         return false;
@@ -516,6 +558,7 @@ class CommandBar : public views::View,
     history_tracker_.TryCancelAll();
     idle_ = true;
     selected_ = -1;
+    ask_ = false;
     commands_.clear();
     matches_.clear();
     BrowserWindowInterface* browser = browser_view_->browser();
@@ -594,9 +637,9 @@ class CommandBar : public views::View,
     UpdateBounds();
   }
 
-  // Commands come first, then Chromium's suggestions.
+  // Commands come first, then Chromium's suggestions, then Ask Assistant.
   int VisibleMatches() const {
-    return static_cast<int>(commands_.size() + matches_.size());
+    return static_cast<int>(commands_.size() + matches_.size()) + (ask_ ? 1 : 0);
   }
 
   // The bar's results in display order. When the input looks like an
@@ -605,15 +648,19 @@ class CommandBar : public views::View,
   void RebuildMatches() {
     matches_.clear();
     commands_.clear();
+    ask_ = false;
     if (field_->GetText().empty()) {
       return;
     }
+    // Mori 3 offers to ask the assistant about anything but an address.
+    ask_ = !input_is_url_;
+    const size_t max_results = kMaxResults - (ask_ ? 1 : 0);
     if (!input_is_url_) {
       commands_ = MatchCommands(browser_view_->browser(), field_->GetText(),
                                 kMaxCommands);
     }
     for (const AutocompleteMatch& match : controller_->result()) {
-      if (matches_.size() + commands_.size() == kMaxResults) {
+      if (matches_.size() + commands_.size() == max_results) {
         break;
       }
       if (match.destination_url.is_valid()) {
@@ -664,6 +711,12 @@ class CommandBar : public views::View,
         continue;
       }
       row->SetHighlighted(i == selected_);
+      if (ask_ && i == count - 1) {
+        row->SetContent(ui::ImageModel::FromVectorIcon(LucideIcon("sparkles")),
+                        std::u16string(field_->GetText()), u"Ask Assistant",
+                        false, u"", /*accent_icon=*/true);
+        continue;
+      }
       if (i < static_cast<int>(commands_.size())) {
         const CommandItem& command = commands_[i];
         row->SetContent(ui::ImageModel::FromVectorIcon(*command.icon),
@@ -740,6 +793,10 @@ class CommandBar : public views::View,
     if (index >= VisibleMatches()) {
       return;
     }
+    if (ask_ && index == VisibleMatches() - 1) {
+      Ask();
+      return;
+    }
     if (index < static_cast<int>(commands_.size())) {
       base::RepeatingClosure run = commands_[index].run;
       Hide();
@@ -768,6 +825,16 @@ class CommandBar : public views::View,
     Navigate(&params);
     if (switch_to_tab) {
       ShowSpaceOfActiveTab(browser);
+    }
+  }
+
+  void Ask() {
+    const std::string prompt =
+        base::UTF16ToUTF8(base::TrimWhitespace(field_->GetText(), base::TRIM_ALL));
+    BrowserWindowInterface* browser = browser_view_->browser();
+    Hide();
+    if (!prompt.empty()) {
+      AskAssistant(browser, prompt);
     }
   }
 
@@ -819,6 +886,11 @@ class CommandBar : public views::View,
   raw_ptr<CommandField> field_ = nullptr;
   raw_ptr<views::View> hairline_ = nullptr;
   raw_ptr<views::View> results_ = nullptr;
+  raw_ptr<views::View> ask_hint_ = nullptr;
+  raw_ptr<views::Label> tab_key_ = nullptr;
+  raw_ptr<views::Label> ask_label_ = nullptr;
+  // The last row asks the assistant about what's typed.
+  bool ask_ = false;
   std::u16string engine_name_;
   std::vector<raw_ptr<ResultRow>> rows_;
   std::vector<AutocompleteMatch> matches_;
@@ -906,6 +978,10 @@ bool ShowCommandBar(BrowserWindowInterface* browser, CommandBarMode mode) {
   }
   host->bar()->Show(mode);
   return true;
+}
+
+bool OpensCommandBarFromAddressField(BrowserWindowInterface* browser) {
+  return browser && browser->GetType() == BrowserWindowInterface::TYPE_NORMAL;
 }
 
 }  // namespace mori

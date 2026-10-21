@@ -150,6 +150,9 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
   if (GetCurrentSpace(browser)) {
     action(u"Edit Space", u"rename context color colour theme icon emoji",
            "pencil", base::BindRepeating(&EditSpace, browser));
+    // Mori 3's Clear (Zen's, Arc's archive of Today).
+    action(u"Archive Unpinned Tabs", u"clear today close space tabs",
+           "archive", base::BindRepeating(&ClearSpace, browser));
   }
   command(u"Developer Tools", u"inspect console devtools", "code",
           IDC_DEV_TOOLS);

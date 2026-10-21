@@ -47,6 +47,7 @@ GROUPS = {
         "components/search_engines/template_url_prepopulate_data.cc",
         "chrome/browser/prefs/session_startup_pref.cc",
         "chrome/browser/ui/toolbar/chrome_location_bar_model_delegate.cc",
+        "chrome/browser/ui/toolbar/chrome_location_bar_model_delegate.h",
         "chrome/browser/profiles/profile.cc",
     ],
     "0006-mori-spaces": [
@@ -63,6 +64,7 @@ GROUPS = {
         "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.cc",
         "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.cc",
         "chrome/browser/ui/views/bookmarks/bookmark_page_action_controller.cc",
+        "chrome/browser/ui/views/tabs/common/vertical_tab_style_views.cc",
     ],
     "0008-mori-lucide-icons": [
         "ui/gfx/paint_vector_icon.cc",
@@ -71,6 +73,7 @@ GROUPS = {
     "0009-mori-menus": [
         "ui/views/controls/menu/menu_config.cc",
         "chrome/browser/ui/toolbar/app_menu_model.cc",
+        "ui/base/accelerators/accelerator.cc",
     ],
     "0011-capture-overlay-offset": [
         "chrome/browser/image_editor/screenshot_flow.cc",
@@ -108,6 +111,7 @@ GROUPS = {
     ],
     "0021-mori-quiet-address-field": [
         "chrome/browser/ui/views/location_bar/cookie_controls/cookie_controls_page_action_controller.cc",
+        "chrome/browser/ui/views/omnibox/omnibox_view_views.cc",
     ],
     "0022-mori-placeholder-favicon": [
         "chrome/browser/favicon/favicon_utils.cc",
@@ -167,11 +171,37 @@ GROUPS = {
     "0026-mori-windows": [
         "chrome/install_static/chromium_install_modes.h",
     ],
+    "0027-mori-web-store": [
+        "extensions/common/extension_urls.cc",
+        "extensions/common/api/_api_features.json",
+        "chrome/browser/resources/webstore_app/manifest.json",
+        "chrome/browser/extensions/chrome_content_browser_client_extensions_part.cc",
+        "extensions/browser/updater/extension_downloader.cc",
+        "extensions/browser/webstore_installer.cc",
+    ],
     "0018-mori-context-menus": [
         "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.cc",
         "chrome/browser/ui/views/frame/browser_widget.cc",
         "chrome/browser/renderer_context_menu/render_view_context_menu.cc",
         "chrome/browser/ui/views/renderer_context_menu/render_view_context_menu_views.cc",
+    ],
+    "0028-mori-folders": [
+        "chrome/browser/ui/views/tabs/common/tab_group_view.cc",
+    ],
+    "0030-mori-tab-animations": [
+        "chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.cc",
+    ],
+    "0031-mori-favorites-grid": [
+        "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc",
+    ],
+    "0029-mori-smooth-corners": [
+        "ui/gfx/canvas.cc",
+        "ui/views/background.cc",
+        "ui/views/painter.cc",
+        "ui/views/controls/highlight_path_generator.cc",
+        "ui/views/controls/menu/menu_item_view.cc",
+        "ui/views/animation/ink_drop_painted_layer_delegates.cc",
+        "ui/views/controls/focus_ring.cc",
     ],
 }
 

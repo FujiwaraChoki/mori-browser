@@ -22,10 +22,12 @@
    }
 --- a/ui/gfx/BUILD.gn
 +++ b/ui/gfx/BUILD.gn
-@@ -383,6 +383,9 @@
+@@ -383,6 +383,11 @@
        "paint_throbber.cc",
        "paint_throbber.h",
        "paint_vector_icon.cc",
++      "//chrome/browser/ui/views/mori/mori_corners.cc",
++      "//chrome/browser/ui/views/mori/mori_corners.h",
 +      "//chrome/browser/ui/views/mori/mori_icons.cc",
 +      "//chrome/browser/ui/views/mori/mori_icons.h",
 +      "//chrome/browser/ui/views/mori/mori_lucide_icons.inc",

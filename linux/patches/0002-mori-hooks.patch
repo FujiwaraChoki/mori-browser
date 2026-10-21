@@ -174,7 +174,7 @@
        "views/frame/browser_frame_view_factory_mac.mm",
        "views/frame/browser_frame_view_mac.h",
        "views/frame/browser_frame_view_mac.mm",
-@@ -2721,6 +2722,64 @@
+@@ -2721,6 +2722,70 @@
        "views/frame/browser_root_view.cc",
        "views/frame/browser_view.cc",
        "views/frame/browser_view.h",
@@ -202,6 +202,10 @@
 +      "views/mori/mori_json_file.h",
 +      "views/mori/mori_favicons.cc",
 +      "views/mori/mori_favicons.h",
++      "views/mori/mori_glass.cc",
++      "views/mori/mori_glass.h",
++      "views/mori/mori_folders.cc",
++      "views/mori/mori_folders.h",
 +      "views/mori/mori_import.cc",
 +      "views/mori/mori_import.h",
 +      "views/mori/mori_little.cc",
@@ -234,6 +238,8 @@
 +      "views/mori/mori_toast.h",
 +      "views/mori/mori_toolbar_layout.cc",
 +      "views/mori/mori_toolbar_layout.h",
++      "views/mori/mori_web_store.cc",
++      "views/mori/mori_web_store.h",
 +      "views/mori/mori_window_events.cc",
 +      "views/mori/mori_window_events.h",
        "views/frame/browser_widget.cc",

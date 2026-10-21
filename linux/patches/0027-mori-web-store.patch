@@ -1,0 +1,162 @@
+--- a/extensions/common/extension_urls.cc
++++ b/extensions/common/extension_urls.cc
+@@ -38,14 +38,15 @@
+ 
+ }  // namespace
+ 
+-const char kChromeWebstoreBaseURL[] = "https://chrome.9oo91e.qjz9zk/webstore";
+-const char kNewChromeWebstoreBaseURL[] = "https://chromewebstore.9oo91e.qjz9zk/";
++// Mori: the real Chrome Web Store, so extensions install and update from it.
++const char kChromeWebstoreBaseURL[] = "https://chrome.google.com/webstore";
++const char kNewChromeWebstoreBaseURL[] = "https://chromewebstore.google.com/";
+ const char kModernWebGuidanceURL[] =
+     "https://developer.ch40me.qjz9zk/docs/extensions/ai/"
+     "build-with-ai#modern_web_guidance";
+ const char kChromeWebstoreUpdateURL[] =
+-    "https://clients2.9oo91e.qjz9zk/service/update2/crx";
+-const char kChromeWebstoreApiURL[] = "https://chromewebstore.9oo91eapis.qjz9zk/";
++    "https://clients2.google.com/service/update2/crx";
++const char kChromeWebstoreApiURL[] = "https://chromewebstore.googleapis.com/";
+ 
+ const char kAppMenuUtmSource[] = "ext_app_menu";
+ const char kExtensionsMenuUtmSource[] = "ext_extensions_menu";
+--- a/extensions/common/api/_api_features.json
++++ b/extensions/common/api/_api_features.json
+@@ -342,7 +342,7 @@
+   }, {
+     "channel": "stable",
+     "contexts": ["web_page"],
+-    "matches": ["https://chromewebstore.9oo91e.qjz9zk/*"]
++    "matches": ["https://chromewebstore.google.com/*"]
+   }, {
+     // Used for webstore testing. See comment in
+     // chrome/common/extensions/webstore_override.cc
+@@ -987,7 +987,7 @@
+   "webstorePrivate": [{
+     "channel": "stable",
+     "contexts": ["web_page"],
+-    "matches": ["https://chromewebstore.9oo91e.qjz9zk/*"]
++    "matches": ["https://chromewebstore.google.com/*"]
+   }, {
+     // Used for webstore testing. See comment in
+     // chrome/common/extensions/webstore_override.cc
+--- a/chrome/browser/resources/webstore_app/manifest.json
++++ b/chrome/browser/resources/webstore_app/manifest.json
+@@ -9,10 +9,10 @@
+   },
+   "app": {
+     "launch": {
+-      "web_url": "https://chrome.9oo91e.qjz9zk/webstore"
++      "web_url": "https://chrome.google.com/webstore"
+     },
+     "urls": [
+-      "https://chrome.9oo91e.qjz9zk/webstore"
++      "https://chrome.google.com/webstore"
+     ]
+   },
+   "permissions": [
+--- a/chrome/browser/extensions/chrome_content_browser_client_extensions_part.cc
++++ b/chrome/browser/extensions/chrome_content_browser_client_extensions_part.cc
+@@ -683,6 +683,13 @@
+     GetOriginsRequiringDedicatedProcess() {
+   std::vector<url::Origin> list;
+ 
++  // Mori: the web store works again, so it gets its own process again.
++  // Require a dedicated process for the webstore origin.  See
++  // https://crbug.com/40094229.
++  list.push_back(url::Origin::Create(extension_urls::GetWebstoreLaunchURL()));
++  list.push_back(
++      url::Origin::Create(extension_urls::GetNewWebstoreLaunchURL()));
++
+   return list;
+ }
+ 
+--- a/extensions/browser/updater/extension_downloader.cc
++++ b/extensions/browser/updater/extension_downloader.cc
+@@ -157,8 +157,9 @@
+ std::optional<GURL> SanitizeUpdateURL(const ExtensionId& extension_id,
+                                       const GURL& update_url) {
+   if (update_url.is_empty()) {
+-    // Fill in default update URL.
+-    return std::nullopt;
++    // Fill in default update URL. Mori: extensions from the web store
++    // update from it again.
++    return extension_urls::GetWebstoreUpdateUrl();
+   }
+ 
+   // Skip extensions with non-empty invalid update URLs.
+@@ -176,6 +177,11 @@
+     return std::nullopt;
+   }
+ 
++  // Make sure we use SSL for store-hosted extensions.
++  if (extension_urls::IsWebstoreUpdateUrl(update_url) &&
++      !update_url.SchemeIsCryptographic()) {
++    return extension_urls::GetWebstoreUpdateUrl();
++  }
+ 
+   return update_url;
+ }
+@@ -347,6 +353,11 @@
+     AddToFetches(fetches_preparing, std::move(task));
+   pending_tasks_.clear();
+ 
++  // Mori: check for updates (ungoogled-chromium never does).
++  for (auto& fetch_list : fetches_preparing) {
++    for (auto& fetch : fetch_list.second)
++      StartUpdateCheck(std::move(fetch));
++  }
+ }
+ 
+ void ExtensionDownloader::SetIdentityManager(
+--- a/extensions/browser/webstore_installer.cc
++++ b/extensions/browser/webstore_installer.cc
+@@ -481,6 +481,22 @@
+ 
+ void WebstoreInstaller::DownloadCrx(const ExtensionId& extension_id,
+                                     InstallSource source) {
++  // Mori: installs from the web store work (ungoogled-chromium empties this).
++  download_url_ = GetWebstoreInstallURL(extension_id, source);
++  MaybeAppendAuthUserParameter(approval_->authuser, download_url_);
++
++  base::FilePath user_data_dir =
++      ExtensionsBrowserClient::Get()->GetUserDataDir();
++  base::FilePath download_path = user_data_dir.Append(kWebstoreDownloadFolder);
++
++  base::FilePath download_directory(g_download_directory_for_tests
++                                        ? *g_download_directory_for_tests
++                                        : download_path);
++
++  GetExtensionFileTaskRunner()->PostTaskAndReplyWithResult(
++      FROM_HERE,
++      base::BindOnce(&GetDownloadFilePath, download_directory, extension_id),
++      base::BindOnce(&WebstoreInstaller::StartDownload, this, extension_id));
+ }
+ 
+ // http://crbug.com/40957413
+@@ -635,6 +651,25 @@
+ void WebstoreInstaller::StartCrxInstaller(const DownloadItem& download) {
+   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+   DCHECK(!crx_installer_.get());
++
++  // Mori: as in Chromium (ungoogled-chromium empties this).
++  const InstallApproval* approval = GetAssociatedApproval(download);
++  DCHECK(approval);
++
++  crx_installer_ =
++      ExtensionsBrowserClient::Get()->CreateCrxInstallerFromDownloadItem(
++          browser_context_, download);
++
++  crx_installer_->set_expected_id(approval->extension_id);
++  crx_installer_->set_is_gallery_install(true);
++  crx_installer_->set_allow_silent_install(true);
++  crx_installer_->AddInstallerCallback(base::BindOnce(
++      &WebstoreInstaller::OnInstallerDone, weak_ptr_factory_.GetWeakPtr()));
++  if (approval->withhold_permissions) {
++    crx_installer_->set_withhold_permissions();
++  }
++
++  crx_installer_->InstallCrx(download.GetFullPath());
+ }
+ 
+ void WebstoreInstaller::ReportFailure(const std::string& error,

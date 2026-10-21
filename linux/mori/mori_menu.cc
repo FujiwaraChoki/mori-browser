@@ -3,9 +3,11 @@
 #include <array>
 #include <memory>
 #include <optional>
+#include <utility>
 #include <string_view>
 #include <vector>
 
+#include "base/functional/callback_helpers.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/functional/bind.h"
 #include "base/i18n/case_conversion.h"
@@ -28,11 +30,14 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/mori/mori_app_menu.h"
 #include "chrome/browser/ui/views/mori/mori_command_ids.h"
+#include "chrome/browser/ui/views/mori/mori_folders.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_peek.h"
 #include "chrome/browser/ui/views/mori/mori_routes.h"
+#include "chrome/browser/ui/views/mori/mori_space_editor.h"
 #include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "chrome/browser/ui/views/mori/mori_tab_names.h"
+#include "chrome/browser/ui/views/mori/mori_boosts.h"
 #include "chrome/browser/ui/views/mori/mori_toast.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
@@ -123,6 +128,24 @@ class MenuHost : public ui::SimpleMenuModel::Delegate {
     model_.AddItemWithIcon(id, label, Icon(icon));
   }
 
+  // A submenu, filled with SubItem.
+  ui::SimpleMenuModel* SubMenu(std::u16string label, std::string_view icon) {
+    submenus_.push_back(std::make_unique<ui::SimpleMenuModel>(this));
+    const int id = kFirstCallbackId + static_cast<int>(callbacks_.size());
+    callbacks_.push_back({base::DoNothing(), true, 0});
+    model_.AddSubMenuWithIcon(id, label, submenus_.back().get(), Icon(icon));
+    return submenus_.back().get();
+  }
+
+  void SubItem(ui::SimpleMenuModel* menu,
+               std::u16string label,
+               std::string_view icon,
+               base::RepeatingClosure run) {
+    const int id = kFirstCallbackId + static_cast<int>(callbacks_.size());
+    callbacks_.push_back({std::move(run), true, 0});
+    menu->AddItemWithIcon(id, label, Icon(icon));
+  }
+
   void Separator() {
     const size_t count = model_.GetItemCount();
     if (count && model_.GetTypeAt(count - 1) != ui::MenuModel::TYPE_SEPARATOR) {
@@ -195,6 +218,7 @@ class MenuHost : public ui::SimpleMenuModel::Delegate {
   const raw_ptr<BrowserWindowInterface> browser_;
   ui::SimpleMenuModel model_;
   std::vector<Callback> callbacks_;
+  std::vector<std::unique_ptr<ui::SimpleMenuModel>> submenus_;
   std::unique_ptr<views::MenuRunner> runner_;
 };
 
@@ -503,6 +527,40 @@ void ShowTabMenu(BrowserWindowInterface* browser,
                               },
                               browser)));
   }
+  // Selects the tabs of this tab's space (or all of them without spaces).
+  // Mori 3's folder items (Zen's folders, mori_folders.h).
+  if (!favorite) {
+    const std::optional<FolderInfo> in_folder = GetTabFolder(tab);
+    for (const FolderInfo& folder : FoldersInSpaceOf(browser, tab)) {
+      if (in_folder && in_folder->id == folder.id) {
+        continue;
+      }
+      host->Item(u"Add to " + folder.name, "folder",
+                 OnTab(tab, base::BindRepeating(
+                                [](BrowserWindowInterface* b, std::string id,
+                                   tabs::TabInterface* t) {
+                                  AddTabToFolder(b, t, id);
+                                },
+                                browser, folder.id)));
+    }
+    host->Item(u"New Folder with Tab", "folder-plus",
+               OnTab(tab, base::BindRepeating(&NewFolderWithTab, browser)));
+    if (in_folder) {
+      host->Item(u"Remove from Folder", "minus",
+                 OnTab(tab, base::BindRepeating(&RemoveTabFromFolder, browser)));
+    }
+  }
+  host->Item(u"Select All Tabs", "list-checks",
+             OnTab(tab, base::BindRepeating(
+                            [](BrowserWindowInterface* b,
+                               tabs::TabInterface* t) {
+                              TabStripModel* m = b->GetTabStripModel();
+                              for (const tabs::TabHandle& handle :
+                                   SpaceTabs(m, t)) {
+                                m->SelectTabAt(m->GetIndexOfTab(handle.Get()));
+                              }
+                            },
+                            browser)));
   if (HasSpaces(browser)) {
     for (const tab_groups::TabGroupId& space :
          model->group_model()->ListTabGroups()) {
@@ -545,6 +603,8 @@ void ShowTabMenu(BrowserWindowInterface* browser,
   if (selected && is_web) {
     host->Separator();
     host->Command(kCommandBoostSite, u"Boost This Site…", "zap");
+    host->Item(u"Zap an Element", "eraser",
+               base::BindRepeating(&ZapElement, browser));
   }
 
   host->Separator();
@@ -596,6 +656,67 @@ bool ShowSidebarMenu(BrowserWindowInterface* browser,
   BuildAppMenu(host->model(), browser);
   host->Run(parent, point, source_type);
   return true;
+}
+
+void ShowSpaceMenu(BrowserWindowInterface* browser,
+                   const gfx::Point& point,
+                   ui::mojom::MenuSourceType source_type,
+                   views::Widget* parent) {
+  auto* host = new MenuHost(browser);
+  host->Item(u"Edit Space…", "palette",
+             base::BindRepeating(&EditSpace, browser));
+  host->Separator();
+  host->Item(u"New Space", "layers", base::BindRepeating(&NewSpace, browser));
+  // Mori 3's Clear: the space's tabs go to History and Reopen Closed Tab.
+  host->Item(u"Archive Unpinned Tabs", "archive",
+             base::BindRepeating(&ClearSpace, browser));
+  host->Item(u"Delete Space", "trash",
+             base::BindRepeating(&DeleteSpace, browser));
+  host->Run(parent, point, source_type);
+}
+
+void ShowFolderMenu(BrowserWindowInterface* browser,
+                    const std::string& folder_id,
+                    const gfx::Point& point,
+                    ui::mojom::MenuSourceType source_type,
+                    views::Widget* parent) {
+  const std::optional<FolderInfo> folder = GetFolder(folder_id);
+  if (!folder) {
+    return;
+  }
+  auto* host = new MenuHost(browser);
+  // Mori 3's folder menu (folder_entries in menus.rs), Zen's Delete Folder.
+  host->Item(u"New Tab in Folder", "plus",
+             base::BindRepeating(&NewTabInFolder, browser, folder_id));
+  host->Separator();
+  host->Item(u"Rename Folder", "pencil",
+             base::BindRepeating(&RenameFolder, browser, folder_id));
+  host->Item(folder->open ? u"Collapse Folder" : u"Expand Folder", "folder",
+             base::BindRepeating(&ToggleFolder, browser, folder_id));
+  // Mori 3's folder symbols (FOLDER_SYMBOLS in sidebar.rs) that Mori's
+  // Lucide set has.
+  ui::SimpleMenuModel* icons = host->SubMenu(u"Folder Icon", "palette");
+  host->SubItem(icons, u"None", "folder",
+                base::BindRepeating(&SetFolderIcon, browser, folder_id,
+                                    std::string()));
+  constexpr std::pair<const char*, const char16_t*> kIcons[] = {
+      {"star", u"Star"},         {"heart", u"Heart"},
+      {"briefcase", u"Briefcase"}, {"code", u"Code"},
+      {"book", u"Book"},         {"music", u"Music"},
+      {"palette", u"Palette"},   {"bookmark", u"Bookmark"},
+      {"zap", u"Zap"},           {"archive", u"Archive"},
+  };
+  for (const auto& [icon, label] : kIcons) {
+    host->SubItem(icons, label, icon,
+                  base::BindRepeating(&SetFolderIcon, browser, folder_id,
+                                      std::string(icon)));
+  }
+  host->Separator();
+  host->Item(u"Ungroup Folder", "layers",
+             base::BindRepeating(&UngroupFolder, browser, folder_id));
+  host->Item(u"Delete Folder", "trash",
+             base::BindRepeating(&DeleteFolder, browser, folder_id));
+  host->Run(parent, point, source_type);
 }
 
 void RestylePageMenu(ui::SimpleMenuModel* model,

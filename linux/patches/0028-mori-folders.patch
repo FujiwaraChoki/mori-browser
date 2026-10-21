@@ -1,0 +1,23 @@
+--- a/chrome/browser/ui/views/tabs/common/tab_group_view.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_group_view.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_folders.h"
++
+ #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/tabs/tab_enums.h"
+@@ -109,6 +111,11 @@
+           base::BindRepeating(&TabGroupView::OnDataChanged,
+                               base::Unretained(this)));
+   OnDataChanged();
++
++  // Mori: folder headers among the space's tabs (mori_folders.h).
++  if (orientation_ == TabStripOrientation::kVertical) {
++    AddChildView(mori::CreateFolderHeaders());
++  }
+ }
+ 
+ TabGroupView::~TabGroupView() = default;

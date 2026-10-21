@@ -10,6 +10,7 @@
 
 #include "base/callback_list.h"
 #include "base/files/file_path.h"
+#include "base/functional/callback_helpers.h"
 #include "base/functional/bind.h"
 #include "base/json/json_writer.h"
 #include "base/memory/raw_ptr.h"
@@ -28,6 +29,7 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/mori/mori_json_file.h"
 #include "chrome/browser/ui/views/mori/mori_overlay.h"
+#include "chrome/browser/ui/views/mori/mori_toast.h"
 #include "chrome/common/chrome_isolated_world_ids.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
@@ -716,6 +718,19 @@ DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(BoostEditor, kBoostEditorKey)
 
 void AttachBoosts(content::WebContents* contents) {
   BoostTabHelper::CreateForWebContents(contents);
+}
+
+void ZapElement(BrowserWindowInterface* browser) {
+  content::WebContents* contents =
+      browser->GetTabStripModel()->GetActiveWebContents();
+  BoostTabHelper* helper =
+      contents ? BoostTabHelper::FromWebContents(contents) : nullptr;
+  if (!helper) {
+    return;
+  }
+  contents->Focus();
+  helper->StartZap(base::DoNothing());
+  ShowToast(browser, u"Click elements to remove \u00B7 Esc to finish");
 }
 
 void EditBoost(BrowserWindowInterface* browser) {

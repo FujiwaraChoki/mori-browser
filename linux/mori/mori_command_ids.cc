@@ -85,6 +85,8 @@ constexpr AcceleratorMapping kMoriAccelerators[] = {
     // Spaces.
     {ui::VKEY_RIGHT, kCtrl | kAlt, IDC_FOCUS_NEXT_TAB_GROUP},
     {ui::VKEY_LEFT, kCtrl | kAlt, IDC_FOCUS_PREV_TAB_GROUP},
+#if BUILDFLAG(IS_WIN)
+    // Ctrl+1-9 picks a tab; Alt picks a space (Ctrl+Alt is AltGr here).
     {ui::VKEY_1, kAlt, kCommandSelectSpace1},
     {ui::VKEY_2, kAlt, kCommandSelectSpace1 + 1},
     {ui::VKEY_3, kAlt, kCommandSelectSpace1 + 2},
@@ -94,6 +96,28 @@ constexpr AcceleratorMapping kMoriAccelerators[] = {
     {ui::VKEY_7, kAlt, kCommandSelectSpace1 + 6},
     {ui::VKEY_8, kAlt, kCommandSelectSpace1 + 7},
     {ui::VKEY_9, kAlt, kCommandSelectSpace9},
+#else
+    // Alt+1-9 picks a tab, as Ctrl+1-9 does (Chromium's Linux keys), and
+    // the spaces take Ctrl+Alt+1-9.
+    {ui::VKEY_1, kAlt, IDC_SELECT_TAB_0},
+    {ui::VKEY_2, kAlt, IDC_SELECT_TAB_1},
+    {ui::VKEY_3, kAlt, IDC_SELECT_TAB_2},
+    {ui::VKEY_4, kAlt, IDC_SELECT_TAB_3},
+    {ui::VKEY_5, kAlt, IDC_SELECT_TAB_4},
+    {ui::VKEY_6, kAlt, IDC_SELECT_TAB_5},
+    {ui::VKEY_7, kAlt, IDC_SELECT_TAB_6},
+    {ui::VKEY_8, kAlt, IDC_SELECT_TAB_7},
+    {ui::VKEY_9, kAlt, IDC_SELECT_LAST_TAB},
+    {ui::VKEY_1, kCtrl | kAlt, kCommandSelectSpace1},
+    {ui::VKEY_2, kCtrl | kAlt, kCommandSelectSpace1 + 1},
+    {ui::VKEY_3, kCtrl | kAlt, kCommandSelectSpace1 + 2},
+    {ui::VKEY_4, kCtrl | kAlt, kCommandSelectSpace1 + 3},
+    {ui::VKEY_5, kCtrl | kAlt, kCommandSelectSpace1 + 4},
+    {ui::VKEY_6, kCtrl | kAlt, kCommandSelectSpace1 + 5},
+    {ui::VKEY_7, kCtrl | kAlt, kCommandSelectSpace1 + 6},
+    {ui::VKEY_8, kCtrl | kAlt, kCommandSelectSpace1 + 7},
+    {ui::VKEY_9, kCtrl | kAlt, kCommandSelectSpace9},
+#endif
     // Tabs.
     {ui::VKEY_DOWN, kCtrl | kAlt, IDC_SELECT_NEXT_TAB},
     {ui::VKEY_UP, kCtrl | kAlt, IDC_SELECT_PREVIOUS_TAB},

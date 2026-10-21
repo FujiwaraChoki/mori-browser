@@ -97,7 +97,16 @@
    // strip is collapsed, tab groups need to draw the group colored line in this
 --- a/chrome/browser/ui/views/tabs/common/tab_group_view_layout.cc
 +++ b/chrome/browser/ui/views/tabs/common/tab_group_view_layout.cc
-@@ -25,7 +25,8 @@
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/ui/views/tabs/common/tab_group_view_layout.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_folders.h"
++
+ #include <algorithm>
+ #include <vector>
+ 
+@@ -25,7 +27,8 @@
  #include "ui/views/view_utils.h"
  
  namespace {
@@ -107,7 +116,7 @@
  constexpr int kGroupLineWidth = 2;
  constexpr int kGroupLineCollapsedLeadingPadding = 6;
  constexpr int kGroupHeaderHeight = 26;
-@@ -67,8 +68,14 @@
+@@ -67,8 +70,14 @@
      const views::SizeBounds& size_bounds) const {
    views::ProposedLayout layouts;
    int width = 0;
@@ -123,7 +132,7 @@
  
    gfx::Rect header_bounds;
    gfx::Rect group_line_bounds;
-@@ -94,10 +101,13 @@
+@@ -94,10 +103,13 @@
  
    layouts.child_layouts.emplace_back(
        tab_group_view->group_header_.get(),
@@ -140,6 +149,69 @@
    width = std::max(width, header_bounds.width());
  
    // If the tab strip is not collapsed then the group line is below and left
+@@ -116,9 +128,35 @@
+ 
+   const bool is_focused = tab_group_view->IsGroupFocused();
+ 
++  // Mori: the space on screen shows its folders: a header above each
++  // folder's tabs, which are indented, and hidden while it is closed.
++  const std::vector<mori::FolderRow> folder_rows =
++      mori_space_header ? mori::GetFolderRows(tab_group_view)
++                        : std::vector<mori::FolderRow>();
++  size_t row_index = 0;
++
+   // Layout children in order. Children will have their preferred height and
+   // fill available width.
+   for (auto* child : children) {
++    const mori::FolderRow* folder_row =
++        row_index < folder_rows.size() ? &folder_rows[row_index] : nullptr;
++    ++row_index;
++    if (folder_row && folder_row->header) {
++      gfx::Rect folder_bounds(
++          0, height, 0,
++          folder_row->header->GetPreferredSize(size_bounds).height());
++      if (size_bounds.width().is_bounded()) {
++        folder_bounds.set_width(size_bounds.width().value());
++      }
++      layouts.child_layouts.emplace_back(folder_row->header.get(), true,
++                                         folder_bounds);
++      height += folder_bounds.height() + kTabVerticalPadding;
++    }
++    if (folder_row && folder_row->hidden) {
++      layouts.child_layouts.emplace_back(child, false,
++                                         gfx::Rect(0, height, 0, 0));
++      continue;
++    }
+     gfx::Rect bounds = gfx::Rect(child->GetPreferredSize(size_bounds));
+ 
+     auto drag_data = tab_group_view->GetVisualDataForDraggedView(*child);
+@@ -135,16 +173,25 @@
+     } else if (!is_focused) {
+       child_x = TabGroupView::kTabLeadingPadding;
+     }
++    if (folder_row) {
++      child_x += folder_row->indent;
++    }
+     bounds.set_x(child_x);
+     // If width is bounded, child views should respect the width constraints
+     // and take up the available width excluding trailing horizontal padding.
+     if (size_bounds.width().is_bounded()) {
+       bounds.set_width(size_bounds.width().value() - bounds.x());
+     }
+-    layouts.child_layouts.emplace_back(child, child->GetVisible(), bounds);
++    // Mori: a row a closed folder hid shows again once it opens.
++    layouts.child_layouts.emplace_back(
++        child, folder_row ? true : child->GetVisible(), bounds);
+     height += bounds.height() + kTabVerticalPadding;
+     width = std::max(width, bounds.width());
+   }
++  for (views::View* header :
++       mori::GetUnplacedFolderHeaders(tab_group_view, folder_rows)) {
++    layouts.child_layouts.emplace_back(header, false, gfx::Rect());
++  }
+   // Remove excess padding.
+   height -= kTabVerticalPadding;
+ 
 --- a/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
 +++ b/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
 @@ -25,7 +25,8 @@
@@ -221,3 +293,74 @@
  }
  
  void BookmarkPageActionController::SetStarred(bool starred) {
+--- a/chrome/browser/ui/views/tabs/common/vertical_tab_style_views.cc
++++ b/chrome/browser/ui/views/tabs/common/vertical_tab_style_views.cc
+@@ -4,6 +4,9 @@
+ 
+ #include "chrome/browser/ui/views/tabs/common/vertical_tab_style_views.h"
+ 
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++#include "chrome/browser/ui/views/mori/mori_glass.h"
++
+ #include <optional>
+ #include <string>
+ 
+@@ -64,8 +67,9 @@
+           ? corner_radius * scale
+           : corner_radius;
+ 
+-  return SkPath::RRect(SkRRect::MakeRectXY(
+-      gfx::RectFToSkRect(bounds), scaled_corner_radius, scaled_corner_radius));
++  // Mori: Zen's smooth corners (mori_corners.h).
++  return mori::SmoothRoundRectPath(gfx::RectFToSkRect(bounds),
++                                   scaled_corner_radius);
+ }
+ 
+ std::optional<SkPath> VerticalTabStyleViews::GetChildClipPath(
+@@ -152,12 +156,23 @@
+ 
+   if (ShouldPaintTabBackgroundColor(selection_state, fill_id.has_value(),
+                                     hovered)) {
+-    cc::PaintFlags flags;
+-    flags.setAntiAlias(true);
+-    flags.setColor(GetCurrentTabBackgroundColor(selection_state));
+-    canvas->DrawRect(gfx::ScaleToEnclosingRect(
+-                         delegate_->GetView()->GetLocalBounds(), scale),
+-                     flags);
++    const bool dark = mori::IsDarkChrome(delegate_->GetView());
++    if (selection_state == TabStyle::TabSelectionState::kActive &&
++        !fill_id.has_value()) {
++      // Mori: the active tab is a lens of glass (mori_glass.h).
++      mori::PaintGlass(canvas, fill_path, mori::Glass::kLens, dark);
++    } else {
++      cc::PaintFlags flags;
++      flags.setAntiAlias(true);
++      flags.setColor(GetCurrentTabBackgroundColor(selection_state));
++      canvas->DrawRect(gfx::ScaleToEnclosingRect(
++                           delegate_->GetView()->GetLocalBounds(), scale),
++                       flags);
++      // Mori: a favorite is a tile set into the sidebar's glass.
++      if (delegate_->IsPinned() && !fill_id.has_value()) {
++        mori::PaintGlass(canvas, fill_path, mori::Glass::kInset, dark);
++      }
++    }
+   }
+ 
+   if (fill_id.has_value()) {
+@@ -197,6 +212,16 @@
+ SkColor VerticalTabStyleViews::GetCurrentTabBackgroundColor(
+     TabStyle::TabSelectionState selection_state) const {
+   const bool frame_glass = delegate_->IsGlassFrame();
++  const bool frame_active = delegate_->GetView()->GetWidget()
++                                ? delegate_->GetView()->GetWidget()->ShouldPaintAsActive()
++                                : true;
++  // Mori: a hovered row gets Mori 3's hover fill outright. Chromium scales
++  // it by a contrast ratio, which Mori's translucent fills bring to nothing.
++  if (delegate_->IsHovering()) {
++    return tab_style()->GetTabBackgroundColor(
++        selection_state, /*hovered=*/true, frame_active, frame_glass,
++        delegate_->GetView()->GetColorProvider());
++  }
+   return tab_style()->GetCurrentTabBackgroundColor(
+       selection_state, delegate_->IsHoverAnimationActive(),
+       delegate_->GetHoverAnimationValue(),

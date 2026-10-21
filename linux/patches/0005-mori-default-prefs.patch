@@ -70,7 +70,21 @@
  #if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
 --- a/chrome/browser/ui/toolbar/chrome_location_bar_model_delegate.cc
 +++ b/chrome/browser/ui/toolbar/chrome_location_bar_model_delegate.cc
-@@ -316,5 +316,6 @@
+@@ -89,6 +89,13 @@
+   return net::IsCertStatusError(GetVisibleSecurityState()->cert_status);
+ }
+ 
++bool ChromeLocationBarModelDelegate::ShouldTrimDisplayUrlAfterHostName()
++    const {
++  // The whole address shows while the field is edited, and with Chromium's
++  // "Always show full URLs" (ShouldPreventElision).
++  return true;
++}
++
+ bool ChromeLocationBarModelDelegate::ShouldDisplayURL() const {
+   // Note: The order here is important.
+   // - The WebUI test must come before the extension scheme test because there
+@@ -316,5 +323,6 @@
  // static
  void ChromeLocationBarModelDelegate::RegisterProfilePrefs(
      user_prefs::PrefRegistrySyncable* registry) {
@@ -78,6 +92,17 @@
 +  // Mori: show the site, not the full URL, until the field is edited.
 +  registry->RegisterBooleanPref(omnibox::kPreventUrlElisionsInOmnibox, false);
  }
+--- a/chrome/browser/ui/toolbar/chrome_location_bar_model_delegate.h
++++ b/chrome/browser/ui/toolbar/chrome_location_bar_model_delegate.h
+@@ -37,6 +37,8 @@
+       const std::u16string& formatted_url) const override;
+   bool GetURL(GURL* url) const override;
+   bool ShouldPreventElision() override;
++  // Mori: the address field shows the site alone, as in Zen, Arc and Mori 3.
++  bool ShouldTrimDisplayUrlAfterHostName() const override;
+   bool ShouldDisplayURL() const override;
+   security_state::SecurityLevel GetSecurityLevel() const override;
+   net::CertStatus GetCertStatus() const override;
 --- a/chrome/browser/profiles/profile.cc
 +++ b/chrome/browser/profiles/profile.cc
 @@ -332,7 +332,8 @@

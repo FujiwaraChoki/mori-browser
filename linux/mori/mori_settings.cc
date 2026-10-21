@@ -1290,6 +1290,11 @@ class Settings : public ui::EventObserver, public views::ViewObserver {
 
   // views::ViewObserver:
   void OnViewBoundsChanged(views::View* observed_view) override { Place(); }
+  // The card goes before the BrowserView's properties (this) when the
+  // window closes.
+  void OnViewIsDeleting(views::View* observed_view) override {
+    observation_.RemoveObservation(observed_view);
+  }
 
  private:
   // Exactly over the page card (Mori 3 shows settings in the card).

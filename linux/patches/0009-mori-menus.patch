@@ -9,7 +9,7 @@
  #include "base/debug/dump_without_crashing.h"
  #include "base/no_destructor.h"
  #include "ui/base/ui_base_features.h"
-@@ -93,6 +95,22 @@
+@@ -93,6 +95,24 @@
    separator_height = 17;
    separator_spacing_height = 4;
    use_outer_border = false;
@@ -29,6 +29,8 @@
 +  separator_spacing_height = 4;
 +  corner_radius = 8;
 +  auxiliary_corner_radius = 8;
++  // A 1px edge in the menu border colour, as Mori 3's menus have.
++  use_outer_border = true;
  }
  
  // static
@@ -76,3 +78,23 @@
    if (app_menu_icon_controller_ &&
        app_menu_icon_controller_->GetTypeAndSeverity().type ==
            AppMenuIconController::IconType::kUpgradeNotification) {
+--- a/ui/base/accelerators/accelerator.cc
++++ b/ui/base/accelerators/accelerator.cc
+@@ -365,15 +365,8 @@
+     case VKEY_F11:
+       string_id = IDS_APP_F11_KEY;
+       break;
+-#if !BUILDFLAG(IS_MAC)
+-    // On Mac, commas and periods are used literally in accelerator text.
+-    case VKEY_OEM_COMMA:
+-      string_id = IDS_APP_COMMA_KEY;
+-      break;
+-    case VKEY_OEM_PERIOD:
+-      string_id = IDS_APP_PERIOD_KEY;
+-      break;
+-#endif
++    // Mori: commas and periods are used literally in accelerator text, as on
++    // Mac (Ctrl+, as in Mori 3, not Ctrl+Comma).
+     case VKEY_MEDIA_NEXT_TRACK:
+       string_id = IDS_APP_MEDIA_NEXT_TRACK_KEY;
+       break;

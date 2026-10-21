@@ -20,6 +20,10 @@ enum class CommandBarMode {
 // Chromium's own behaviour.
 bool ShowCommandBar(BrowserWindowInterface* browser, CommandBarMode mode);
 
+// Whether `browser`'s address field opens the command bar instead of taking
+// focus: Mori's windows, as in Mori 3, where the field is only a display.
+bool OpensCommandBarFromAddressField(BrowserWindowInterface* browser);
+
 }  // namespace mori
 
 #endif  // CHROME_BROWSER_UI_VIEWS_MORI_MORI_COMMAND_BAR_H_

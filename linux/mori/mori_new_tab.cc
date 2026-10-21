@@ -33,8 +33,12 @@
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/text_utils.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/controls/native/native_view_host.h"
 #include "ui/views/view.h"
+#include "ui/views/view_class_properties.h"
 #include "ui/views/view_observer.h"
+#include "ui/views/view_tracker.h"
+#include "ui/views/widget/widget.h"
 #include "url/gurl.h"
 
 namespace mori {
@@ -61,8 +65,10 @@ class NewTabView : public views::View {
   }
 
   void OnPaint(gfx::Canvas* canvas) override {
+    // The card's colour, apart from the sidebar's (which is translucent,
+    // for a space's wash).
     const SkColor background =
-        GetColorProvider()->GetColor(kColorToolbar);
+        GetColorProvider()->GetColor(kColorNewTabPageBackground);
     const bool dark = color_utils::IsDark(background);
     const SkColor foreground =
         dark ? SkColorSetRGB(0xEE, 0xEE, 0xEF) : SkColorSetRGB(0x1D, 0x1F, 0x22);
@@ -248,6 +254,11 @@ class NewTabPages : public TabStripModelObserver,
 
   // views::ViewObserver:
   void OnViewBoundsChanged(views::View* observed_view) override { Update(); }
+  // The card goes before the BrowserView's properties (this) when the
+  // window closes.
+  void OnViewIsDeleting(views::View* observed_view) override {
+    view_observation_.RemoveObservation(observed_view);
+  }
 
  private:
   void Update() {
@@ -257,8 +268,8 @@ class NewTabPages : public TabStripModelObserver,
                       IsNewTabPage(contents->GetVisibleURL()) &&
                       browser_view_->GetWidget();
     if (!show) {
-      if (overlay_) {
-        overlay_->Hide();
+      if (host_.view()) {
+        host_.view()->SetVisible(false);
       }
       return;
     }
@@ -267,6 +278,24 @@ class NewTabPages : public TabStripModelObserver,
           browser_view_,
           std::make_unique<NewTabView>(browser_view_->browser()),
           "MoriNewTab");
+      // A child widget on its own sits above every view in the window,
+      // the floating sidebar too. Hosted in the view tree, as the page
+      // itself is, it stacks just above the card and below the sidebar.
+      size_t index = browser_view_->children().size();
+      for (views::View* child = card; child; child = child->parent()) {
+        if (child->parent() == browser_view_) {
+          index = *browser_view_->GetIndexOf(child) + 1;
+          break;
+        }
+      }
+      auto* host = browser_view_->AddChildViewAt(
+          std::make_unique<views::NativeViewHost>(), index);
+      host->SetProperty(views::kViewIgnoredByLayoutKey, true);
+      host->SetVisible(false);
+      views::Widget* widget = overlay_->contents()->GetWidget();
+      host->Attach(widget->GetNativeView());
+      widget->Show();
+      host_.SetView(host);
     }
     // The card moves with the sidebar and resizes with the window.
     if (!view_observation_.IsObservingSource(card)) {
@@ -275,17 +304,19 @@ class NewTabPages : public TabStripModelObserver,
     if (!view_observation_.IsObservingSource(browser_view_.get())) {
       view_observation_.AddObservation(browser_view_.get());
     }
-    const gfx::Rect bounds = views::View::ConvertRectToTarget(
-        card, browser_view_, card->GetLocalBounds());
-    if (!overlay_->IsVisible() || bounds != shown_bounds_) {
-      shown_bounds_ = bounds;
-      overlay_->Show(bounds);
+    views::View* host = host_.view();
+    if (!host) {
+      return;
     }
+    host->SetBoundsRect(views::View::ConvertRectToTarget(
+        card, browser_view_, card->GetLocalBounds()));
+    host->SetVisible(true);
   }
 
   raw_ptr<BrowserView> browser_view_;
   std::unique_ptr<Overlay> overlay_;
-  gfx::Rect shown_bounds_;
+  // The overlay's place in the BrowserView, which owns (and may delete) it.
+  views::ViewTracker host_;
   base::ScopedMultiSourceObservation<views::View, views::ViewObserver>
       view_observation_{this};
 };

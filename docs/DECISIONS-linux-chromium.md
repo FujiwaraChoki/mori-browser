@@ -305,6 +305,46 @@ lives in `linux/mori/` and reaches Chromium through a small patch.
   Other links open in Little Mori (`mori_little.cc`): a 900×640 popup window
   with back, the address, "Open in <space>" and close. The command bar
   switches between Little Mori and the current space.
+- **Folders** (`mori_folders.cc`, `0028`, hooks in `0007` and `0013`).
+  Zen's folders inside a space, with Zen's folder icon (its two plates,
+  tilting open). Tab groups are spaces and can't nest, so a folder is
+  Mori's: each tab keeps its folder (id, name, icon, open) in its session
+  data, and a folder is the run of a space's tabs that share one. A tab
+  moved between two of a folder's tabs joins it; one moved away leaves.
+  A closed folder still shows its active tab, and its icon shows dots.
+- **Smooth corners** (`mori_corners.cc`, `0029`). Zen draws every rounded
+  rect with `corner-shape: superellipse(1.3)` on radii 1.3 times as long;
+  Mori does the same in Canvas::DrawRoundRect, rounded backgrounds and
+  painters, highlights, focus rings, menu items and tab rows. Corners
+  clipped by compositor layers (the page card, the floating sidebar) and
+  bubble outlines stay circular.
+- **Liquid Glass** (`mori_glass.cc`; hooks in `0002`, `0004`, `0007`), as in
+  Mori 3: the toolbar's two button groups stand in raised glass capsules (a
+  view behind the buttons, `mori_toolbar_layout.cc`); the address field and
+  the favorites are set into the glass with a light rim; the active tab is
+  a lens, brighter at the top, with a rim and a line of light along its top
+  edge. The page card's corners are 10px. The window itself stays opaque:
+  it would need a translucent browser widget, and Hyprland's blur.
+- **The sidebar as Mori 3 draws it** (`mori_spaces.cc`, `0004`, `0005`,
+  `0031`): no space name or "Clear" between the favorites and the tabs, only
+  a hairline under the favorites and "Add Tab". Clear is "Archive Unpinned
+  Tabs" in the space's menu and the command bar, as in Mori 3. Favorites are
+  44px tiles, up to four a row, balanced so no row has a hole and each row
+  fills the sidebar. The address field shows the site alone (Chromium's
+  "Always show full URLs" still shows the rest). The space bar's dots close
+  up to keep "+" in the bar, and the library button is Lucide's
+  library-big.
+- **Focus rings with smooth corners** (`0029`). A focus ring takes the round
+  rect its view's highlight was made from: the smooth highlight path isn't
+  one, and FocusRing CHECKed that it was (the crash on the Web Store's "Add
+  to Mori", whose dialog focuses a button).
+- **Zen's tab animations** (`0030`). A sidebar tab fades in and grows from
+  0.95 as it opens (120ms) and fades and shrinks back as it closes (100ms),
+  easing out, while the rows around it move on the same timing. Chromium's
+  own were 200ms, ease-in-out, without the scale.
+- **Alt+1–9 picks a tab on Linux** (Chromium's Linux keys, beside Ctrl+1–9),
+  and the spaces moved to Ctrl+Alt+1–9. Windows keeps Alt+1–9 for spaces
+  (Ctrl+Alt is AltGr there).
 - **Import** (`mori_import.cc`, `0017`). Zen's workspaces and essentials, a
   Firefox session, and Arc's sidebar file become spaces and favorites. Tabs
   arrive unloaded and fetch their icons. Chromium's importer finds Zen
@@ -335,8 +375,10 @@ Chromium surfaces redrawn as Mori 3's (patches 0018-0022):
   favicon, and Mori's blue in Chromium's bubbles and dialogs.
 
 Still to port from Mori 3:
-- Per-space pinned tabs and folders. Chromium's tab groups have neither; it
-  needs Mori's own bookkeeping per saved group.
+- Per-space pinned tabs. Chromium's tab groups have none; it needs Mori's
+  own bookkeeping per saved group.
+- Nested folders, dragging a folder, and dragging a tab onto a folder's
+  header (a tab dropped between two of a folder's tabs joins it).
 - Downloads as Mori 3's popover (Chromium's bubble shows now).
 - Content blocking (uBlock Origin, once MV2 support is checked).
 - Branding: the icon and a .desktop file. The name
@@ -399,6 +441,29 @@ built or run (that needs Windows and Visual Studio). What differs:
 - Overlay scrollbars and reopening the last session are on, as on Linux.
 - The executable and installer keep Chromium's names (chrome.exe, the
   ChromiumHTM ProgID) until a full rename can be tested on Windows.
+
+## Chrome Web Store
+
+Extensions install from the Chrome Web Store, as in Arc,
+and update from it (patch 0027). ungoogled-chromium cuts
+the store off in three ways, which Mori undoes:
+
+- Domain substitution renames the store's addresses
+  (chromewebstore.9oo91e.qjz9zk), so the real store isn't recognised and
+  gets no webstorePrivate API: "Add to Chrome" stays grey. The store,
+  install and update addresses are the real ones again, and the store gets
+  its dedicated process back.
+- The store installer's download and install steps are emptied: restored.
+- Update checks never start, and extensions without an update URL get
+  none: restored, so extensions from the store update from it.
+
+Google's update pings (daystart) and OAuth on update requests stay off.
+
+The store names the browser Chrome and asks Chromium-based browsers to
+switch. A tab helper (`mori_web_store.cc`) runs in an isolated world on the
+store: "Chrome" becomes "Mori" in its buttons ("Add to Mori", in any
+language), and its switch-to-Chrome popup (which links to Chrome's
+download) and banner (whose button is logged as 276336) are hidden.
 
 ## Risks
 

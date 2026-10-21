@@ -31,6 +31,10 @@ inline constexpr int kSidebarToolbarRowHeight = 36;
 // kSidebarToolbarLeadingInsetKey is set.
 std::unique_ptr<views::FlexLayout> CreateToolbarLayout(ToolbarView* toolbar);
 
+// Glass capsules behind the sidebar toolbar's button groups; added to
+// `toolbar` as its first child, so they paint under the buttons.
+std::unique_ptr<views::View> CreateToolbarCapsules(ToolbarView* toolbar);
+
 // The button next to the menu that collapses the sidebar (Mori 3's sidebar
 // toggle). Its class name is "MoriSidebarToggle".
 std::unique_ptr<views::View> CreateSidebarToggle(

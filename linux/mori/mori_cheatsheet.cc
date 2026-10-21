@@ -70,8 +70,10 @@ std::vector<Group> Groups() {
         {u"Go to tab 1–8", 0,
 #if BUILDFLAG(IS_MAC)
          u"⌘1–8"},
-#else
+#elif BUILDFLAG(IS_WIN)
          u"Ctrl+1–8"},
+#else
+         u"Alt+1–8, Ctrl+1–8"},
 #endif
         {u"Go to last tab", IDC_SELECT_LAST_TAB},
         {u"Add to or remove from Favorites", kCommandTogglePin},
@@ -84,8 +86,10 @@ std::vector<Group> Groups() {
         {u"Go to space 1–9", 0,
 #if BUILDFLAG(IS_MAC)
          u"⌃1–9"}}},
-#else
+#elif BUILDFLAG(IS_WIN)
          u"Alt+1–9"}}},
+#else
+         u"Ctrl+Alt+1–9"}}},
 #endif
       {u"Getting around",
        {{u"Command bar", IDC_FOCUS_LOCATION},

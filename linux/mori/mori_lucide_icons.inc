@@ -1508,6 +1508,20 @@ constexpr IconOp kTreesOps[] = {
     {'L', {13.0f, 3.0f}},
     {'L', {11.6f, 4.5f}},
 };
+constexpr IconOp kLibraryBigOps[] = {
+    {'R', {3.0f, 3.0f, 8.0f, 18.0f, 1.0f, 1.0f}},
+    {'M', {7.0f, 3.0f}},
+    {'L', {7.0f, 21.0f}},
+    {'M', {20.4f, 18.9f}},
+    {'C', {20.6f, 19.4f, 20.3f, 20.0f, 19.8f, 20.2f}},
+    {'L', {17.9f, 20.9f}},
+    {'C', {17.4f, 21.1f, 16.8f, 20.8f, 16.6f, 20.3f}},
+    {'L', {11.1f, 5.1f}},
+    {'C', {10.9f, 4.6f, 11.2f, 4.0f, 11.7f, 3.8f}},
+    {'L', {13.6f, 3.1f}},
+    {'C', {14.1f, 2.9f, 14.7f, 3.2f, 14.9f, 3.7f}},
+    {'Z', {}},
+};
 constexpr gfx::VectorIcon kMoriArrowLeftIcon(kPlaceholderReps, 1, "mori::arrow-left");
 constexpr gfx::VectorIcon kMoriArrowRightIcon(kPlaceholderReps, 1, "mori::arrow-right");
 constexpr gfx::VectorIcon kMoriRotateCwIcon(kPlaceholderReps, 1, "mori::rotate-cw");
@@ -1615,6 +1629,7 @@ constexpr gfx::VectorIcon kMoriShieldIcon(kPlaceholderReps, 1, "mori::shield");
 constexpr gfx::VectorIcon kMoriImportIcon(kPlaceholderReps, 1, "mori::import");
 constexpr gfx::VectorIcon kMoriInfoIcon(kPlaceholderReps, 1, "mori::info");
 constexpr gfx::VectorIcon kMoriTreesIcon(kPlaceholderReps, 1, "mori::trees");
+constexpr gfx::VectorIcon kMoriLibraryBigIcon(kPlaceholderReps, 1, "mori::library-big");
 constexpr LucideIconData kLucideIcons[] = {
     {"arrow-left", kArrowLeftOps, &kMoriArrowLeftIcon},
     {"arrow-right", kArrowRightOps, &kMoriArrowRightIcon},
@@ -1723,4 +1738,5 @@ constexpr LucideIconData kLucideIcons[] = {
     {"import", kImportOps, &kMoriImportIcon},
     {"info", kInfoOps, &kMoriInfoIcon},
     {"trees", kTreesOps, &kMoriTreesIcon},
+    {"library-big", kLibraryBigOps, &kMoriLibraryBigIcon},
 };

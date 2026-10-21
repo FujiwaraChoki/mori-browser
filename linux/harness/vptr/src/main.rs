@@ -137,8 +137,11 @@ fn main() {
         }
         _ => {}
     }
-    // Keep the pointer alive briefly so the compositor delivers the events.
-    thread::sleep(Duration::from_millis(400));
+    // Keep the pointer alive briefly so the compositor delivers the events
+    // (VPTR_HOLD_MS longer, to look at hover states: removing the pointer
+    // makes it leave the window).
+    let hold = env::var("VPTR_HOLD_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(400);
+    thread::sleep(Duration::from_millis(hold));
     pointer.destroy();
     flush(&mut queue, &mut state);
 }

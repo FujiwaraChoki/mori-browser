@@ -24,6 +24,10 @@ void AttachBoosts(content::WebContents* contents);
 // Opens the boost editor for the site of `browser`'s active tab (Ctrl+Shift+B).
 void EditBoost(BrowserWindowInterface* browser);
 
+// Zap mode on `browser`'s active tab: elements clicked go away, also on later
+// visits (the tab menu's Zap an Element).
+void ZapElement(BrowserWindowInterface* browser);
+
 // The sites with a boost, and removing one (for settings).
 std::vector<std::string> ListBoostedSites(Profile* profile);
 void RemoveBoost(Profile* profile, const std::string& host);

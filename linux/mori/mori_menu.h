@@ -6,6 +6,8 @@
 #ifndef CHROME_BROWSER_UI_VIEWS_MORI_MORI_MENU_H_
 #define CHROME_BROWSER_UI_VIEWS_MORI_MORI_MENU_H_
 
+#include <string>
+
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
 
 class BrowserWindowInterface;
@@ -46,6 +48,20 @@ bool ShowSidebarMenu(BrowserWindowInterface* browser,
                      const gfx::Point& point,
                      ui::mojom::MenuSourceType source_type,
                      views::Widget* parent);
+
+// The menu of a space's chip in the sidebar's bottom bar, for the space on
+// screen (the chip's space is shown first): edit, new, delete.
+void ShowSpaceMenu(BrowserWindowInterface* browser,
+                   const gfx::Point& point,
+                   ui::mojom::MenuSourceType source_type,
+                   views::Widget* parent);
+
+// The menu of a folder's header (mori_folders.h).
+void ShowFolderMenu(BrowserWindowInterface* browser,
+                    const std::string& folder_id,
+                    const gfx::Point& point,
+                    ui::mojom::MenuSourceType source_type,
+                    views::Widget* parent);
 
 // Rewrites the page's context menu, built by Chromium, into Mori 3's.
 void RestylePageMenu(ui::SimpleMenuModel* model,
