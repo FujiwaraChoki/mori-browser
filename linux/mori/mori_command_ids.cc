@@ -18,8 +18,8 @@
 #include "chrome/browser/ui/views/mori/mori_boosts.h"
 #include "chrome/browser/ui/views/mori/mori_cheatsheet.h"
 #include "chrome/browser/ui/views/mori/mori_peek.h"
-#include "chrome/browser/ui/views/mori/mori_space_editor.h"
-#include "chrome/browser/ui/views/mori/mori_spaces.h"
+#include "chrome/browser/ui/views/mori/mori_settings.h"
+#include "chrome/browser/ui/views/mori/mori_tab_list.h"
 #include "chrome/browser/ui/views/mori/mori_tab_switcher.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
@@ -82,23 +82,8 @@ constexpr int kAlt = ui::EF_ALT_DOWN;
 constexpr AcceleratorMapping kMoriAccelerators[] = {
     // Arc: hide the sidebar; Zen/Mori 3 compact mode does the same here.
     {ui::VKEY_S, kCtrl, IDC_TOGGLE_VERTICAL_TABS},
-    // Spaces.
-    {ui::VKEY_RIGHT, kCtrl | kAlt, IDC_FOCUS_NEXT_TAB_GROUP},
-    {ui::VKEY_LEFT, kCtrl | kAlt, IDC_FOCUS_PREV_TAB_GROUP},
-#if BUILDFLAG(IS_WIN)
-    // Ctrl+1-9 picks a tab; Alt picks a space (Ctrl+Alt is AltGr here).
-    {ui::VKEY_1, kAlt, kCommandSelectSpace1},
-    {ui::VKEY_2, kAlt, kCommandSelectSpace1 + 1},
-    {ui::VKEY_3, kAlt, kCommandSelectSpace1 + 2},
-    {ui::VKEY_4, kAlt, kCommandSelectSpace1 + 3},
-    {ui::VKEY_5, kAlt, kCommandSelectSpace1 + 4},
-    {ui::VKEY_6, kAlt, kCommandSelectSpace1 + 5},
-    {ui::VKEY_7, kAlt, kCommandSelectSpace1 + 6},
-    {ui::VKEY_8, kAlt, kCommandSelectSpace1 + 7},
-    {ui::VKEY_9, kAlt, kCommandSelectSpace9},
-#else
-    // Alt+1-9 picks a tab, as Ctrl+1-9 does (Chromium's Linux keys), and
-    // the spaces take Ctrl+Alt+1-9.
+#if !BUILDFLAG(IS_WIN)
+    // Alt+1-9 picks a tab, as Ctrl+1-9 does (Chromium's Linux keys).
     {ui::VKEY_1, kAlt, IDC_SELECT_TAB_0},
     {ui::VKEY_2, kAlt, IDC_SELECT_TAB_1},
     {ui::VKEY_3, kAlt, IDC_SELECT_TAB_2},
@@ -108,15 +93,6 @@ constexpr AcceleratorMapping kMoriAccelerators[] = {
     {ui::VKEY_7, kAlt, IDC_SELECT_TAB_6},
     {ui::VKEY_8, kAlt, IDC_SELECT_TAB_7},
     {ui::VKEY_9, kAlt, IDC_SELECT_LAST_TAB},
-    {ui::VKEY_1, kCtrl | kAlt, kCommandSelectSpace1},
-    {ui::VKEY_2, kCtrl | kAlt, kCommandSelectSpace1 + 1},
-    {ui::VKEY_3, kCtrl | kAlt, kCommandSelectSpace1 + 2},
-    {ui::VKEY_4, kCtrl | kAlt, kCommandSelectSpace1 + 3},
-    {ui::VKEY_5, kCtrl | kAlt, kCommandSelectSpace1 + 4},
-    {ui::VKEY_6, kCtrl | kAlt, kCommandSelectSpace1 + 5},
-    {ui::VKEY_7, kCtrl | kAlt, kCommandSelectSpace1 + 6},
-    {ui::VKEY_8, kCtrl | kAlt, kCommandSelectSpace1 + 7},
-    {ui::VKEY_9, kCtrl | kAlt, kCommandSelectSpace9},
 #endif
     // Tabs.
     {ui::VKEY_DOWN, kCtrl | kAlt, IDC_SELECT_NEXT_TAB},
@@ -154,17 +130,12 @@ bool IsMoriCommand(int command_id) {
 }
 
 void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id) {
-  if (command_id >= kCommandSelectSpace1 &&
-      command_id <= kCommandSelectSpace9) {
-    SelectSpace(browser, command_id - kCommandSelectSpace1);
-    return;
-  }
   switch (command_id) {
-    case kCommandNewSpace:
-      NewSpace(browser);
-      break;
     case kCommandSleepBackgroundTabs:
       SleepBackgroundTabs(browser);
+      break;
+    case kCommandArchiveUnpinnedTabs:
+      ArchiveUnpinnedTabs(browser);
       break;
     case kCommandTogglePin:
       TogglePin(browser);
@@ -188,8 +159,8 @@ void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id) {
       ToggleAssistant(browser);
       break;
     case kCommandEditTheme:
-      // The space's own theme, as Mori 3's "Edit Theme…".
-      EditSpace(browser);
+      // Mori 3's "Edit Theme…": the theme is in Settings.
+      ShowThemeSettings(browser);
       break;
   }
 }

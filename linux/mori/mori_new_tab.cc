@@ -66,7 +66,7 @@ class NewTabView : public views::View {
 
   void OnPaint(gfx::Canvas* canvas) override {
     // The card's colour, apart from the sidebar's (which is translucent,
-    // for a space's wash).
+    // for the theme's wash).
     const SkColor background =
         GetColorProvider()->GetColor(kColorNewTabPageBackground);
     const bool dark = color_utils::IsDark(background);

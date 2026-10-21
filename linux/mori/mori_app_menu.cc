@@ -9,7 +9,6 @@
 #include "chrome/browser/ui/views/mori/mori_command_ids.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_sidebar.h"
-#include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/accelerators/accelerator.h"
@@ -32,7 +31,6 @@ ui::ImageModel Icon(std::string_view lucide) {
 void BuildAppMenu(ui::SimpleMenuModel* model, BrowserWindowInterface* browser) {
   // Mori 3's order.
   model->AddItemWithIcon(IDC_NEW_TAB, u"New Tab", Icon("plus"));
-  model->AddItemWithIcon(kCommandNewSpace, u"New Space", Icon("layers"));
   model->AddItemWithIcon(IDC_NEW_WINDOW, u"New Window", Icon("app-window"));
   model->AddItemWithIcon(IDC_NEW_INCOGNITO_WINDOW, u"Private Window",
                          Icon("hat-glasses"));
@@ -41,6 +39,8 @@ void BuildAppMenu(ui::SimpleMenuModel* model, BrowserWindowInterface* browser) {
                          Icon("rotate-ccw"));
   model->AddItemWithIcon(kCommandSleepBackgroundTabs, u"Sleep Background Tabs",
                          Icon("moon"));
+  model->AddItemWithIcon(kCommandArchiveUnpinnedTabs, u"Archive Unpinned Tabs",
+                         Icon("archive"));
   model->AddItemWithIcon(kCommandPeekClipboard, u"Peek a Link", Icon("eye"));
   model->AddSeparator(ui::NORMAL_SEPARATOR);
   model->AddItemWithIcon(kCommandToggleAssistant,

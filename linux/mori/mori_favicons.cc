@@ -34,7 +34,7 @@ constexpr net::NetworkTrafficAnnotationTag kTrafficAnnotation =
         description:
           "Fetches the favicon of a tab that hasn't loaded yet (one imported "
           "from another browser), so the sidebar can show it."
-        trigger: "Importing spaces from another browser."
+        trigger: "Importing tabs from another browser."
         data: "None; a request for the site's /favicon.ico."
         destination: WEBSITE
       }

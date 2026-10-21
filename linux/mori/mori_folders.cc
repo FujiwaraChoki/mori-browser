@@ -29,21 +29,17 @@
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
-#include "chrome/browser/ui/tabs/tab_group_model.h"
-#include "chrome/browser/ui/tabs/tab_group_theme.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_menu.h"
-#include "chrome/browser/ui/views/mori/mori_space_themes.h"
+#include "chrome/browser/ui/views/mori/mori_themes.h"
 #include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
-#include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
+#include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
 #include "chrome/browser/ui/views/tabs/common/tab_view.h"
 #include "components/sessions/content/session_tab_helper.h"
-#include "components/tab_groups/tab_group_visual_data.h"
-#include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_user_data.h"
@@ -220,8 +216,8 @@ void MoveTabAfter(TabStripModel* model, int from, int after) {
 }
 
 // Keeps folders runs of tabs: a tab between two tabs of a folder (in the
-// same space) joins it, and a folder's tabs away from its first run leave
-// it, as do favorites.
+// same tab group, if an extension made one) joins it, and a folder's tabs
+// away from its first run leave it, as do favorites.
 void NormalizeFolders(TabStripModel* model) {
   const int count = model->count();
   auto folder_at = [model](int i) { return FolderIdOf(model->GetTabAtIndex(i)); };
@@ -362,7 +358,7 @@ struct FolderColors {
   SkColor icon;
 };
 
-// zen-folders.css: the plates' colours from the space's accent.
+// zen-folders.css: the plates' colours from the theme's accent.
 FolderColors ColorsFor(SkColor accent, bool dark, SkColor text) {
   FolderColors colors;
   if (dark) {
@@ -708,9 +704,9 @@ class FolderHeader : public views::View, public gfx::AnimationDelegate {
 BEGIN_METADATA(FolderHeader)
 END_METADATA
 
-std::vector<FolderHeader*> HeadersOf(const TabGroupView* group_view) {
+std::vector<FolderHeader*> HeadersOf(const views::View* container) {
   std::vector<FolderHeader*> headers;
-  for (views::View* child : group_view->children()) {
+  for (views::View* child : container->children()) {
     if (auto* header = views::AsViewClass<FolderHeader>(child)) {
       headers.push_back(header);
     }
@@ -718,9 +714,9 @@ std::vector<FolderHeader*> HeadersOf(const TabGroupView* group_view) {
   return headers;
 }
 
-FolderHeader* FindHeader(const TabGroupView* group_view,
+FolderHeader* FindHeader(const views::View* container,
                          const std::string& id) {
-  for (FolderHeader* header : HeadersOf(group_view)) {
+  for (FolderHeader* header : HeadersOf(container)) {
     if (header->id() == id) {
       return header;
     }
@@ -728,31 +724,17 @@ FolderHeader* FindHeader(const TabGroupView* group_view,
   return nullptr;
 }
 
-// The space's accent: its gradient's first colour, else its group colour.
-SkColor AccentFor(BrowserWindowInterface* browser,
-                  const views::View* view,
-                  const std::optional<tab_groups::TabGroupId>& space) {
-  if (!space) {
-    return view->GetColorProvider()->GetColor(ui::kColorAccent);
+// The theme's accent: its gradient's first colour, else Mori's blue.
+SkColor AccentFor(BrowserWindowInterface* browser, const views::View* view) {
+  if (const ThemeColors colors = GetTheme(browser)) {
+    return colors->first;
   }
-  const SpaceTheme theme = GetSpaceTheme(browser, *space);
-  if (theme.colors) {
-    return theme.colors->first;
-  }
-  TabStripModel* model = browser->GetTabStripModel();
-  const TabGroup* group = model->group_model()
-                              ? model->group_model()->GetTabGroup(*space)
-                              : nullptr;
-  if (!group) {
-    return view->GetColorProvider()->GetColor(ui::kColorAccent);
-  }
-  return view->GetColorProvider()->GetColor(GetTabGroupTabStripColorId(
-      group->visual_data()->color(), /*active_frame=*/true));
+  return view->GetColorProvider()->GetColor(ui::kColorAccent);
 }
 
 // ---------------------------------------------------------------------------
-// The invisible child of each vertical TabGroupView that keeps its folder
-// headers in step with its tabs.
+// The invisible child of the vertical tab list (UnpinnedTabContainerView)
+// that keeps its folder headers in step with its tabs.
 
 class FolderHeaders : public views::View, public TabStripModelObserver {
   METADATA_HEADER(FolderHeaders, views::View)
@@ -789,11 +771,6 @@ class FolderHeaders : public views::View, public TabStripModelObserver {
   void OnTabGroupChanged(const TabGroupChange& change) override {
     ScheduleSync();
   }
-  void OnTabGroupFocusChanged(
-      std::optional<tab_groups::TabGroupId> new_focused_group,
-      std::optional<tab_groups::TabGroupId> old_focused_group) override {
-    ScheduleSync();
-  }
 
  private:
   void StopObserving() {
@@ -818,35 +795,30 @@ class FolderHeaders : public views::View, public TabStripModelObserver {
 
   void Sync() {
     sync_pending_ = false;
-    auto* group_view = views::AsViewClass<TabGroupView>(parent());
-    if (!model_ || !group_view || !group_view->collection_node()) {
+    auto* container = views::AsViewClass<UnpinnedTabContainerView>(parent());
+    if (!model_ || !container || !container->collection_node()) {
       return;
     }
     NormalizeFolders(model_);
 
-    // Each folder among the group's rows, whether it holds the active tab.
+    // Each folder among the list's rows, whether it holds the active tab.
     std::map<std::string, bool> folders;
-    std::optional<tab_groups::TabGroupId> space;
-    for (views::View* row : group_view->collection_node()->GetDirectChildren()) {
-      std::vector<const tabs::TabInterface*> tabs = TabsOfRow(row);
-      if (!tabs.empty()) {
-        space = tabs.front()->GetGroup();
-      }
+    for (views::View* row : container->collection_node()->GetDirectChildren()) {
       if (std::optional<std::string> id = FolderOfRow(row)) {
         folders[*id] = folders[*id] || RowIsActive(row);
       }
     }
 
-    for (FolderHeader* header : HeadersOf(group_view)) {
+    for (FolderHeader* header : HeadersOf(container)) {
       if (!folders.contains(header->id())) {
-        group_view->RemoveChildViewT(header);
+        container->RemoveChildViewT(header);
       }
     }
-    const SkColor accent = AccentFor(browser_, this, space);
+    const SkColor accent = AccentFor(browser_, this);
     for (const auto& [id, has_active] : folders) {
-      FolderHeader* header = FindHeader(group_view, id);
+      FolderHeader* header = FindHeader(container, id);
       if (!header) {
-        header = group_view->AddChildView(
+        header = container->AddChildView(
             std::make_unique<FolderHeader>(browser_, id));
       }
       const FolderInfo info = InfoFor(id);
@@ -859,7 +831,7 @@ class FolderHeaders : public views::View, public TabStripModelObserver {
                                       header->GetWeakPtr()));
       }
     }
-    group_view->InvalidateLayout();
+    container->InvalidateLayout();
   }
 
   raw_ptr<BrowserWindowInterface> browser_ = nullptr;
@@ -880,18 +852,19 @@ std::string NewFolder(std::u16string name) {
 
 }  // namespace
 
-std::vector<FolderRow> GetFolderRows(const TabGroupView* group_view) {
+std::vector<FolderRow> GetFolderRows(const views::View* container,
+                                     const TabCollectionNode* node) {
   std::vector<FolderRow> rows;
-  if (!group_view->collection_node()) {
+  if (!node) {
     return rows;
   }
   std::optional<std::string> previous;
-  for (views::View* row : group_view->collection_node()->GetDirectChildren()) {
+  for (views::View* row : node->GetDirectChildren()) {
     FolderRow out;
     const std::optional<std::string> folder = FolderOfRow(row);
     if (folder) {
       if (folder != previous) {
-        out.header = FindHeader(group_view, *folder);
+        out.header = FindHeader(container, *folder);
       }
       out.hidden = !Folders()[*folder].open && !RowIsActive(row);
       out.indent = kFolderIndent;
@@ -903,10 +876,10 @@ std::vector<FolderRow> GetFolderRows(const TabGroupView* group_view) {
 }
 
 std::vector<views::View*> GetUnplacedFolderHeaders(
-    const TabGroupView* group_view,
+    const views::View* container,
     const std::vector<FolderRow>& rows) {
   std::vector<views::View*> unplaced;
-  for (FolderHeader* header : HeadersOf(group_view)) {
+  for (FolderHeader* header : HeadersOf(container)) {
     if (std::ranges::none_of(rows, [header](const FolderRow& row) {
           return row.header == header;
         })) {
@@ -975,14 +948,13 @@ std::optional<FolderInfo> GetFolder(const std::string& folder_id) {
   return InfoFor(folder_id);
 }
 
-std::vector<FolderInfo> FoldersInSpaceOf(BrowserWindowInterface* browser,
-                                         const tabs::TabInterface* tab) {
+std::vector<FolderInfo> ListFolders(BrowserWindowInterface* browser) {
   std::vector<FolderInfo> folders;
   std::set<std::string> seen;
   TabStripModel* model = browser->GetTabStripModel();
   for (int i = 0; i < model->count(); ++i) {
     tabs::TabInterface* other = model->GetTabAtIndex(i);
-    if (other->IsPinned() || other->GetGroup() != tab->GetGroup()) {
+    if (other->IsPinned()) {
       continue;
     }
     if (std::optional<std::string> id = FolderIdOf(other);
@@ -1053,10 +1025,10 @@ void NewTabInFolder(BrowserWindowInterface* browser,
   if (!range) {
     return;
   }
-  const std::optional<tab_groups::TabGroupId> space =
+  const std::optional<tab_groups::TabGroupId> group =
       model->GetTabAtIndex(range->second)->GetGroup();
   content::WebContents* contents = chrome::AddAndReturnTabAt(
-      browser, GURL(), range->second + 1, /*foreground=*/true, space);
+      browser, GURL(), range->second + 1, /*foreground=*/true, group);
   if (!contents) {
     return;
   }

@@ -45,7 +45,7 @@ a Chromium build.
 3. **Chromium owns browser primitives; Mori owns the interface and product
    rules.** Tabs, navigation, renderers, extensions, downloads, permissions,
    passwords, printing, PiP and DevTools come from Chromium. Mori owns the
-   window, sidebar, spaces, favorites/pinned/Today model, command bar,
+   window, sidebar, favorites and tabs, command bar,
    shortcuts and theming. This is the same split as Mori 2.
 
 4. **Reuse what still fits:**
@@ -214,9 +214,9 @@ follows Arc and Zen's single-toolbar layout.
   elision off; Mori turns it back on.
 - **The new tab page uses the card colour.**
 - **Favorites are pinned tabs**, which Chromium's vertical tab strip already
-  draws as a grid of tiles above the tabs. They are shared by every space,
-  as in Arc.
-- **Spaces are tab groups** (`mori_spaces.cc`, `0006`). Chromium 155's
+  draws as a grid of tiles above the tabs.
+- **Spaces were tab groups** (removed on 2026-10-21; see "No spaces"
+  below). Chromium 155's
   `kTabGroupsFocusing`, enabled by default in Mori, "focuses" a group: the
   sidebar shows that group's tabs and the pinned tabs, tinted in the group's
   colour.
@@ -264,23 +264,19 @@ lives in `linux/mori/` and reaches Chromium through a small patch.
 
 - **Arc's Ctrl+S** (`mori_sidebar.cc`): the sidebar hides; at the window's
   left edge it floats back over the page, with rounded corners and a shadow.
-- **Spaces outlive their last tab.** Closing or moving a space's last tab
-  brings the space back with a new tab; "Delete Space" removes one on
-  purpose. Chromium's "delete group?" prompts are off (`0005`).
-- **Space editor** (`mori_space_editor.cc`, `mori_space_themes.cc`, `0015`):
-  name, symbol (a Lucide icon or an emoji) and one of Mori 3's gradients. The
-  gradient washes over the sidebar, toolbar and margins through a hook in
-  `ThemedBackground`. The sidebar's surfaces are translucent, as in Mori 3,
-  so the wash shows through. Themes are kept in "Mori Spaces.json", keyed by
-  saved tab group.
-- **Clear and auto-archive.** The divider's "Clear" closes a space's tabs.
-  Space tabs unused for 24 hours close; they stay in History and Reopen
-  Closed Tab.
-- **Command bar parity**: switch to or move a tab to a space, move a tab to
-  a new window, edit or delete a space, reopen a closed tab, find, capture,
-  peek the clipboard link, Boosts, routing rules, import, the assistant. Each
-  row shows the command's shortcut.
-- **Ctrl+Tab** goes through the space's recent tabs, with thumbnails
+- **Theme** (`mori_themes.cc`, `0015`): one of Mori 3's gradients, chosen
+  in Settings (Appearance; "Edit Theme…" opens it). It washes over the
+  sidebar, toolbar and margins through a hook in `ThemedBackground`. The
+  sidebar's surfaces are translucent, as in Mori 3, so the wash shows
+  through. Kept in "Mori Theme.json".
+- **Archive and auto-archive.** "Archive Unpinned Tabs" (Mori 3's Clear, in
+  the sidebar's menu and the command bar) closes the tabs that aren't
+  favorites. Tabs unused for 24 hours close; they stay in History and
+  Reopen Closed Tab.
+- **Command bar parity**: move a tab to a new window, reopen a closed tab,
+  find, capture, peek the clipboard link, Boosts, import, the theme, the
+  assistant. Each row shows the command's shortcut.
+- **Ctrl+Tab** goes through the recent tabs, with thumbnails
   (`mori_tab_switcher.cc`). **Ctrl+/** opens a searchable shortcut
   cheatsheet built from the live key bindings.
 - **Peek** (`mori_peek.cc`, `0010`): Alt+click opens a link in a card over
@@ -300,18 +296,18 @@ lives in `linux/mori/` and reaches Chromium through a small patch.
 - **Boosts** (`mori_boosts.cc`, `0014`): per-site CSS, JavaScript and zapped
   elements, applied from an isolated world as pages load. They are kept in
   "Mori Boosts.json".
-- **Links from other apps** (`0016`). Air Traffic Control rules
-  (`mori_routes.cc`, "Mori Routes.json") send a site's links to a space.
-  Other links open in Little Mori (`mori_little.cc`): a 900×640 popup window
-  with back, the address, "Open in <space>" and close. The command bar
-  switches between Little Mori and the current space.
+- **Links from other apps** (`0016`) open in Little Mori
+  (`mori_little.cc`): a 900×640 popup window with back, the address, "Open
+  in Mori" and close. A setting (and the command bar) opens them as tabs
+  instead.
 - **Folders** (`mori_folders.cc`, `0028`, hooks in `0007` and `0013`).
-  Zen's folders inside a space, with Zen's folder icon (its two plates,
-  tilting open). Tab groups are spaces and can't nest, so a folder is
-  Mori's: each tab keeps its folder (id, name, icon, open) in its session
-  data, and a folder is the run of a space's tabs that share one. A tab
-  moved between two of a folder's tabs joins it; one moved away leaves.
-  A closed folder still shows its active tab, and its icon shows dots.
+  Zen's folders among the tabs, with Zen's folder icon (its two plates,
+  tilting open). A folder is Mori's, not a tab group: each tab keeps its
+  folder (id, name, icon, open) in its session data, and a folder is the
+  run of tabs that share one. A tab moved between two of a folder's tabs
+  joins it; one moved away leaves. A closed folder still shows its active
+  tab, and its icon shows dots. The folder headers are children of the
+  vertical tab list (`UnpinnedTabContainerView`), which lays them out.
 - **Smooth corners** (`mori_corners.cc`, `0029`). Zen draws every rounded
   rect with `corner-shape: superellipse(1.3)` on radii 1.3 times as long;
   Mori does the same in Canvas::DrawRoundRect, rounded backgrounds and
@@ -325,15 +321,13 @@ lives in `linux/mori/` and reaches Chromium through a small patch.
   a lens, brighter at the top, with a rim and a line of light along its top
   edge. The page card's corners are 10px. The window itself stays opaque:
   it would need a translucent browser widget, and Hyprland's blur.
-- **The sidebar as Mori 3 draws it** (`mori_spaces.cc`, `0004`, `0005`,
-  `0031`): no space name or "Clear" between the favorites and the tabs, only
-  a hairline under the favorites and "Add Tab". Clear is "Archive Unpinned
-  Tabs" in the space's menu and the command bar, as in Mori 3. Favorites are
-  44px tiles, up to four a row, balanced so no row has a hole and each row
-  fills the sidebar. The address field shows the site alone (Chromium's
-  "Always show full URLs" still shows the rest). The space bar's dots close
-  up to keep "+" in the bar, and the library button is Lucide's
-  library-big.
+- **The sidebar as Mori 3 draws it** (`mori_tab_list.cc`, `0004`, `0005`,
+  `0031`): between the favorites and the tabs only a hairline under the
+  favorites and "Add Tab". Favorites are 44px tiles, up to four a row,
+  balanced so no row has a hole and each row fills the sidebar. The address
+  field shows the site alone (Chromium's "Always show full URLs" still shows
+  the rest). The bar at the bottom holds the library (Lucide's library-big)
+  and the assistant.
 - **Focus rings with smooth corners** (`0029`). A focus ring takes the round
   rect its view's highlight was made from: the smooth highlight path isn't
   one, and FocusRing CHECKed that it was (the crash on the Web Store's "Add
@@ -342,12 +336,12 @@ lives in `linux/mori/` and reaches Chromium through a small patch.
   0.95 as it opens (120ms) and fades and shrinks back as it closes (100ms),
   easing out, while the rows around it move on the same timing. Chromium's
   own were 200ms, ease-in-out, without the scale.
-- **Alt+1–9 picks a tab on Linux** (Chromium's Linux keys, beside Ctrl+1–9),
-  and the spaces moved to Ctrl+Alt+1–9. Windows keeps Alt+1–9 for spaces
-  (Ctrl+Alt is AltGr there).
-- **Import** (`mori_import.cc`, `0017`). Zen's workspaces and essentials, a
-  Firefox session, and Arc's sidebar file become spaces and favorites. Tabs
-  arrive unloaded and fetch their icons. Chromium's importer finds Zen
+- **Alt+1–9 picks a tab on Linux**, as Ctrl+1–9 does (Chromium's Linux
+  keys).
+- **Import** (`mori_import.cc`, `0017`). The tabs of Zen's workspaces, a
+  Firefox session's windows and Arc's spaces join Mori's tabs; Zen's
+  essentials and Arc's favorites become favorites. Tabs arrive unloaded and
+  fetch their icons. Chromium's importer finds Zen
   profiles too, for bookmarks, history and passwords.
 - **Assistant** (`mori_assistant*.cc`, `mori_codex.cc`): Mori 3's Codex
   panel, docked beside the page by the browser layout (Ctrl+Shift+K or the
@@ -357,14 +351,14 @@ lives in `linux/mori/` and reaches Chromium through a small patch.
     isolated-world call doesn't await promises, each script parks its result
     in the world and the browser polls for it.
   - Every page read or browser change waits for Allow.
-- **Toasts** (`mori_toast.cc`): Zen's pill for "Opened in <space>", rule
-  changes and import results.
+- **Toasts** (`mori_toast.cc`): Zen's pill for bookmarks, import results
+  and other confirmations.
 
 Chromium surfaces redrawn as Mori 3's (patches 0018-0022):
 - Right-click menus on tabs, the sidebar's empty space and pages: Mori's
   items, Lucide icons and Title Case. The page menu keeps Chromium's own
-  entries (spelling, extensions, autofill) and adds Peek, spaces, bookmark,
-  copy link and capture.
+  entries (spelling, extensions, autofill) and adds Peek, bookmark, copy
+  link and capture.
 - The library popover (History, Bookmarks, Archive of closed tabs) for the
   library button and Ctrl+Y.
 - A settings sheet over the page for Ctrl+, bound to Chromium's
@@ -375,8 +369,6 @@ Chromium surfaces redrawn as Mori 3's (patches 0018-0022):
   favicon, and Mori's blue in Chromium's bubbles and dialogs.
 
 Still to port from Mori 3:
-- Per-space pinned tabs. Chromium's tab groups have none; it needs Mori's
-  own bookkeeping per saved group.
 - Nested folders, dragging a folder, and dragging a tab onto a folder's
   header (a tab dropped between two of a folder's tabs joins it).
 - Downloads as Mori 3's popover (Chromium's bubble shows now).
@@ -384,6 +376,31 @@ Still to port from Mori 3:
 - Branding: the icon and a .desktop file. The name
   is done: patch 0023 (made by linux/tools/rebrand_strings.py) calls the
   browser Mori in Chromium's strings, and run.sh sets the "mori" app ID.
+
+## No spaces
+
+Decided 2026-10-21: Mori has no spaces. It is one list of tabs under the
+favorites, with folders, as Mori 3's sidebar looks with one space.
+
+- Chromium's `kTabGroupsFocusing` is off again, and new tabs no longer join
+  a focused group (patch 0006 is gone). Tab groups are Chromium's own again:
+  an extension can still make one, and it shows with its header.
+- Profiles from before keep their tabs. The first window after the update
+  takes every tab out of its group, once the saved-tab-groups service has
+  connected the restored groups (it CHECKs that they still exist).
+  "spaces_ungrouped" in "Mori Settings.json" keeps it from happening again.
+- Folders live in the vertical tab list (`UnpinnedTabContainerView`) rather
+  than in a focused group.
+- The gradient theme is one per profile, in Settings ("Mori Theme.json").
+  The first space theme with a gradient carries over from "Mori
+  Spaces.json".
+- Gone with spaces: the space bar's dots and "+", the space editor, Air
+  Traffic Control, "Move to <space>" and "Open Link in <space>", and the
+  space shortcuts (Ctrl+Alt+←/→, Ctrl+Alt+1–9).
+- The tab list, not Chromium's bottom button container, fills the sidebar
+  (`0004`). The container's new tab button only shows in the collapsed
+  strip, and while it filled the space below the tabs, right-clicks on
+  tabs there counted as clicks on the window frame.
 
 ## macOS
 
@@ -395,8 +412,7 @@ macOS tree; this machine can't cross-build it). What differs:
   global_keyboard_shortcuts_mac.mm, not from Mori's accelerator list
   (mori_command_ids.cc skips it there). Patch 0025 adds Mori's with Command
   for Control and Arc's keys where macOS needs others: Cmd+S hides the
-  sidebar, Ctrl+1-9 picks a space, Cmd+Option+Left/Right switches spaces,
-  Cmd+Option+Up/Down the tab, Ctrl+Tab is the recent-tabs switcher, and
+  sidebar, Cmd+Option+Up/Down picks the next or previous tab, Ctrl+Tab is the recent-tabs switcher, and
   Cmd+Shift+D duplicates. Save Page As, the bookmarks bar and Bookmark All
   Tabs lose their shortcuts, and the View menu's vertical-tabs item reads
   "Toggle Sidebar".

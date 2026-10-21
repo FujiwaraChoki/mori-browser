@@ -1,23 +1,35 @@
---- a/chrome/browser/ui/views/tabs/common/tab_group_view.cc
-+++ b/chrome/browser/ui/views/tabs/common/tab_group_view.cc
+--- a/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.cc
++++ b/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.cc
 @@ -4,6 +4,8 @@
  
- #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
+ #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
  
 +#include "chrome/browser/ui/views/mori/mori_folders.h"
 +
- #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
- #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
- #include "chrome/browser/ui/tabs/tab_enums.h"
-@@ -109,6 +111,11 @@
-           base::BindRepeating(&TabGroupView::OnDataChanged,
-                               base::Unretained(this)));
-   OnDataChanged();
+ #include "chrome/browser/ui/layout_constants.h"
+ #include "chrome/browser/ui/tabs/tab_style.h"
+ #include "chrome/browser/ui/views/tabs/common/dragged_tabs_container.h"
+@@ -108,6 +110,11 @@
+   node_destroyed_subscription_ = collection_node_->RegisterWillDestroyCallback(
+       base::BindOnce(&UnpinnedTabContainerView::ResetCollectionNode,
+                      base::Unretained(this)));
 +
-+  // Mori: folder headers among the space's tabs (mori_folders.h).
-+  if (orientation_ == TabStripOrientation::kVertical) {
++  // Mori: folder headers among the tabs (mori_folders.h).
++  if (collection_node->orientation() == TabStripOrientation::kVertical) {
 +    AddChildView(mori::CreateFolderHeaders());
 +  }
  }
  
- TabGroupView::~TabGroupView() = default;
+ UnpinnedTabContainerView::~UnpinnedTabContainerView() = default;
+--- a/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h
++++ b/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h
+@@ -64,6 +64,9 @@
+   void SetAvailableSpace(views::SizeBound space) { available_space_ = space; }
+   views::SizeBound available_space() const { return available_space_; }
+ 
++  // Mori: the folder headers (mori_folders.h) read the list's rows.
++  const TabCollectionNode* collection_node() const { return collection_node_; }
++
+  private:
+   // DraggedTabsContainer:
+   views::ScrollView* GetScrollViewForContainer() const override;

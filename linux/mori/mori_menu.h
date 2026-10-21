@@ -49,13 +49,6 @@ bool ShowSidebarMenu(BrowserWindowInterface* browser,
                      ui::mojom::MenuSourceType source_type,
                      views::Widget* parent);
 
-// The menu of a space's chip in the sidebar's bottom bar, for the space on
-// screen (the chip's space is shown first): edit, new, delete.
-void ShowSpaceMenu(BrowserWindowInterface* browser,
-                   const gfx::Point& point,
-                   ui::mojom::MenuSourceType source_type,
-                   views::Widget* parent);
-
 // The menu of a folder's header (mori_folders.h).
 void ShowFolderMenu(BrowserWindowInterface* browser,
                     const std::string& folder_id,

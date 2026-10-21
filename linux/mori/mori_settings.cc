@@ -33,7 +33,6 @@
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/profiles/profile_picker.h"
-#include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/mori/mori_window_events.h"
@@ -45,10 +44,8 @@
 #include "chrome/browser/ui/views/mori/mori_layout.h"
 #include "chrome/browser/ui/views/mori/mori_little.h"
 #include "chrome/browser/ui/views/mori/mori_overlay.h"
-#include "chrome/browser/ui/views/mori/mori_routes.h"
-#include "chrome/browser/ui/views/mori/mori_space_editor.h"
-#include "chrome/browser/ui/views/mori/mori_space_themes.h"
-#include "chrome/browser/ui/views/mori/mori_spaces.h"
+#include "chrome/browser/ui/views/mori/mori_tab_list.h"
+#include "chrome/browser/ui/views/mori/mori_themes.h"
 #include "chrome/common/pref_names.h"
 #include "components/content_settings/core/browser/cookie_settings.h"
 #include "components/content_settings/core/common/pref_names.h"
@@ -57,8 +54,6 @@
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
-#include "components/tab_groups/tab_group_visual_data.h"
-#include "components/tabs/public/tab_group.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/skia/include/core/SkPoint.h"
@@ -394,6 +389,9 @@ class SettingsSheet : public views::View {
     scroll_->ScrollToOffset(gfx::PointF());
   }
 
+  // Opens on the Appearance category (the theme).
+  void ShowAppearance() { Pick(Category::kAppearance); }
+
   void Layout(PassKey) override {
     header_->SetBounds(0, 0, width(), kHeaderHeight);
     rail_->SetBounds(0, kHeaderHeight, kRailWidth, height() - kHeaderHeight);
@@ -707,8 +705,7 @@ class SettingsSheet : public views::View {
   void OpenPage(const GURL& url) {
     BrowserWindowInterface* b = browser();
     close_.Run();
-    chrome::AddTabAt(b, url, IndexForNewTab(b), /*foreground=*/true,
-                     GetCurrentSpace(b));
+    chrome::AddTabAt(b, url, IndexForNewTab(b), /*foreground=*/true);
   }
 
   void RunCommand(int command_id) {
@@ -818,13 +815,13 @@ class SettingsSheet : public views::View {
     Field(links, u"Open links in",
           Choice({{u"Little Mori",
                    base::BindRepeating(set_little, profile(), true)},
-                  {u"Current space",
+                  {u"A new tab",
                    base::BindRepeating(set_little, profile(), false)}},
                  little ? 0 : 1));
     Hint(links, little ? u"A link from another app opens in a small window; "
                          u"“Open in Mori” keeps it as a tab."
-                       : u"A link from another app opens as a tab in the space "
-                         u"you used last.");
+                       : u"A link from another app opens as a tab in the "
+                         u"window you used last.");
   }
 
   void CheckDefaultBrowser() {
@@ -870,35 +867,17 @@ class SettingsSheet : public views::View {
                                        ThemeService::BrowserColorScheme::kDark)}},
                  static_cast<int>(scheme)));
 
-    const std::optional<tab_groups::TabGroupId> space =
-        GetCurrentSpace(browser());
-    if (!space) {
-      return;
-    }
-    const std::u16string name = browser()
-                                    ->GetTabStripModel()
-                                    ->group_model()
-                                    ->GetTabGroup(*space)
-                                    ->visual_data()
-                                    ->title();
-    Card* theme = Section(column, u"Theme for “" + name + u"”");
-    const SpaceTheme current = GetSpaceTheme(browser(), *space);
+    Card* theme = Section(column, u"Theme");
+    const ThemeColors current = GetTheme(browser());
     auto swatches = std::make_unique<FlowView>(6);
     auto add_swatch = [&](std::optional<std::pair<SkColor, SkColor>> colors) {
-      const bool selected = current.colors == colors;
+      const bool selected = current == colors;
       swatches->AddChildView(std::make_unique<PaintedButton>(
           Then(base::BindRepeating(
-              [](BrowserWindowInterface* b, tab_groups::TabGroupId space,
-                 std::optional<std::pair<SkColor, SkColor>> colors) {
-                if (!b->GetTabStripModel()->group_model()->ContainsTabGroup(
-                        space)) {
-                  return;
-                }
-                SpaceTheme theme = GetSpaceTheme(b, space);
-                theme.colors = colors;
-                SetSpaceTheme(b, space, theme);
+              [](BrowserWindowInterface* b, ThemeColors colors) {
+                SetTheme(b, colors);
               },
-              browser(), *space, colors)),
+              browser(), colors)),
           gfx::Size(30, 30),
           base::BindRepeating(
               [](std::optional<std::pair<SkColor, SkColor>> colors,
@@ -937,21 +916,11 @@ class SettingsSheet : public views::View {
           colors ? u"Gradient" : u"No theme"));
     };
     add_swatch(std::nullopt);
-    for (const auto& colors : kSpaceGradients) {
+    for (const auto& colors : kThemeGradients) {
       add_swatch(colors);
     }
     Field(theme, u"Wash", std::move(swatches));
-    Field(theme, u"Icon and name",
-          TextButton(u"Edit Space…", false,
-                     base::BindRepeating(
-                         [](base::WeakPtr<SettingsSheet> sheet,
-                            BrowserWindowInterface* b) {
-                           if (sheet) {
-                             sheet->close_.Run();
-                           }
-                           EditSpace(b);
-                         },
-                         weak_factory_.GetWeakPtr(), browser())));
+    Hint(theme, u"A gradient over the sidebar and the window's edges.");
   }
 
   void BuildTabs(views::View* column) {
@@ -986,13 +955,13 @@ class SettingsSheet : public views::View {
                                                profile(), value));
     }
     Field(idle, u"Archive idle tabs", Choice(std::move(options), selected));
-    Hint(idle, u"Space tabs you haven't looked at close, and stay in the "
+    Hint(idle, u"Tabs you haven't looked at close, and stay in the "
                u"library's Archive. Favorites and playing tabs stay.");
   }
 
   void BuildProfiles(views::View* column) {
     Card* profiles = Section(column, u"Profiles");
-    Hint(profiles, u"Each profile has its own spaces, history, passwords and "
+    Hint(profiles, u"Each profile has its own tabs, history, passwords and "
                    u"extensions, in a window of its own.");
     profiles->AddChildView(Buttons([&] {
       std::vector<std::unique_ptr<views::View>> buttons;
@@ -1012,23 +981,6 @@ class SettingsSheet : public views::View {
   }
 
   void BuildSites(views::View* column) {
-    Card* routes = Section(column, u"Air Traffic Control");
-    Hint(routes, u"Links to these sites open in their space, from anywhere.");
-    TabStripModel* model = browser()->GetTabStripModel();
-    const std::vector<Route> list = ListRoutes(browser());
-    for (const Route& route : list) {
-      std::u16string space = u"a deleted space";
-      if (std::optional<tab_groups::TabGroupId> id =
-              FindSpace(browser(), route.space)) {
-        space = model->group_model()->GetTabGroup(*id)->visual_data()->title();
-      }
-      ListRow(routes, base::UTF8ToUTF16(route.host) + u"  →  " + space,
-              base::BindRepeating(&RemoveRoute, browser(), route.host));
-    }
-    if (list.empty()) {
-      Hint(routes, u"Right-click a tab and choose “Always Open in This Space”.");
-    }
-
     Card* boosts = Section(column, u"Boosts");
     const std::vector<std::string> sites = ListBoostedSites(profile());
     for (const std::string& host : sites) {
@@ -1162,7 +1114,7 @@ class SettingsSheet : public views::View {
       if (sheet) {
         sheet->close_.Run();
       }
-      ImportSpaces(b, source);
+      ImportTabs(b, source);
     };
     import->AddChildView(Buttons([&] {
       std::vector<std::unique_ptr<views::View>> buttons;
@@ -1179,9 +1131,9 @@ class SettingsSheet : public views::View {
                                    Command(IDC_IMPORT_SETTINGS)));
       return buttons;
     }()));
-    Hint(import, u"Open tabs, Zen workspaces and Arc spaces become new spaces; "
-                 u"Zen essentials and Arc favorites become favorites. The other "
-                 u"browser's files are only read.");
+    Hint(import, u"Open tabs, and the tabs of Zen workspaces and Arc spaces, "
+                 u"join your tabs; Zen essentials and Arc favorites become "
+                 u"favorites. The other browser's files are only read.");
   }
 
   void BuildAbout(views::View* column) {
@@ -1250,7 +1202,7 @@ class Settings : public ui::EventObserver, public views::ViewObserver {
         "MoriSettings");
   }
 
-  void Show() {
+  void Show(bool appearance) {
     if (!open_) {
       open_ = true;
       static_cast<SettingsSheet*>(overlay_->contents())->Open();
@@ -1260,6 +1212,9 @@ class Settings : public ui::EventObserver, public views::ViewObserver {
         observation_.AddObservation(card);
       }
       observation_.AddObservation(browser_view_.get());
+    }
+    if (appearance) {
+      static_cast<SettingsSheet*>(overlay_->contents())->ShowAppearance();
     }
     Place();
   }
@@ -1332,7 +1287,9 @@ namespace {
 DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(Settings, kSettingsKey)
 }  // namespace
 
-bool ShowSettings(BrowserWindowInterface* browser) {
+namespace {
+
+bool ShowSettingsSheet(BrowserWindowInterface* browser, bool appearance) {
   if (browser->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
     return false;
   }
@@ -1346,8 +1303,18 @@ bool ShowSettings(BrowserWindowInterface* browser) {
     settings = browser_view->SetProperty(
         kSettingsKey, std::make_unique<Settings>(browser_view));
   }
-  settings->Show();
+  settings->Show(appearance);
   return true;
+}
+
+}  // namespace
+
+bool ShowSettings(BrowserWindowInterface* browser) {
+  return ShowSettingsSheet(browser, /*appearance=*/false);
+}
+
+void ShowThemeSettings(BrowserWindowInterface* browser) {
+  ShowSettingsSheet(browser, /*appearance=*/true);
 }
 
 }  // namespace mori

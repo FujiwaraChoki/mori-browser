@@ -80,17 +80,6 @@ std::vector<Group> Groups() {
         {u"Duplicate tab", IDC_DUPLICATE_TAB},
         {u"Copy URL", IDC_COPY_URL},
         {u"Bookmark page", IDC_BOOKMARK_THIS_TAB}}},
-      {u"Spaces",
-       {{u"Next space", IDC_FOCUS_NEXT_TAB_GROUP},
-        {u"Previous space", IDC_FOCUS_PREV_TAB_GROUP},
-        {u"Go to space 1–9", 0,
-#if BUILDFLAG(IS_MAC)
-         u"⌃1–9"}}},
-#elif BUILDFLAG(IS_WIN)
-         u"Alt+1–9"}}},
-#else
-         u"Ctrl+Alt+1–9"}}},
-#endif
       {u"Getting around",
        {{u"Command bar", IDC_FOCUS_LOCATION},
         {u"Back", IDC_BACK},

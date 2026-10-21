@@ -25,17 +25,14 @@
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
-#include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/views/mori/mori_spaces.h"
+#include "chrome/browser/ui/views/mori/mori_tab_list.h"
 #include "chrome/common/chrome_isolated_world_ids.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
-#include "components/tab_groups/tab_group_visual_data.h"
-#include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/url_formatter/url_fixer.h"
 #include "content/public/browser/global_routing_id.h"
@@ -732,18 +729,6 @@ std::string TabLabel(tabs::TabInterface* tab) {
          ClipForApproval(TabUrl(tab), 160) + ")";
 }
 
-std::string SpaceName(TabStripModel* model, tabs::TabInterface* tab) {
-  if (tab->IsPinned()) {
-    return "Favorites";
-  }
-  if (std::optional<tab_groups::TabGroupId> group = tab->GetGroup();
-      group && model->group_model()->ContainsTabGroup(*group)) {
-    return base::UTF16ToUTF8(
-        model->group_model()->GetTabGroup(*group)->visual_data()->title());
-  }
-  return "";
-}
-
 base::ListValue TabRecords(BrowserWindowInterface* browser) {
   TabStripModel* model = browser->GetTabStripModel();
   base::ListValue out;
@@ -757,7 +742,6 @@ base::ListValue TabRecords(BrowserWindowInterface* browser) {
             .Set("url", TabUrl(tab))
             .Set("selected", i == model->active_index())
             .Set("pinned", tab->IsPinned())
-            .Set("space", SpaceName(model, tab))
             .Set("isLoading", contents->IsLoading())
             .Set("canGoBack", contents->GetController().CanGoBack())
             .Set("canGoForward", contents->GetController().CanGoForward())
@@ -1369,9 +1353,6 @@ class ToolRun {
       TabStripModel* model = Browser()->GetTabStripModel();
       const int index = model->GetIndexOfTab(tab);
       if (action_ == "selectTab") {
-        if (std::optional<tab_groups::TabGroupId> group = tab->GetGroup()) {
-          model->SetFocusedGroup(*group);
-        }
         model->ActivateTabAt(index);
         Ok(Untrusted("Selected tab " + TabId(tab) + ": " + title + "."),
            "Switched to " + Quoted(title, 60));
@@ -1485,9 +1466,7 @@ class ToolRun {
     NavigateParams params(Browser(), GURL(url),
                           ui::PAGE_TRANSITION_AUTO_TOPLEVEL);
     params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
-    if (const int index = IndexForNewTab(Browser()); index >= 0) {
-      params.tabstrip_index = index;
-    }
+    params.tabstrip_index = IndexForNewTab(Browser());
     ::Navigate(&params);
     tabs::TabInterface* tab =
         params.navigated_or_inserted_contents

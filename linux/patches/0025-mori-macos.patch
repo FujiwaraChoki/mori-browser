@@ -44,24 +44,13 @@
  #include "ui/base/accelerators/accelerator.h"
  #include "ui/base/accelerators/platform_accelerator_cocoa.h"
  #import "ui/base/cocoa/nsmenu_additions.h"
-@@ -114,6 +115,33 @@
+@@ -114,6 +115,22 @@
      std::vector<KeyboardShortcutData> keys({
      // cmd    shift  cntrl  option vkeycode               command
      // ---    -----  -----  ------ --------               -------
 +      // Mori: Mori 3's shortcuts (mori_command_ids.cc on other systems),
 +      // with Command for Control and Arc's keys where macOS needs others.
 +      // First, so they win over Chromium's below.
-+      {true,  false, false, true,  kVK_RightArrow,        IDC_FOCUS_NEXT_TAB_GROUP},
-+      {true,  false, false, true,  kVK_LeftArrow,         IDC_FOCUS_PREV_TAB_GROUP},
-+      {false, false, true,  false, kVK_ANSI_1,            mori::kCommandSelectSpace1},
-+      {false, false, true,  false, kVK_ANSI_2,            mori::kCommandSelectSpace1 + 1},
-+      {false, false, true,  false, kVK_ANSI_3,            mori::kCommandSelectSpace1 + 2},
-+      {false, false, true,  false, kVK_ANSI_4,            mori::kCommandSelectSpace1 + 3},
-+      {false, false, true,  false, kVK_ANSI_5,            mori::kCommandSelectSpace1 + 4},
-+      {false, false, true,  false, kVK_ANSI_6,            mori::kCommandSelectSpace1 + 5},
-+      {false, false, true,  false, kVK_ANSI_7,            mori::kCommandSelectSpace1 + 6},
-+      {false, false, true,  false, kVK_ANSI_8,            mori::kCommandSelectSpace1 + 7},
-+      {false, false, true,  false, kVK_ANSI_9,            mori::kCommandSelectSpace9},
 +      {true,  false, false, true,  kVK_DownArrow,         IDC_SELECT_NEXT_TAB},
 +      {true,  false, false, true,  kVK_UpArrow,           IDC_SELECT_PREVIOUS_TAB},
 +      {true,  true,  false, false, kVK_ANSI_P,            mori::kCommandTogglePin},

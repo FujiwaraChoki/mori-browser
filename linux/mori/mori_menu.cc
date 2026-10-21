@@ -24,7 +24,6 @@
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
-#include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_muted_utils.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -33,16 +32,11 @@
 #include "chrome/browser/ui/views/mori/mori_folders.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_peek.h"
-#include "chrome/browser/ui/views/mori/mori_routes.h"
-#include "chrome/browser/ui/views/mori/mori_space_editor.h"
-#include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "chrome/browser/ui/views/mori/mori_tab_names.h"
 #include "chrome/browser/ui/views/mori/mori_boosts.h"
 #include "chrome/browser/ui/views/mori/mori_toast.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
-#include "components/tab_groups/tab_group_visual_data.h"
-#include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/browser/navigation_controller.h"
@@ -67,10 +61,6 @@ constexpr int kMenuItemLast = 57019;
 ui::ImageModel Icon(std::string_view lucide) {
   return ui::ImageModel::FromVectorIcon(LucideIcon(lucide), ui::kColorMenuIcon,
                                         15);
-}
-
-std::u16string SpaceName(TabStripModel* model, tab_groups::TabGroupId space) {
-  return model->group_model()->GetTabGroup(space)->visual_data()->title();
 }
 
 void CopyText(BrowserWindowInterface* browser,
@@ -236,16 +226,11 @@ base::RepeatingClosure OnTab(
       tab->GetHandle(), std::move(run));
 }
 
-// Tabs of `tab`'s space (or its loose tabs, without spaces) that aren't
-// favorites, in sidebar order.
-std::vector<tabs::TabHandle> SpaceTabs(TabStripModel* model,
-                                       tabs::TabInterface* tab) {
+// The tabs that aren't favorites, in sidebar order.
+std::vector<tabs::TabHandle> UnpinnedTabs(TabStripModel* model) {
   std::vector<tabs::TabHandle> out;
-  for (int i = 0; i < model->count(); ++i) {
-    tabs::TabInterface* other = model->GetTabAtIndex(i);
-    if (!other->IsPinned() && other->GetGroup() == tab->GetGroup()) {
-      out.push_back(other->GetHandle());
-    }
+  for (int i = model->IndexOfFirstNonPinnedTab(); i < model->count(); ++i) {
+    out.push_back(model->GetTabAtIndex(i)->GetHandle());
   }
   return out;
 }
@@ -527,11 +512,10 @@ void ShowTabMenu(BrowserWindowInterface* browser,
                               },
                               browser)));
   }
-  // Selects the tabs of this tab's space (or all of them without spaces).
   // Mori 3's folder items (Zen's folders, mori_folders.h).
   if (!favorite) {
     const std::optional<FolderInfo> in_folder = GetTabFolder(tab);
-    for (const FolderInfo& folder : FoldersInSpaceOf(browser, tab)) {
+    for (const FolderInfo& folder : ListFolders(browser)) {
       if (in_folder && in_folder->id == folder.id) {
         continue;
       }
@@ -556,35 +540,11 @@ void ShowTabMenu(BrowserWindowInterface* browser,
                                tabs::TabInterface* t) {
                               TabStripModel* m = b->GetTabStripModel();
                               for (const tabs::TabHandle& handle :
-                                   SpaceTabs(m, t)) {
+                                   UnpinnedTabs(m)) {
                                 m->SelectTabAt(m->GetIndexOfTab(handle.Get()));
                               }
                             },
                             browser)));
-  if (HasSpaces(browser)) {
-    for (const tab_groups::TabGroupId& space :
-         model->group_model()->ListTabGroups()) {
-      if (space == tab->GetGroup()) {
-        continue;
-      }
-      host->Item(
-          u"Move to " + SpaceName(model, space), "arrow-right-left",
-          OnTab(tab, base::BindRepeating(
-                         [](BrowserWindowInterface* b,
-                            tab_groups::TabGroupId to, tabs::TabInterface* t) {
-                           TabStripModel* m = b->GetTabStripModel();
-                           if (!m->group_model()->ContainsTabGroup(to)) {
-                             return;
-                           }
-                           const int index = m->GetIndexOfTab(t);
-                           if (m->IsTabPinned(index)) {
-                             m->SetTabPinned(index, false);
-                           }
-                           m->AddToExistingGroup({m->GetIndexOfTab(t)}, to);
-                         },
-                         browser, space)));
-    }
-  }
   host->Item(u"Move to New Window", "app-window",
              OnTab(tab, base::BindRepeating(
                             [](BrowserWindowInterface* b,
@@ -595,11 +555,6 @@ void ShowTabMenu(BrowserWindowInterface* browser,
                                   TabStripModel::CommandMoveTabsToNewWindow);
                             },
                             browser)));
-  if (is_web && GetCurrentSpace(browser) &&
-      GetCurrentSpace(browser) == tab->GetGroup() && !RouteFor(browser, url)) {
-    host->Item(u"Always Open in This Space", "route",
-               base::BindRepeating(&RouteSiteToCurrentSpace, browser, url));
-  }
   if (selected && is_web) {
     host->Separator();
     host->Command(kCommandBoostSite, u"Boost This Site…", "zap");
@@ -620,7 +575,7 @@ void ShowTabMenu(BrowserWindowInterface* browser,
                        }
                      })));
   }
-  std::vector<tabs::TabHandle> others = SpaceTabs(model, tab);
+  std::vector<tabs::TabHandle> others = UnpinnedTabs(model);
   std::erase(others, tab->GetHandle());
   host->Item(u"Close Other Tabs", "x",
              base::BindRepeating(&CloseTabs, model, others),
@@ -656,23 +611,6 @@ bool ShowSidebarMenu(BrowserWindowInterface* browser,
   BuildAppMenu(host->model(), browser);
   host->Run(parent, point, source_type);
   return true;
-}
-
-void ShowSpaceMenu(BrowserWindowInterface* browser,
-                   const gfx::Point& point,
-                   ui::mojom::MenuSourceType source_type,
-                   views::Widget* parent) {
-  auto* host = new MenuHost(browser);
-  host->Item(u"Edit Space…", "palette",
-             base::BindRepeating(&EditSpace, browser));
-  host->Separator();
-  host->Item(u"New Space", "layers", base::BindRepeating(&NewSpace, browser));
-  // Mori 3's Clear: the space's tabs go to History and Reopen Closed Tab.
-  host->Item(u"Archive Unpinned Tabs", "archive",
-             base::BindRepeating(&ClearSpace, browser));
-  host->Item(u"Delete Space", "trash",
-             base::BindRepeating(&DeleteSpace, browser));
-  host->Run(parent, point, source_type);
 }
 
 void ShowFolderMenu(BrowserWindowInterface* browser,
@@ -751,38 +689,16 @@ void RestylePageMenu(ui::SimpleMenuModel* model,
   PageMenuEditor editor(model);
   TabStripModel* tabs = browser->GetTabStripModel();
 
-  // Links: Peek and the other spaces, after "Open Link in New Tab".
+  // Links: Peek, after "Open Link in New Tab".
   if (std::optional<size_t> index =
           model->GetIndexOfCommandId(IDC_CONTENT_CONTEXT_OPENLINKNEWTAB);
       index && params.link_url.is_valid()) {
-    size_t at = *index + 1;
-    at = editor.Insert(at, u"Open Link in Peek", "eye",
+    editor.Insert(*index + 1, u"Open Link in Peek", "eye",
                        base::BindRepeating(
                            [](BrowserWindowInterface* b, const GURL& url) {
                              ShowPeek(b, url);
                            },
                            browser, params.link_url));
-    if (HasSpaces(browser)) {
-      for (const tab_groups::TabGroupId& space :
-           tabs->group_model()->ListTabGroups()) {
-        if (space == GetCurrentSpace(browser)) {
-          continue;
-        }
-        at = editor.Insert(
-            at, u"Open Link in " + SpaceName(tabs, space), "arrow-right-left",
-            base::BindRepeating(
-                [](BrowserWindowInterface* b, tab_groups::TabGroupId to,
-                   const GURL& url) {
-                  TabStripModel* m = b->GetTabStripModel();
-                  if (!m->group_model()->ContainsTabGroup(to)) {
-                    return;
-                  }
-                  chrome::AddTabAt(b, url, m->count(), /*foreground=*/true,
-                                   to);
-                },
-                browser, space, params.link_url));
-      }
-    }
   }
 
   // The page: bookmark and copy its address after Reload, capture after

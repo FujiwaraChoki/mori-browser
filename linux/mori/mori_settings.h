@@ -15,6 +15,9 @@ namespace mori {
 // (Chromium's page opens instead).
 bool ShowSettings(BrowserWindowInterface* browser);
 
+// The settings on their Appearance category, where the theme is.
+void ShowThemeSettings(BrowserWindowInterface* browser);
+
 }  // namespace mori
 
 #endif  // CHROME_BROWSER_UI_VIEWS_MORI_MORI_SETTINGS_H_

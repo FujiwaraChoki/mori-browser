@@ -1,12 +1,11 @@
-// Zen's folders (Arc's, Mori 3's) inside a space: a named run of the
-// space's tabs under a header with Zen's folder icon, which opens and
-// closes. A closed folder keeps showing its active tab, as in Zen.
+// Zen's folders (Arc's, Mori 3's): a named run of tabs under a header with
+// Zen's folder icon, which opens and closes. A closed folder keeps showing
+// its active tab, as in Zen.
 //
-// Chromium's tab groups are Mori's spaces and don't nest, so folders are
-// Mori's own: each tab carries its folder (id, name, icon, open) in its
-// session data, and a folder is the run of a space's tabs that share one.
-// Moving a tab between two tabs of a folder puts it in the folder; moving
-// it away from the run takes it out.
+// Folders are Mori's own, not Chromium's tab groups: each tab carries its
+// folder (id, name, icon, open) in its session data, and a folder is the
+// run of tabs that share one. Moving a tab between two tabs of a folder
+// puts it in the folder; moving it away from the run takes it out.
 
 #ifndef CHROME_BROWSER_UI_VIEWS_MORI_MORI_FOLDERS_H_
 #define CHROME_BROWSER_UI_VIEWS_MORI_MORI_FOLDERS_H_
@@ -20,7 +19,7 @@
 #include "base/memory/raw_ptr.h"
 
 class BrowserWindowInterface;
-class TabGroupView;
+class TabCollectionNode;
 
 namespace content {
 class WebContents;
@@ -55,8 +54,8 @@ struct FolderInfo {
   bool open = true;
 };
 
-// How TabGroupViewLayout lays out one of the space's rows (a tab or a split
-// pair) when folders are involved.
+// How UnpinnedTabContainerViewLayout lays out one of its rows (a tab or a
+// split pair) when folders are involved.
 struct FolderRow {
   // The folder header that goes above the row, if the row starts a folder.
   raw_ptr<views::View> header = nullptr;
@@ -65,17 +64,18 @@ struct FolderRow {
   int indent = 0;
 };
 
-// One FolderRow per row of `group_view` (its collection node's children, in
-// order), for the space on screen.
-std::vector<FolderRow> GetFolderRows(const TabGroupView* group_view);
+// One FolderRow per row of the vertical tab list `container` (`node`'s
+// children, in order).
+std::vector<FolderRow> GetFolderRows(const views::View* container,
+                                     const TabCollectionNode* node);
 
-// Folder headers of `group_view` that `rows` don't place (hidden).
+// Folder headers of `container` that `rows` don't place (hidden).
 std::vector<views::View*> GetUnplacedFolderHeaders(
-    const TabGroupView* group_view,
+    const views::View* container,
     const std::vector<FolderRow>& rows);
 
-// Added to each vertical TabGroupView: keeps its folder headers in step
-// with its tabs. Never visible.
+// Added to the vertical tab list (UnpinnedTabContainerView): keeps its
+// folder headers in step with its tabs. Never visible.
 std::unique_ptr<views::View> CreateFolderHeaders();
 
 // The session data of `contents`' folder, empty when it has none (for
@@ -89,9 +89,8 @@ void RestoreTabFolder(content::WebContents* contents,
 // `tab`'s folder, if it is in one.
 std::optional<FolderInfo> GetTabFolder(const tabs::TabInterface* tab);
 
-// Folders in `tab`'s space, in sidebar order.
-std::vector<FolderInfo> FoldersInSpaceOf(BrowserWindowInterface* browser,
-                                         const tabs::TabInterface* tab);
+// The folders, in sidebar order.
+std::vector<FolderInfo> ListFolders(BrowserWindowInterface* browser);
 
 // Makes a "New Folder" holding `tab` and starts renaming it.
 void NewFolderWithTab(BrowserWindowInterface* browser, tabs::TabInterface* tab);

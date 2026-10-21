@@ -2,10 +2,9 @@
   "manifest_version": 3,
   "name": "Mori Test Fixture",
   "version": "1.0",
-  "description": "Test only: opens, pins and groups tabs so the sidebar has something to show.",
+  "description": "Test only: opens and pins tabs so the sidebar has something to show.",
   "permissions": [
-    "tabs",
-    "tabGroups"
+    "tabs"
   ],
   "background": {
     "service_worker": "background.js"

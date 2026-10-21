@@ -1,6 +1,6 @@
 --- a/chrome/browser/ui/browser_command_controller.cc
 +++ b/chrome/browser/ui/browser_command_controller.cc
-@@ -57,6 +57,13 @@
+@@ -57,6 +57,12 @@
  #include "chrome/browser/ui/actions/command_action_updater.h"
  #include "chrome/browser/ui/browser_actions.h"
  #include "chrome/browser/ui/browser_commands.h"
@@ -10,11 +10,10 @@
 +#include "chrome/browser/ui/views/mori/mori_menu.h"
 +#include "chrome/browser/ui/views/mori/mori_settings.h"
 +#include "chrome/browser/ui/views/mori/mori_sidebar.h"
-+#include "chrome/browser/ui/views/mori/mori_spaces.h"
  #include "chrome/browser/ui/browser_element_identifiers.h"
  #include "chrome/browser/ui/browser_select_file_dialog_controller.h"
  #include "chrome/browser/ui/browser_window.h"
-@@ -531,6 +538,15 @@
+@@ -531,6 +537,15 @@
    }
  #endif
  
@@ -30,7 +29,7 @@
    return command_id == IDC_CLOSE_TAB || command_id == IDC_CLOSE_WINDOW ||
           command_id == IDC_NEW_INCOGNITO_WINDOW ||
           command_id == IDC_NEW_ISOLATED_WINDOW || command_id == IDC_NEW_TAB ||
-@@ -707,7 +723,9 @@
+@@ -707,7 +722,9 @@
        ToggleTabScrollButtonsPin(browser_);
        break;
      case IDC_TOGGLE_VERTICAL_TABS:
@@ -41,7 +40,7 @@
        break;
      case IDC_TOGGLE_VERTICAL_TABS_COLLAPSE:
  #if !BUILDFLAG(IS_MAC)
-@@ -752,6 +770,10 @@
+@@ -752,6 +769,10 @@
        CloseWindow(browser_);
        break;
      case IDC_NEW_TAB: {
@@ -52,7 +51,7 @@
        NewTab(browser_, NewTabTypes::kNewTabCommand);
        break;
      }
-@@ -934,7 +956,8 @@
+@@ -934,7 +955,8 @@
        SavePage(browser_);
        break;
      case IDC_BOOKMARK_THIS_TAB:
@@ -62,7 +61,7 @@
        break;
      case IDC_BOOKMARK_ALL_TABS:
        BookmarkAllTabs(browser_);
-@@ -1104,6 +1127,10 @@
+@@ -1104,6 +1126,10 @@
          break;
        }
        base::RecordAction(base::UserMetricsAction("Accel_Focus_Location"));
@@ -73,7 +72,7 @@
        FocusLocationBar(browser_);
        break;
      case IDC_FOCUS_SEARCH:
-@@ -1255,6 +1282,11 @@
+@@ -1255,6 +1281,11 @@
        ShowAvatarMenu(browser_);
        break;
      case IDC_SHOW_HISTORY:
@@ -85,7 +84,7 @@
        ShowHistory(webui::GetBrowserForOpeningWebUi(browser_));
        break;
      case IDC_SHOW_HISTORY_CLUSTERS_SIDE_PANEL:
-@@ -1288,6 +1320,10 @@
+@@ -1288,6 +1319,10 @@
                            chrome::kPerformanceSubPage);
        break;
      case IDC_OPTIONS:
@@ -96,30 +95,7 @@
        ShowSettings(webui::GetBrowserForOpeningWebUi(browser_));
        break;
      case IDC_EDIT_SEARCH_ENGINES:
-@@ -1380,6 +1416,11 @@
- 
-     // Tab group commands.
-     case IDC_FOCUS_NEXT_TAB_GROUP:
-+      // Mori: these shortcuts switch spaces.
-+      if (mori::HasSpaces(browser_.get())) {
-+        mori::SwitchSpace(browser_.get(), !base::i18n::IsRTL());
-+        break;
-+      }
-       if (base::i18n::IsRTL()) {
-         FocusPreviousTabGroup(browser_);
-       } else {
-@@ -1389,6 +1430,10 @@
-                                     TabGroupShortcut::kFocusNextTabGroup);
-       break;
-     case IDC_FOCUS_PREV_TAB_GROUP:
-+      if (mori::HasSpaces(browser_.get())) {
-+        mori::SwitchSpace(browser_.get(), base::i18n::IsRTL());
-+        break;
-+      }
-       if (base::i18n::IsRTL()) {
-         FocusNextTabGroup(browser_);
-       } else {
-@@ -1595,6 +1640,11 @@
+@@ -1595,6 +1630,11 @@
        break;
      }
      default:
@@ -131,7 +107,7 @@
        LOG(WARNING) << "Received Unimplemented Command: " << id;
        break;
    }
-@@ -1716,6 +1766,11 @@
+@@ -1716,6 +1756,11 @@
      return;
    }
  
@@ -174,7 +150,7 @@
        "views/frame/browser_frame_view_factory_mac.mm",
        "views/frame/browser_frame_view_mac.h",
        "views/frame/browser_frame_view_mac.mm",
-@@ -2721,6 +2722,70 @@
+@@ -2721,6 +2722,66 @@
        "views/frame/browser_root_view.cc",
        "views/frame/browser_view.cc",
        "views/frame/browser_view.h",
@@ -224,16 +200,12 @@
 +      "views/mori/mori_peek.h",
 +      "views/mori/mori_tab_switcher.cc",
 +      "views/mori/mori_tab_switcher.h",
-+      "views/mori/mori_routes.cc",
-+      "views/mori/mori_routes.h",
-+      "views/mori/mori_space_editor.cc",
-+      "views/mori/mori_space_editor.h",
-+      "views/mori/mori_space_themes.cc",
-+      "views/mori/mori_space_themes.h",
-+      "views/mori/mori_spaces.cc",
 +      "views/mori/mori_tab_names.cc",
 +      "views/mori/mori_tab_names.h",
-+      "views/mori/mori_spaces.h",
++      "views/mori/mori_tab_list.cc",
++      "views/mori/mori_tab_list.h",
++      "views/mori/mori_themes.cc",
++      "views/mori/mori_themes.h",
 +      "views/mori/mori_toast.cc",
 +      "views/mori/mori_toast.h",
 +      "views/mori/mori_toolbar_layout.cc",

@@ -30,8 +30,6 @@
 #include "chrome/browser/ui/views/mori/mori_toast.h"
 #include "components/sessions/core/serialized_navigation_entry.h"
 #include "components/sessions/core/serialized_user_agent_override.h"
-#include "components/tab_groups/tab_group_color.h"
-#include "components/tab_groups/tab_group_visual_data.h"
 #include "url/gurl.h"
 
 namespace mori {
@@ -42,10 +40,10 @@ struct ImportedTab {
   std::string title;
 };
 
+// A Zen workspace, Firefox window or Arc space: its pinned tabs first,
+// then its folders' tabs, then the rest.
 struct ImportedSpace {
   std::string name;
-  // Pinned tabs first, then folders' tabs, then the rest: Mori's spaces
-  // here have no pinned section or folders of their own yet.
   std::vector<ImportedTab> tabs;
 };
 
@@ -593,12 +591,6 @@ void AddUnloadedTab(BrowserWindowInterface* browser,
   }
 }
 
-constexpr tab_groups::TabGroupColorId kColors[] = {
-    tab_groups::TabGroupColorId::kBlue,   tab_groups::TabGroupColorId::kPurple,
-    tab_groups::TabGroupColorId::kPink,   tab_groups::TabGroupColorId::kGreen,
-    tab_groups::TabGroupColorId::kOrange, tab_groups::TabGroupColorId::kCyan,
-};
-
 void Apply(base::WeakPtr<BrowserWindowInterface> weak_browser,
            ImportSource source,
            Imported imported) {
@@ -633,36 +625,26 @@ void Apply(base::WeakPtr<BrowserWindowInterface> weak_browser,
                      std::nullopt, /*pin=*/true);
     }
   }
+  // Each workspace's or window's tabs, one after the other, after the
+  // tabs already open.
   int added = 0;
   for (const ImportedSpace& space : imported.spaces) {
-    if (space.tabs.empty()) {
-      continue;
-    }
-    std::optional<tab_groups::TabGroupId> group;
     for (const ImportedTab& tab : space.tabs) {
-      AddUnloadedTab(browser, tab, model->count(), group, /*pin=*/false);
-      if (!group) {
-        group = model->AddToNewGroup({model->count() - 1});
-        model->ChangeTabGroupVisuals(
-            *group, tab_groups::TabGroupVisualData(
-                        space.name.empty()
-                            ? u"Space " + base::NumberToString16(added + 1)
-                            : base::UTF8ToUTF16(space.name),
-                        kColors[added % std::size(kColors)]));
-      }
+      AddUnloadedTab(browser, tab, model->count(), std::nullopt,
+                     /*pin=*/false);
+      ++added;
     }
-    ++added;
   }
   ShowToast(browser,
             added == 0 ? std::u16string(u"Nothing to import from ") + name
                        : u"Imported " + base::NumberToString16(added) +
-                             (added == 1 ? u" space" : u" spaces") +
-                             u" from " + name);
+                             (added == 1 ? u" tab" : u" tabs") + u" from " +
+                             name);
 }
 
 }  // namespace
 
-void ImportSpaces(BrowserWindowInterface* browser, ImportSource source) {
+void ImportTabs(BrowserWindowInterface* browser, ImportSource source) {
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_VISIBLE},
       base::BindOnce(

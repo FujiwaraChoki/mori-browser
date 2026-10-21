@@ -1,4 +1,4 @@
-#include "chrome/browser/ui/views/mori/mori_space_themes.h"
+#include "chrome/browser/ui/views/mori/mori_themes.h"
 
 #include <algorithm>
 #include <cmath>
@@ -11,23 +11,16 @@
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
-#include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
 #include "cc/paint/paint_flags.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_json_file.h"
-#include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/scoped_canvas.h"
-#include "ui/gfx/font_list.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/image/image_skia.h"
-#include "ui/gfx/paint_vector_icon.h"
-#include "ui/gfx/text_constants.h"
 #include "ui/views/view.h"
 
 namespace mori {
@@ -51,6 +44,21 @@ std::optional<SkColor> ParseHex(const std::string& text) {
                        value & 0xFF);
 }
 
+// A ["#RRGGBB", "#RRGGBB"] list in `dict`'s "colors".
+ThemeColors ColorsIn(const base::DictValue& dict) {
+  const base::ListValue* colors = dict.FindList("colors");
+  if (!colors || colors->size() != 2 || !(*colors)[0].is_string() ||
+      !(*colors)[1].is_string()) {
+    return std::nullopt;
+  }
+  std::optional<SkColor> a = ParseHex((*colors)[0].GetString());
+  std::optional<SkColor> b = ParseHex((*colors)[1].GetString());
+  if (!a || !b) {
+    return std::nullopt;
+  }
+  return std::make_pair(*a, *b);
+}
+
 class ThemeStore {
  public:
   static ThemeStore* For(Profile* profile) {
@@ -60,27 +68,20 @@ class ThemeStore {
     const base::FilePath path = profile->GetOriginalProfile()->GetPath();
     auto& store = (*stores)[path];
     if (!store) {
-      store = std::make_unique<ThemeStore>(
-          path.AppendASCII("Mori Spaces.json"));
+      store = std::make_unique<ThemeStore>(path);
     }
     return store.get();
   }
 
-  explicit ThemeStore(base::FilePath path)
-      : file_(std::move(path),
+  explicit ThemeStore(const base::FilePath& profile_path)
+      : profile_path_(profile_path),
+        file_(profile_path.AppendASCII("Mori Theme.json"),
               base::BindOnce(&ThemeStore::OnLoaded, base::Unretained(this))) {}
 
-  SpaceTheme Get(const std::string& key) const {
-    auto it = themes_.find(key);
-    return it == themes_.end() ? SpaceTheme() : it->second;
-  }
+  ThemeColors Get() const { return colors_; }
 
-  void Set(const std::string& key, const SpaceTheme& theme) {
-    if (theme == SpaceTheme()) {
-      themes_.erase(key);
-    } else {
-      themes_[key] = theme;
-    }
+  void Set(ThemeColors colors) {
+    colors_ = colors;
     Save();
     observers_.Notify();
   }
@@ -92,25 +93,27 @@ class ThemeStore {
  private:
   void OnLoaded(std::optional<base::Value> value) {
     if (value && value->is_dict()) {
+      colors_ = ColorsIn(value->GetDict());
+      observers_.Notify();
+      return;
+    }
+    // A profile from when each space had its own theme ("Mori Spaces.json",
+    // by space): the first space with a gradient gives Mori its theme.
+    old_file_ = std::make_unique<JsonFile>(
+        profile_path_.AppendASCII("Mori Spaces.json"),
+        base::BindOnce(&ThemeStore::OnOldLoaded, base::Unretained(this)));
+  }
+
+  void OnOldLoaded(std::optional<base::Value> value) {
+    if (value && value->is_dict()) {
       for (auto [key, item] : value->GetDict()) {
-        const base::DictValue* dict = item.GetIfDict();
-        if (!dict) {
-          continue;
-        }
-        SpaceTheme theme;
-        if (const std::string* symbol = dict->FindString("symbol")) {
-          theme.symbol = *symbol;
-        }
-        const base::ListValue* colors = dict->FindList("colors");
-        if (colors && colors->size() == 2 && (*colors)[0].is_string() &&
-            (*colors)[1].is_string()) {
-          std::optional<SkColor> a = ParseHex((*colors)[0].GetString());
-          std::optional<SkColor> b = ParseHex((*colors)[1].GetString());
-          if (a && b) {
-            theme.colors = std::make_pair(*a, *b);
+        if (const base::DictValue* dict = item.GetIfDict()) {
+          if (ThemeColors colors = ColorsIn(*dict)) {
+            colors_ = colors;
+            Save();
+            break;
           }
         }
-        themes_.emplace(key, std::move(theme));
       }
     }
     observers_.Notify();
@@ -118,21 +121,18 @@ class ThemeStore {
 
   void Save() {
     base::DictValue dict;
-    for (const auto& [key, theme] : themes_) {
-      base::DictValue entry;
-      entry.Set("symbol", theme.symbol);
-      if (theme.colors) {
-        entry.Set("colors", base::ListValue()
-                                .Append(ColorHex(theme.colors->first))
-                                .Append(ColorHex(theme.colors->second)));
-      }
-      dict.Set(key, std::move(entry));
+    if (colors_) {
+      dict.Set("colors", base::ListValue()
+                             .Append(ColorHex(colors_->first))
+                             .Append(ColorHex(colors_->second)));
     }
     file_.Write(base::Value(std::move(dict)));
   }
 
-  std::map<std::string, SpaceTheme> themes_;
+  const base::FilePath profile_path_;
+  ThemeColors colors_;
   base::RepeatingClosureList observers_;
+  std::unique_ptr<JsonFile> old_file_;
   // Last: its load callback uses the members above.
   JsonFile file_;
 };
@@ -185,26 +185,21 @@ void RepaintTree(views::View* view) {
 
 }  // namespace
 
-SpaceTheme GetSpaceTheme(BrowserWindowInterface* browser,
-                         const tab_groups::TabGroupId& space) {
-  return ThemeStore::For(browser->GetProfile())
-      ->Get(SpaceKey(browser, space));
+ThemeColors GetTheme(BrowserWindowInterface* browser) {
+  return ThemeStore::For(browser->GetProfile())->Get();
 }
 
-void SetSpaceTheme(BrowserWindowInterface* browser,
-                   const tab_groups::TabGroupId& space,
-                   const SpaceTheme& theme) {
-  ThemeStore::For(browser->GetProfile())->Set(SpaceKey(browser, space), theme);
+void SetTheme(BrowserWindowInterface* browser, ThemeColors colors) {
+  ThemeStore::For(browser->GetProfile())->Set(colors);
 }
 
-base::CallbackListSubscription AddSpaceThemeObserver(
-    BrowserWindowInterface* browser,
-    base::RepeatingClosure closure) {
+base::CallbackListSubscription AddThemeObserver(BrowserWindowInterface* browser,
+                                                base::RepeatingClosure closure) {
   return ThemeStore::For(browser->GetProfile())
       ->AddObserver(std::move(closure));
 }
 
-void PaintSpaceWash(gfx::Canvas* canvas,
+void PaintThemeWash(gfx::Canvas* canvas,
                     const views::View* view,
                     const BrowserView* browser_view) {
   if (!browser_view || !view) {
@@ -212,19 +207,14 @@ void PaintSpaceWash(gfx::Canvas* canvas,
   }
   BrowserWindowInterface* browser =
       const_cast<BrowserView*>(browser_view)->browser();
-  const std::optional<tab_groups::TabGroupId> space =
-      browser ? GetCurrentSpace(browser) : std::nullopt;
-  if (!space) {
-    return;
-  }
-  const SpaceTheme theme = GetSpaceTheme(browser, *space);
-  if (!theme.colors) {
+  const ThemeColors colors = browser ? GetTheme(browser) : std::nullopt;
+  if (!colors) {
     return;
   }
   // The wash spans the window, wherever `view` sits in it.
   const gfx::Rect dest = views::View::ConvertRectToTarget(
       browser_view, view, browser_view->GetLocalBounds());
-  const SkBitmap& bitmap = WashBitmap(*theme.colors);
+  const SkBitmap& bitmap = WashBitmap(*colors);
   cc::PaintFlags flags;
   flags.setAlphaf(kWashOpacity);
   canvas->DrawImageInt(gfx::ImageSkia::CreateFrom1xBitmap(bitmap), 0, 0,
@@ -232,38 +222,11 @@ void PaintSpaceWash(gfx::Canvas* canvas,
                        dest.width(), dest.height(), /*filter=*/true, flags);
 }
 
-void RepaintSpaceWash(BrowserWindowInterface* browser) {
+void RepaintThemeWash(BrowserWindowInterface* browser) {
   if (BrowserView* browser_view =
           BrowserView::GetBrowserViewForBrowser(browser)) {
     RepaintTree(browser_view);
   }
-}
-
-bool IsEmojiSymbol(std::string_view symbol) {
-  // Lucide names are lowercase ASCII words and dashes.
-  return !symbol.empty() &&
-         std::ranges::any_of(symbol, [](char c) {
-           return static_cast<unsigned char>(c) >= 0x80;
-         });
-}
-
-void PaintSpaceSymbol(gfx::Canvas* canvas,
-                      std::string_view symbol,
-                      const gfx::Rect& bounds,
-                      int size,
-                      SkColor color) {
-  if (IsEmojiSymbol(symbol)) {
-    const gfx::FontList base;
-    canvas->DrawStringRectWithFlags(
-        base::UTF8ToUTF16(symbol),
-        base.DeriveWithSizeDelta(size - 1 - base.GetFontSize()), color, bounds,
-        gfx::Canvas::TEXT_ALIGN_CENTER);
-    return;
-  }
-  gfx::ScopedCanvas scoped(canvas);
-  canvas->Translate(gfx::Vector2d(bounds.x() + (bounds.width() - size) / 2,
-                                  bounds.y() + (bounds.height() - size) / 2));
-  gfx::PaintVectorIcon(canvas, LucideIcon(symbol), size, color);
 }
 
 }  // namespace mori

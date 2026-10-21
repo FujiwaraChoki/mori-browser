@@ -6,6 +6,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "base/auto_reset.h"
 #include "base/functional/bind.h"
@@ -20,17 +21,13 @@
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_enums.h"
-#include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_json_file.h"
-#include "chrome/browser/ui/views/mori/mori_routes.h"
-#include "chrome/browser/ui/views/mori/mori_spaces.h"
+#include "chrome/browser/ui/views/mori/mori_tab_list.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_button.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
-#include "components/tab_groups/tab_group_visual_data.h"
-#include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -86,9 +83,25 @@ class Settings {
     Save();
   }
 
+  bool spaces_ungrouped() const { return spaces_ungrouped_; }
+  void set_spaces_ungrouped() {
+    spaces_ungrouped_ = true;
+    Save();
+  }
+
+  void WhenLoaded(base::OnceClosure closure) {
+    if (loaded_) {
+      std::move(closure).Run();
+    } else {
+      when_loaded_.push_back(std::move(closure));
+    }
+  }
+
  private:
   void OnLoaded(std::optional<base::Value> value) {
     if (value && value->is_dict()) {
+      spaces_ungrouped_ =
+          value->GetDict().FindBool("spaces_ungrouped").value_or(false);
       if (const std::string* links =
               value->GetDict().FindString("external_links")) {
         links_in_little_ = *links != "current_space";
@@ -98,6 +111,12 @@ class Settings {
         archive_after_hours_ = std::max(0, *hours);
       }
     }
+    loaded_ = true;
+    std::vector<base::OnceClosure> closures;
+    closures.swap(when_loaded_);
+    for (base::OnceClosure& closure : closures) {
+      std::move(closure).Run();
+    }
   }
 
   void Save() {
@@ -105,18 +124,23 @@ class Settings {
         base::DictValue()
             .Set("external_links",
                  links_in_little_ ? "little_window" : "current_space")
-            .Set("archive_after_hours", archive_after_hours_)));
+            .Set("archive_after_hours", archive_after_hours_)
+            .Set("spaces_ungrouped", spaces_ungrouped_)));
   }
 
   // Mori 3's defaults.
   bool links_in_little_ = true;
   int archive_after_hours_ = 24;
+  // Mori's spaces were tab groups; their tabs came out of them.
+  bool spaces_ungrouped_ = false;
+  bool loaded_ = false;
+  std::vector<base::OnceClosure> when_loaded_;
   // Last: its load callback uses the members above.
   JsonFile file_;
 };
 
-// The page of the Little Mori window `little` moves into the space on
-// screen of the last normal window (a new one if there is none).
+// The page of the Little Mori window `little` moves to the top of the tabs
+// of the last normal window (a new one if there is none).
 void OpenInMori(BrowserWindowInterface* little) {
   TabStripModel* from = little->GetTabStripModel();
   const int index = from->active_index();
@@ -131,34 +155,12 @@ void OpenInMori(BrowserWindowInterface* little) {
         BrowserWindowCreateParams(little->GetProfile(), true));
   }
   TabStripModel* to = target->GetTabStripModel();
-  const std::optional<tab_groups::TabGroupId> space = GetCurrentSpace(target);
-  const int at = IndexForNewTab(target);
   // Detaching the only tab closes the little window.
   std::unique_ptr<tabs::TabModel> tab = from->DetachTabAtForInsertion(index);
-  to->InsertDetachedTabAt(at >= 0 ? at : to->count(), std::move(tab),
-                          AddTabTypes::ADD_ACTIVE, space);
+  to->InsertDetachedTabAt(IndexForNewTab(target), std::move(tab),
+                          AddTabTypes::ADD_ACTIVE);
   target->GetWindow()->Show();
   target->GetWindow()->Activate();
-}
-
-std::u16string OpenLabel(BrowserWindowInterface* little) {
-  BrowserWindowInterface* target =
-      ProfileBrowserCollection::GetForProfile(little->GetProfile())
-          ->FindTabbedBrowser();
-  if (target) {
-    if (std::optional<tab_groups::TabGroupId> space =
-            GetCurrentSpace(target)) {
-      const std::u16string& name = target->GetTabStripModel()
-                                       ->group_model()
-                                       ->GetTabGroup(*space)
-                                       ->visual_data()
-                                       ->title();
-      if (!name.empty()) {
-        return u"Open in " + name;
-      }
-    }
-  }
-  return u"Open in Mori";
 }
 
 }  // namespace
@@ -169,6 +171,18 @@ int ArchiveAfterHours(Profile* profile) {
 
 void SetArchiveAfterHours(Profile* profile, int hours) {
   Settings::For(profile)->set_archive_after_hours(hours);
+}
+
+void WhenMoriSettingsLoaded(Profile* profile, base::OnceClosure closure) {
+  Settings::For(profile)->WhenLoaded(std::move(closure));
+}
+
+bool SpacesUngrouped(Profile* profile) {
+  return Settings::For(profile)->spaces_ungrouped();
+}
+
+void SetSpacesUngrouped(Profile* profile) {
+  Settings::For(profile)->set_spaces_ungrouped();
 }
 
 bool LinksOpenInLittle(Profile* profile) {
@@ -182,8 +196,7 @@ void SetLinksOpenInLittle(Profile* profile, bool little) {
 bool ShouldOpenInLittle(BrowserWindowInterface* browser, const GURL& url) {
   return browser && url.SchemeIsHTTPOrHTTPS() &&
          !browser->GetProfile()->IsOffTheRecord() &&
-         LinksOpenInLittle(browser->GetProfile()) &&
-         !RouteFor(browser, url).has_value();
+         LinksOpenInLittle(browser->GetProfile());
 }
 
 void OpenLittle(Profile* profile, const GURL& url) {
@@ -217,9 +230,9 @@ void MaybeAddLittleHeader(ToolbarView* toolbar, BrowserView* browser_view) {
   back->GetViewAccessibility().SetName(u"Back");
   back->SetProperty(views::kFlexBehaviorKey, views::FlexSpecification());
   toolbar->AddChildViewAt(std::move(back), 0);
-  // "Open in <space>" and close, after it.
+  // "Open in Mori" and close, after it.
   auto open = std::make_unique<views::MdTextButton>(
-      base::BindRepeating(&OpenInMori, browser), OpenLabel(browser));
+      base::BindRepeating(&OpenInMori, browser), u"Open in Mori");
   open->SetStyle(ui::ButtonStyle::kTonal);
   open->SetProperty(views::kMarginsKey, gfx::Insets::VH(0, 6));
   open->SetProperty(views::kFlexBehaviorKey, views::FlexSpecification());

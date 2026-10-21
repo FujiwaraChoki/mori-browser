@@ -11,19 +11,13 @@
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
-#include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/mori/mori_command_ids.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
-#include "chrome/browser/ui/views/mori/mori_space_editor.h"
 #include "chrome/browser/ui/views/mori/mori_import.h"
 #include "chrome/browser/ui/views/mori/mori_little.h"
-#include "chrome/browser/ui/views/mori/mori_routes.h"
-#include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "chrome/browser/ui/views/mori/mori_tab_names.h"
-#include "components/tab_groups/tab_group_visual_data.h"
-#include "components/tabs/public/tab_group.h"
 #include "components/tabs/public/tab_interface.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "url/gurl.h"
@@ -101,7 +95,7 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
           IDC_TOGGLE_VERTICAL_TABS);
   // Mori 3's setting for links from other apps.
   if (LinksOpenInLittle(browser->GetProfile())) {
-    action(u"Open Links from Other Apps in the Current Space",
+    action(u"Open Links from Other Apps in a New Tab",
            u"little mori external default setting", "app-window",
            base::BindRepeating(
                [](BrowserWindowInterface* b) {
@@ -119,11 +113,11 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
   }
   // Mori 3's import (Arc's onboarding does the same).
   for (auto [title, source] :
-       {std::pair{u"Import Spaces from Zen", ImportSource::kZen},
-        std::pair{u"Import Spaces from Firefox", ImportSource::kFirefox},
-        std::pair{u"Import Spaces from Arc", ImportSource::kArc}}) {
+       {std::pair{u"Import Tabs from Zen", ImportSource::kZen},
+        std::pair{u"Import Tabs from Firefox", ImportSource::kFirefox},
+        std::pair{u"Import Tabs from Arc", ImportSource::kArc}}) {
     action(title, u"import migrate switch tabs workspaces essentials",
-           "download", base::BindRepeating(&ImportSpaces, browser, source));
+           "download", base::BindRepeating(&ImportTabs, browser, source));
   }
   command(u"Import Bookmarks and History", u"import migrate passwords",
           "bookmark", IDC_IMPORT_SETTINGS);
@@ -135,25 +129,11 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
   command(u"Downloads", u"files", "download", IDC_SHOW_DOWNLOADS);
   command(u"Extensions", u"add-ons plugins", "puzzle",
           IDC_MANAGE_EXTENSIONS);
-  command(u"New Space", u"context create", "layers", kCommandNewSpace);
-  const std::vector<tab_groups::TabGroupId> spaces =
-      model->SupportsTabGroups() ? model->group_model()->ListTabGroups()
-                                 : std::vector<tab_groups::TabGroupId>();
-  if (spaces.size() > 1) {
-    command(u"Next Space", u"switch context right", "arrow-right",
-            IDC_FOCUS_NEXT_TAB_GROUP);
-    command(u"Previous Space", u"switch context left", "arrow-left",
-            IDC_FOCUS_PREV_TAB_GROUP);
-    action(u"Delete Space", u"remove context close", "trash",
-           base::BindRepeating(&DeleteSpace, browser));
-  }
-  if (GetCurrentSpace(browser)) {
-    action(u"Edit Space", u"rename context color colour theme icon emoji",
-           "pencil", base::BindRepeating(&EditSpace, browser));
-    // Mori 3's Clear (Zen's, Arc's archive of Today).
-    action(u"Archive Unpinned Tabs", u"clear today close space tabs",
-           "archive", base::BindRepeating(&ClearSpace, browser));
-  }
+  command(u"Edit Theme", u"color colour gradient wash appearance", "palette",
+          kCommandEditTheme);
+  // Mori 3's Clear (Zen's, Arc's archive of Today).
+  command(u"Archive Unpinned Tabs", u"clear today close tabs", "archive",
+          kCommandArchiveUnpinnedTabs);
   command(u"Developer Tools", u"inspect console devtools", "code",
           IDC_DEV_TOOLS);
   command(u"Print…", u"pdf", "printer", IDC_PRINT);
@@ -171,35 +151,6 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
       command(u"Boost This Site", u"css javascript zap customize style",
               "zap", kCommandBoostSite);
     }
-    // Air Traffic Control.
-    const GURL url = tab->GetContents()->GetLastCommittedURL();
-    if (url.SchemeIsHTTPOrHTTPS() && GetCurrentSpace(browser)) {
-      std::string host = base::ToLowerASCII(url.host());
-      if (host.starts_with("www.")) {
-        host = host.substr(4);
-      }
-      const std::u16string site = base::UTF8ToUTF16(host);
-      if (std::optional<Route> route = RouteFor(browser, url)) {
-        std::optional<tab_groups::TabGroupId> to =
-            FindSpace(browser, route->space);
-        const std::u16string name =
-            to ? model->group_model()->GetTabGroup(*to)->visual_data()->title()
-               : u"a deleted space";
-        action(u"Stop Opening " + base::UTF8ToUTF16(route->host) + u" in " +
-                   name,
-               u"air traffic control route rule links", "arrow-right-left",
-               base::BindRepeating(&RemoveRoute, browser, route->host));
-      } else {
-        const std::u16string name =
-            model->group_model()
-                ->GetTabGroup(*GetCurrentSpace(browser))
-                ->visual_data()
-                ->title();
-        action(u"Always Open " + site + u" in " + name,
-               u"air traffic control route rule links space", "arrow-right-left",
-               base::BindRepeating(&RouteSiteToCurrentSpace, browser, url));
-      }
-    }
     command(u"Bookmark Page", u"star favorite", "star",
             IDC_BOOKMARK_THIS_TAB);
     command(u"Split View", u"side by side split screen", "columns-2",
@@ -207,46 +158,6 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
     command(u"Close Tab", u"", "x", IDC_CLOSE_TAB);
     command(u"Move Tab to New Window", u"window split off", "app-window",
             IDC_MOVE_TAB_TO_NEW_WINDOW);
-    // One entry per other space.
-    for (const tab_groups::TabGroupId& id : spaces) {
-      if (tab->GetGroup() == id) {
-        continue;
-      }
-      const std::u16string name =
-          model->group_model()->GetTabGroup(id)->visual_data()->title();
-      action(u"Move Tab to " + name, u"space context", "arrow-right-left",
-             base::BindRepeating(
-                 [](BrowserWindowInterface* b, tab_groups::TabGroupId space) {
-                   TabStripModel* m = b->GetTabStripModel();
-                   if (!m->group_model()->ContainsTabGroup(space) ||
-                       m->active_index() == TabStripModel::kNoTab) {
-                     return;
-                   }
-                   const int index = m->active_index();
-                   if (m->IsTabPinned(index)) {
-                     m->SetTabPinned(index, false);
-                   }
-                   m->AddToExistingGroup({m->active_index()}, space);
-                   m->SetFocusedGroup(space);
-                 },
-                 browser, id));
-    }
-  }
-  for (const tab_groups::TabGroupId& id : spaces) {
-    if (GetCurrentSpace(browser) == id) {
-      continue;
-    }
-    const std::u16string name =
-        model->group_model()->GetTabGroup(id)->visual_data()->title();
-    action(u"Switch to " + name, u"space context", "layers",
-           base::BindRepeating(
-               [](BrowserWindowInterface* b, tab_groups::TabGroupId space) {
-                 if (b->GetTabStripModel()->group_model()->ContainsTabGroup(
-                         space)) {
-                   b->GetTabStripModel()->SetFocusedGroup(space);
-                 }
-               },
-               browser, id));
   }
   return out;
 }

@@ -33,7 +33,7 @@
 #include "chrome/browser/ui/views/mori/mori_commands.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_new_tab.h"
-#include "chrome/browser/ui/views/mori/mori_spaces.h"
+#include "chrome/browser/ui/views/mori/mori_tab_list.h"
 #include "chrome/browser/ui/views/theme_copying_widget.h"
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/omnibox/browser/autocomplete_classifier.h"
@@ -91,7 +91,7 @@ namespace {
 // Zen's.
 constexpr size_t kMaxResults = 10;
 constexpr size_t kMaxCommands = 3;
-// Before anything is typed (Mori 3): the space's other tabs, most recent
+// Before anything is typed (Mori 3): the other tabs, most recent
 // first, then pages from history.
 constexpr size_t kIdleRows = 8;
 constexpr size_t kIdleTabs = 5;
@@ -563,14 +563,11 @@ class CommandBar : public views::View,
     matches_.clear();
     BrowserWindowInterface* browser = browser_view_->browser();
     TabStripModel* model = browser->GetTabStripModel();
-    const std::optional<tab_groups::TabGroupId> space =
-        GetCurrentSpace(browser);
     std::vector<tabs::TabInterface*> tabs;
     for (int i = 0; i < model->count(); ++i) {
       tabs::TabInterface* tab = model->GetTabAtIndex(i);
       const GURL& url = tab->GetContents()->GetLastCommittedURL();
-      if (tab != model->GetActiveTab() && url.SchemeIsHTTPOrHTTPS() &&
-          (!space || tab->IsPinned() || tab->GetGroup() == space)) {
+      if (tab != model->GetActiveTab() && url.SchemeIsHTTPOrHTTPS()) {
         tabs.push_back(tab);
       }
     }
@@ -815,17 +812,13 @@ class CommandBar : public views::View,
       params.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
     } else if (mode_ == CommandBarMode::kNewTab) {
       params.disposition = WindowOpenDisposition::NEW_FOREGROUND_TAB;
-      // New tabs join the space on screen, at its top.
-      params.group = GetCurrentSpace(browser);
+      // New tabs go to the top of the tabs, under the favorites.
       params.tabstrip_index = IndexForNewTab(browser);
     } else {
       params.disposition = WindowOpenDisposition::CURRENT_TAB;
     }
     params.window_action = NavigateParams::WindowAction::kShowWindow;
     Navigate(&params);
-    if (switch_to_tab) {
-      ShowSpaceOfActiveTab(browser);
-    }
   }
 
   void Ask() {

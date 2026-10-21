@@ -42,17 +42,12 @@ GROUPS = {
     ],
     "0005-mori-default-prefs": [
         "chrome/browser/ui/tabs/tab_strip_prefs.cc",
-        "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_pref_names.cc",
         "components/bookmarks/browser/bookmark_utils.cc",
         "components/search_engines/template_url_prepopulate_data.cc",
         "chrome/browser/prefs/session_startup_pref.cc",
         "chrome/browser/ui/toolbar/chrome_location_bar_model_delegate.cc",
         "chrome/browser/ui/toolbar/chrome_location_bar_model_delegate.h",
         "chrome/browser/profiles/profile.cc",
-    ],
-    "0006-mori-spaces": [
-        "chrome/browser/ui/ui_features.cc",
-        "chrome/browser/ui/tabs/tab_strip_model.cc",
     ],
     "0007-mori-sidebar-rows": [
         "chrome/browser/ui/tabs/vertical_tab_strip_state.h",
@@ -87,7 +82,7 @@ GROUPS = {
     "0014-mori-boosts": [
         "chrome/browser/ui/tab_helpers.cc",
     ],
-    "0015-mori-space-wash": [
+    "0015-mori-theme-wash": [
         "chrome/browser/ui/views/frame/themed_background.cc",
     ],
     "0016-mori-links-from-other-apps": [
@@ -186,7 +181,8 @@ GROUPS = {
         "chrome/browser/ui/views/renderer_context_menu/render_view_context_menu_views.cc",
     ],
     "0028-mori-folders": [
-        "chrome/browser/ui/views/tabs/common/tab_group_view.cc",
+        "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.cc",
+        "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h",
     ],
     "0030-mori-tab-animations": [
         "chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.cc",

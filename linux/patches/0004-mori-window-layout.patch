@@ -465,20 +465,44 @@
  #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
  #include "chrome/browser/ui/views/tabs/shared/drop_arrow.h"
  #include "chrome/browser/ui/views/tabs/vertical/top_container_button.h"
-+#include "chrome/browser/ui/views/mori/mori_spaces.h"
++#include "chrome/browser/ui/views/mori/mori_tab_list.h"
  #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.h"
  #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.h"
  #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h"
-@@ -158,6 +159,9 @@
+@@ -147,10 +148,13 @@
+           base::BindRepeating(
+               &VerticalTabStripRegionView::RecordNewTabButtonPressed,
+               base::Unretained(this))));
++  // Mori: the tab list, not this container, fills the sidebar (its new tab
++  // button only shows in the collapsed strip), so clicks between the tabs
++  // reach them rather than a container that looks empty.
+   bottom_button_container_->SetProperty(
+       views::kFlexBehaviorKey,
+       views::FlexSpecification(views::MinimumFlexSizeRule::kPreferred,
+-                               views::MaximumFlexSizeRule::kUnbounded));
++                               views::MaximumFlexSizeRule::kPreferred));
+   bottom_button_container_->SetProperty(
+       views::kMarginsKey,
+       gfx::Insets::TLBR(
+@@ -158,6 +162,9 @@
                LayoutConstant::kVerticalTabStripCollapsedVerticalPadding),
            region_horizontal_padding, 0, region_horizontal_padding));
  
-+  // Mori: the row of spaces at the bottom of the sidebar.
-+  AddChildView(mori::CreateSpaceBar(browser_view->browser()));
++  // Mori: the bar at the bottom of the sidebar (library, assistant).
++  AddChildView(mori::CreateSidebarBar(browser_view->browser()));
 +
    gemini_button_ = AddChildView(std::make_unique<views::View>());
  
    resize_area_ = AddChildView(std::make_unique<views::ResizeArea>(this));
+@@ -713,7 +720,7 @@
+   tab_strip_view()->SetProperty(
+       views::kFlexBehaviorKey,
+       views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToMinimum,
+-                               views::MaximumFlexSizeRule::kPreferred));
++                               views::MaximumFlexSizeRule::kUnbounded));
+   tab_strip_view()->SetProperty(
+       views::kMarginsKey,
+       gfx::Insets::VH(
 --- a/chrome/browser/ui/views/location_bar/location_bar_view.cc
 +++ b/chrome/browser/ui/views/location_bar/location_bar_view.cc
 @@ -35,6 +35,9 @@

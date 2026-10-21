@@ -15,12 +15,11 @@ namespace mori {
 // 0xE000, which the app menu reserves for bookmarks and recent tabs.
 enum CommandId {
   kCommandFirst = 56900,
-  kCommandNewSpace = kCommandFirst,
-  kCommandSleepBackgroundTabs,
+  kCommandSleepBackgroundTabs = kCommandFirst,
   kCommandEditTheme,
   kCommandTogglePin,
-  kCommandSelectSpace1,
-  kCommandSelectSpace9 = kCommandSelectSpace1 + 8,
+  // Mori 3's Clear: closes the tabs that aren't favorites.
+  kCommandArchiveUnpinnedTabs,
   // Ctrl+Tab and Ctrl+Shift+Tab: recent tabs (mori_tab_switcher.h).
   kCommandSwitchRecentTab,
   kCommandSwitchRecentTabBack,
@@ -39,7 +38,7 @@ bool IsMoriCommand(int command_id);
 void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id);
 
 // Mori 3's shortcuts on top of Chromium's (Ctrl+S hides the sidebar,
-// Alt+1-9 picks a space, Ctrl+Shift+C copies the URL, ...). Replaces
+// Ctrl+Shift+C copies the URL, ...). Replaces
 // Chromium's binding where a key has one.
 void ApplyMoriAccelerators(std::vector<AcceleratorMapping>* accelerators);
 

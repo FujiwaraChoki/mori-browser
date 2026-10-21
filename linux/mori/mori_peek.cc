@@ -23,7 +23,7 @@
 #include "chrome/browser/ui/views/mori/mori_window_events.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_overlay.h"
-#include "chrome/browser/ui/views/mori/mori_spaces.h"
+#include "chrome/browser/ui/views/mori/mori_tab_list.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
@@ -359,9 +359,7 @@ class PeekView : public views::View,
     NavigateParams nav(browser, std::move(contents_));
     nav.disposition = disposition;
     if (disposition == WindowOpenDisposition::NEW_FOREGROUND_TAB) {
-      if (const int index = IndexForNewTab(browser); index >= 0) {
-        nav.tabstrip_index = index;
-      }
+      nav.tabstrip_index = IndexForNewTab(browser);
     }
     promoting_ = true;
     Navigate(&nav);

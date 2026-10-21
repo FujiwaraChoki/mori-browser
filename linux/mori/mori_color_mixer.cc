@@ -14,7 +14,7 @@
 namespace mori {
 namespace {
 
-// The sidebar's surfaces are translucent, as in Mori 3, so a space's
+// The sidebar's surfaces are translucent, as in Mori 3, so the theme's
 // gradient wash shows through them; over the plain window they come out as
 // the greys Zen uses.
 struct Palette {

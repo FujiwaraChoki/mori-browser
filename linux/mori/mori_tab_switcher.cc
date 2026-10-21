@@ -14,7 +14,6 @@
 #include "chrome/browser/ui/thumbnails/thumbnail_tab_helper.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/mori/mori_overlay.h"
-#include "chrome/browser/ui/views/mori/mori_spaces.h"
 #include "components/favicon/content/content_favicon_driver.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
@@ -252,18 +251,12 @@ class TabSwitcher : public ui::EventObserver {
   }
 
  private:
-  // Recent tabs of the space on screen (and the favorites), most recent
-  // first.
+  // Recent tabs, most recent first.
   void Start(bool forward) {
     TabStripModel* model = browser_view_->browser()->GetTabStripModel();
-    const std::optional<tab_groups::TabGroupId> space =
-        GetCurrentSpace(browser_view_->browser());
     std::vector<tabs::TabInterface*> tabs;
     for (int i = 0; i < model->count(); ++i) {
-      tabs::TabInterface* tab = model->GetTabAtIndex(i);
-      if (!space || tab->IsPinned() || tab->GetGroup() == space) {
-        tabs.push_back(tab);
-      }
+      tabs.push_back(model->GetTabAtIndex(i));
     }
     std::ranges::stable_sort(tabs, [model](tabs::TabInterface* a,
                                            tabs::TabInterface* b) {

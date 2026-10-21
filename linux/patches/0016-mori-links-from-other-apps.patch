@@ -1,16 +1,15 @@
 --- a/chrome/browser/ui/startup/startup_browser_creator_impl.cc
 +++ b/chrome/browser/ui/startup/startup_browser_creator_impl.cc
-@@ -4,6 +4,9 @@
+@@ -4,6 +4,8 @@
  
  #include "chrome/browser/ui/startup/startup_browser_creator_impl.h"
  
 +#include "chrome/browser/ui/views/mori/mori_little.h"
-+#include "chrome/browser/ui/views/mori/mori_routes.h"
 +
  #include <stddef.h>
  
  #include <algorithm>
-@@ -365,6 +368,8 @@
+@@ -365,6 +367,8 @@
    CHECK(profile_);
  
    bool first_tab = true;
@@ -19,12 +18,11 @@
    bool process_headless_commands = headless::ShouldProcessHeadlessCommands();
    custom_handlers::ProtocolHandlerRegistry* registry =
        ProtocolHandlerRegistryFactory::GetForBrowserContext(profile_);
-@@ -417,6 +422,21 @@
+@@ -417,6 +421,20 @@
                std::move(profile_keepalive)));
        continue;
      }
-+    // Mori: links from other apps open in Little Mori, unless an Air Traffic
-+    // Control rule sends them to a space.
++    // Mori: links from other apps open in Little Mori.
 +    if (process_startup == chrome::startup::IsProcessStartup::kNo &&
 +        !create_new_browser && mori::ShouldOpenInLittle(browser, tab.url)) {
 +#if BUILDFLAG(IS_LINUX)
@@ -41,17 +39,7 @@
      // Active tab overwrites apply only to one tab per launch, and can only
      // happen if there is already a tab open to replace
      if (first_tab && browser->GetTabStripModel()->count() &&
-@@ -457,6 +477,9 @@
- #endif  // BUILDFLAG(ENABLE_RLZ)
- 
-     Navigate(&params);
-+    // Mori: Air Traffic Control sends the page to its site's space.
-+    mori::RouteExternalTab(browser, params.navigated_or_inserted_contents,
-+                           first_tab);
-     first_tab = false;
-   }
-   if (!browser->GetTabStripModel()->GetActiveWebContents() &&
-@@ -469,6 +492,11 @@
+@@ -469,6 +487,11 @@
      }
    }
  

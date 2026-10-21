@@ -4,7 +4,7 @@
  
  #include "chrome/browser/ui/views/frame/themed_background.h"
  
-+#include "chrome/browser/ui/views/mori/mori_space_themes.h"
++#include "chrome/browser/ui/views/mori/mori_themes.h"
 +
  #include <optional>
  
@@ -14,7 +14,7 @@
          GetThemeChoiceInfo(theme_choice, view).second));
    }
 +  // Mori: the current space's gradient over the chrome.
-+  mori::PaintSpaceWash(canvas, view, browser_view);
++  mori::PaintThemeWash(canvas, view, browser_view);
  }
  
  std::optional<SkColor> ThemedBackground::GetBackgroundColor(

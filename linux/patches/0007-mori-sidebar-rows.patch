@@ -16,7 +16,7 @@
  #include "chrome/browser/ui/tabs/tab_strip_model.h"
  #include "chrome/browser/ui/views/frame/browser_view.h"
  #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
-+#include "chrome/browser/ui/views/mori/mori_spaces.h"
++#include "chrome/browser/ui/views/mori/mori_tab_list.h"
  #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
  #include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
  #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
@@ -24,10 +24,10 @@
        views::ScrollView::ScrollWithLayers::kEnabled));
    SetScrollViewProperties(unpinned_tabs_scroll_view_);
  
-+  // Mori: the space header (name, divider, "New Tab") between the favorites
-+  // and the space's tabs. TabStripViewLayout finds it by class name.
++  // Mori: the header ("Add Tab") between the favorites and the tabs.
++  // TabStripViewLayout finds it by class name.
 +  if (IsVerticalOrientation(collection_node_)) {
-+    AddChildView(mori::CreateSpaceHeader(
++    AddChildView(mori::CreateTabListHeader(
 +        collection_node_->GetController()->GetBrowserView()->browser()));
 +  }
 +
@@ -48,11 +48,11 @@
  
    int y = 0;
  
-+  // Mori: the space header (name, divider, "New Tab") sits between the
-+  // favorites and the space's tabs while the sidebar is expanded.
++  // Mori: the header ("Add Tab") sits between the favorites and the tabs
++  // while the sidebar is expanded.
 +  views::View* mori_header = nullptr;
 +  for (views::View* child : tab_strip_view->children()) {
-+    if (child->GetClassName() == std::string_view("MoriSpaceHeader")) {
++    if (child->GetClassName() == std::string_view("MoriTabListHeader")) {
 +      mori_header = child;
 +    }
 +  }
@@ -97,9 +97,21 @@
    // strip is collapsed, tab groups need to draw the group colored line in this
 --- a/chrome/browser/ui/views/tabs/common/tab_group_view_layout.cc
 +++ b/chrome/browser/ui/views/tabs/common/tab_group_view_layout.cc
+@@ -25,7 +25,8 @@
+ #include "ui/views/view_utils.h"
+ 
+ namespace {
+-constexpr int kTabVerticalPadding = 2;
++// Mori: 4px between sidebar rows, as in Mori 3.
++constexpr int kTabVerticalPadding = 4;
+ constexpr int kGroupLineWidth = 2;
+ constexpr int kGroupLineCollapsedLeadingPadding = 6;
+ constexpr int kGroupHeaderHeight = 26;
+--- a/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
++++ b/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
 @@ -4,6 +4,8 @@
  
- #include "chrome/browser/ui/views/tabs/common/tab_group_view_layout.h"
+ #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.h"
  
 +#include "chrome/browser/ui/views/mori/mori_folders.h"
 +
@@ -113,117 +125,67 @@
 -constexpr int kTabVerticalPadding = 2;
 +// Mori: 4px between sidebar rows, as in Mori 3.
 +constexpr int kTabVerticalPadding = 4;
- constexpr int kGroupLineWidth = 2;
- constexpr int kGroupLineCollapsedLeadingPadding = 6;
- constexpr int kGroupHeaderHeight = 26;
-@@ -67,8 +70,14 @@
-     const views::SizeBounds& size_bounds) const {
-   views::ProposedLayout layouts;
-   int width = 0;
--  int height = kGroupHeaderVerticalMargin;
-   auto tab_strip_collapse_state = tab_group_view->GetTabStripCollapseState();
-+  // Mori: a focused group is the space on screen, and Mori's space header
-+  // above the tabs stands in for the group header.
-+  const bool mori_space_header =
-+      tab_group_view->IsGroupFocused() &&
-+      tab_strip_collapse_state ==
-+          tabs::VerticalTabStripCollapseState::kExpanded;
-+  int height = mori_space_header ? 0 : kGroupHeaderVerticalMargin;
+ }  // namespace
  
-   gfx::Rect header_bounds;
-   gfx::Rect group_line_bounds;
-@@ -94,10 +103,13 @@
+ UnpinnedTabContainerViewLayout::UnpinnedTabContainerViewLayout(
+@@ -227,12 +230,45 @@
+   const int horizontal_padding =
+       GetLayoutConstant(LayoutConstant::kVerticalTabStripHorizontalPadding);
  
-   layouts.child_layouts.emplace_back(
-       tab_group_view->group_header_.get(),
--      tab_group_view->group_header_->GetVisible(), header_bounds);
-+      tab_group_view->group_header_->GetVisible() && !mori_space_header,
-+      header_bounds);
- 
--  height +=
--      header_bounds.height() + kGroupHeaderVerticalMargin + kTabVerticalPadding;
-+  if (!mori_space_header) {
-+    height += header_bounds.height() + kGroupHeaderVerticalMargin +
-+              kTabVerticalPadding;
-+  }
-   width = std::max(width, header_bounds.width());
- 
-   // If the tab strip is not collapsed then the group line is below and left
-@@ -116,9 +128,35 @@
- 
-   const bool is_focused = tab_group_view->IsGroupFocused();
- 
-+  // Mori: the space on screen shows its folders: a header above each
-+  // folder's tabs, which are indented, and hidden while it is closed.
++  // Mori: folders (mori_folders.h): a header above each folder's tabs,
++  // which are indented, and hidden while it is closed.
 +  const std::vector<mori::FolderRow> folder_rows =
-+      mori_space_header ? mori::GetFolderRows(tab_group_view)
-+                        : std::vector<mori::FolderRow>();
++      collapse_state == tabs::VerticalTabStripCollapseState::kExpanded
++          ? mori::GetFolderRows(tab_container_view,
++                                tab_container_view->collection_node_)
++          : std::vector<mori::FolderRow>();
 +  size_t row_index = 0;
 +
-   // Layout children in order. Children will have their preferred height and
-   // fill available width.
    for (auto* child : children) {
 +    const mori::FolderRow* folder_row =
 +        row_index < folder_rows.size() ? &folder_rows[row_index] : nullptr;
 +    ++row_index;
 +    if (folder_row && folder_row->header) {
 +      gfx::Rect folder_bounds(
-+          0, height, 0,
++          horizontal_padding, height, 0,
 +          folder_row->header->GetPreferredSize(size_bounds).height());
 +      if (size_bounds.width().is_bounded()) {
-+        folder_bounds.set_width(size_bounds.width().value());
++        folder_bounds.set_width(std::max(
++            0, size_bounds.width().value() - 2 * horizontal_padding));
 +      }
 +      layouts.child_layouts.emplace_back(folder_row->header.get(), true,
 +                                         folder_bounds);
 +      height += folder_bounds.height() + kTabVerticalPadding;
++      width = std::max(width, folder_bounds.right());
 +    }
+     int x =
+         views::AsViewClass<TabGroupView>(child) &&
+                 collapse_state != tabs::VerticalTabStripCollapseState::kExpanded
+             ? 0
+             : horizontal_padding;
 +    if (folder_row && folder_row->hidden) {
 +      layouts.child_layouts.emplace_back(child, false,
-+                                         gfx::Rect(0, height, 0, 0));
++                                         gfx::Rect(x, height, 0, 0));
 +      continue;
 +    }
-     gfx::Rect bounds = gfx::Rect(child->GetPreferredSize(size_bounds));
- 
-     auto drag_data = tab_group_view->GetVisualDataForDraggedView(*child);
-@@ -135,16 +173,25 @@
-     } else if (!is_focused) {
-       child_x = TabGroupView::kTabLeadingPadding;
-     }
 +    if (folder_row) {
-+      child_x += folder_row->indent;
++      x += folder_row->indent;
 +    }
-     bounds.set_x(child_x);
-     // If width is bounded, child views should respect the width constraints
-     // and take up the available width excluding trailing horizontal padding.
-     if (size_bounds.width().is_bounded()) {
-       bounds.set_width(size_bounds.width().value() - bounds.x());
-     }
--    layouts.child_layouts.emplace_back(child, child->GetVisible(), bounds);
-+    // Mori: a row a closed folder hid shows again once it opens.
-+    layouts.child_layouts.emplace_back(
-+        child, folder_row ? true : child->GetVisible(), bounds);
-     height += bounds.height() + kTabVerticalPadding;
-     width = std::max(width, bounds.width());
+     views::SizeBound child_height_bound = size_bounds.height();
+     // In focused mode, pass the scroll viewport height constraint to the child
+     // focused group if the incoming size bounds height is unbounded, so that
+@@ -274,6 +310,11 @@
+     width = std::max(width, bounds.width() + bounds.x());
    }
+ 
 +  for (views::View* header :
-+       mori::GetUnplacedFolderHeaders(tab_group_view, folder_rows)) {
++       mori::GetUnplacedFolderHeaders(tab_container_view, folder_rows)) {
 +    layouts.child_layouts.emplace_back(header, false, gfx::Rect());
 +  }
-   // Remove excess padding.
-   height -= kTabVerticalPadding;
- 
---- a/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
-+++ b/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
-@@ -25,7 +25,8 @@
- #include "ui/views/view_utils.h"
- 
- namespace {
--constexpr int kTabVerticalPadding = 2;
-+// Mori: 4px between sidebar rows, as in Mori 3.
-+constexpr int kTabVerticalPadding = 4;
- }  // namespace
- 
- UnpinnedTabContainerViewLayout::UnpinnedTabContainerViewLayout(
++
+   if (height > 0) {
+     height -= kTabVerticalPadding;
+   }
 --- a/chrome/browser/ui/views/tabs/common/tab_view_vertical_layout.cc
 +++ b/chrome/browser/ui/views/tabs/common/tab_view_vertical_layout.cc
 @@ -189,7 +189,8 @@

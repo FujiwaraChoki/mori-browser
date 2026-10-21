@@ -29,7 +29,7 @@
 #include "chrome/browser/ui/views/mori/mori_window_events.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_overlay.h"
-#include "chrome/browser/ui/views/mori/mori_spaces.h"
+#include "chrome/browser/ui/views/mori/mori_tab_list.h"
 #include "chrome/browser/ui/views/mori/mori_toast.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_node.h"
@@ -628,7 +628,7 @@ class LibraryView : public views::View, public views::TextfieldController {
     close_.Run();
     if (browser && url.is_valid()) {
       chrome::AddTabAt(browser, url, IndexForNewTab(browser),
-                       /*foreground=*/true, GetCurrentSpace(browser));
+                       /*foreground=*/true);
     }
   }
 
