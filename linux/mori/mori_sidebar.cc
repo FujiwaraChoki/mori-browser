@@ -8,11 +8,14 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "base/scoped_multi_source_observation.h"
 #include "base/timer/timer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/themed_background.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
+#include "chrome/browser/ui/views/mori/mori_themes.h"
 #include "chrome/browser/ui/views/mori/mori_window_events.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/animation/linear_animation.h"
@@ -26,6 +29,8 @@
 #include "ui/gfx/geometry/point.h"
 #include "ui/views/animation/animation_delegate_views.h"
 #include "ui/views/event_monitor.h"
+#include "ui/views/view_class_properties.h"
+#include "ui/views/view_observer.h"
 #include "ui/views/widget/widget.h"
 
 namespace mori {
@@ -165,6 +170,41 @@ class SidebarState : public ui::EventObserver,
   void AnimationCanceled(const gfx::Animation* animation) override {}
 
  private:
+  // AnimationDelegateViews owns a separate ViewObserver for its animation
+  // runner. Keep geometry/lifetime observation separate from that observer.
+  class GeometryObserver : public views::ViewObserver {
+   public:
+    explicit GeometryObserver(SidebarState* state) : state_(state) {}
+
+    void Observe(views::View* view) { observations_.AddObservation(view); }
+
+    void OnViewBoundsChanged(views::View* view) override {
+      if (view != state_->backdrop_) {
+        state_->UpdateBackdropBounds();
+      }
+    }
+
+    void OnViewVisibilityChanged(views::View* view,
+                                 views::View* starting_from,
+                                 bool is_visible) override {
+      if (view != state_->backdrop_) {
+        state_->UpdateBackdropBounds();
+      }
+    }
+
+    void OnViewIsDeleting(views::View* view) override {
+      observations_.RemoveObservation(view);
+      if (view == state_->backdrop_) {
+        state_->backdrop_ = nullptr;
+      }
+    }
+
+   private:
+    const raw_ptr<SidebarState> state_;
+    base::ScopedMultiSourceObservation<views::View, views::ViewObserver>
+        observations_{this};
+  };
+
   int SidebarWidth() const {
     auto* state =
         tabs::VerticalTabStripStateController::From(browser_view_->browser());
@@ -310,6 +350,26 @@ class SidebarState : public ui::EventObserver,
         view->layer()->SetTransform(transform);
       }
     }
+    if (backdrop_ && backdrop_->layer()) {
+      backdrop_->layer()->SetTransform(transform);
+    }
+  }
+
+  void UpdateBackdropBounds() {
+    if (!backdrop_) {
+      return;
+    }
+    views::View* tabs = TabsRegion();
+    const bool visible = peeking_ && tabs && tabs->GetVisible() &&
+                         !tabs->bounds().IsEmpty();
+    backdrop_->SetVisible(visible);
+    if (visible) {
+      const gfx::Rect bounds = CardBounds();
+      if (backdrop_->bounds() != bounds) {
+        backdrop_->SetBoundsRect(bounds);
+        backdrop_->SchedulePaint();
+      }
+    }
   }
 
   views::View* TabsRegion() const {
@@ -343,6 +403,30 @@ class SidebarState : public ui::EventObserver,
     views::View* top = browser_view_->top_container();
     views::View* tabs = TabsRegion();
     if (peeking_) {
+      if (!backdrop_) {
+        // One continuous surface underneath both pieces of the floating card.
+        // Their window-corner cutouts and translucent backgrounds must never
+        // expose the page or give the toolbar a different tint from the tabs.
+        auto backdrop = std::make_unique<views::View>();
+        backdrop->SetProperty(views::kViewIgnoredByLayoutKey, true);
+        backdrop->SetCanProcessEventsWithinSubtree(false);
+        backdrop->SetBackground(std::make_unique<ThemedBackground>(
+            browser_view_, ThemedBackground::kFrameTheme));
+        backdrop->SetPaintToLayer();
+        backdrop->layer()->SetFillsBoundsOpaquely(false);
+        backdrop->layer()->SetRoundedCornerRadius(
+            gfx::RoundedCornersF(kFloatingRadius));
+        backdrop_ = browser_view_->AddChildView(std::move(backdrop));
+        geometry_observer_.Observe(backdrop_);
+        for (views::View* view : PeekViews()) {
+          geometry_observer_.Observe(view);
+        }
+      }
+      UpdateBackdropBounds();
+      browser_view_->ReorderChildView(backdrop_, browser_view_->children().size());
+      if (tabs && tabs->parent() == browser_view_) {
+        browser_view_->ReorderChildView(tabs, browser_view_->children().size());
+      }
       if (top && !top->layer()) {
         top->SetPaintToLayer();
         top->layer()->SetFillsBoundsOpaquely(false);
@@ -350,6 +434,9 @@ class SidebarState : public ui::EventObserver,
       if (top && top->parent() == browser_view_) {
         browser_view_->ReorderChildView(top, browser_view_->children().size());
       }
+    }
+    if (backdrop_ && !peeking_) {
+      backdrop_->SetVisible(false);
     }
     const float radius = peeking_ ? kFloatingRadius : 0;
     if (top && top->layer()) {
@@ -363,10 +450,15 @@ class SidebarState : public ui::EventObserver,
     // macOS: the traffic lights go with the sidebar, as in Arc.
     SetWindowButtonsVisible(browser_view_->GetWidget(), !hidden_ || peeking_);
     browser_view_->InvalidateLayout();
-    browser_view_->SchedulePaint();
+    // Moving a view without resizing it can reuse its old backing. Repaint the
+    // layered descendants too so the toolbar and tabs sample the wash at their
+    // new layout positions when switching between docked and floating modes.
+    RepaintThemeWash(browser_view_->browser());
   }
 
   raw_ptr<BrowserView> browser_view_;
+  raw_ptr<views::View> backdrop_ = nullptr;
+  GeometryObserver geometry_observer_{this};
   bool hidden_ = false;
   bool peeking_ = false;
   // Peeking, whether it's (sliding) in, and how far in it is (0 to 1).

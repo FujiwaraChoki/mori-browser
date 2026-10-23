@@ -34,7 +34,6 @@ struct Palette {
   SkColor menu_separator;
   SkColor menu_icon;
   SkColor menu_secondary;
-  SkColor toolbar_icon;           // Zen's toolbar greys, as in Mori 3.
   SkColor toolbar_icon_disabled;
 };
 
@@ -56,8 +55,7 @@ constexpr Palette kDark = {
     .menu_separator = SkColorSetRGB(0x31, 0x31, 0x31),
     .menu_icon = SkColorSetRGB(0x9B, 0x9B, 0x9B),
     .menu_secondary = SkColorSetRGB(0x8E, 0x8F, 0x90),
-    .toolbar_icon = SkColorSetRGB(0xB9, 0xB9, 0xB9),
-    .toolbar_icon_disabled = SkColorSetRGB(0x5F, 0x5F, 0x5F),
+    .toolbar_icon_disabled = SkColorSetRGB(0xCC, 0xCD, 0xCF),
 };
 
 constexpr Palette kLight = {
@@ -79,8 +77,7 @@ constexpr Palette kLight = {
     .menu_separator = SkColorSetRGB(0xE0, 0xE0, 0xE0),
     .menu_icon = SkColorSetRGB(0x76, 0x77, 0x79),
     .menu_secondary = SkColorSetRGB(0x6B, 0x6D, 0x6F),
-    .toolbar_icon = SkColorSetRGB(0x69, 0x69, 0x6C),
-    .toolbar_icon_disabled = SkColorSetRGB(0xAE, 0xAE, 0xB0),
+    .toolbar_icon_disabled = SkColorSetRGB(0x48, 0x4A, 0x4D),
 };
 
 }  // namespace
@@ -121,8 +118,11 @@ void AddMoriColorMixer(ui::ColorProvider* provider,
   mixer[ui::kColorSeparator] = {p.menu_separator};
   mixer[ui::kColorMenuIcon] = {p.menu_icon};
 
-  mixer[kColorToolbarButtonIcon] = {p.toolbar_icon};
-  mixer[kColorToolbarButtonIconDefault] = {p.toolbar_icon};
+  // Chrome sits on the tinted wash, not just p.window. Use the text
+  // foreground for enabled icons and a distinct, contrast-tested disabled
+  // colour that remains visible across Mori's light and dark gradients.
+  mixer[kColorToolbarButtonIcon] = {p.foreground};
+  mixer[kColorToolbarButtonIconDefault] = {p.foreground};
   mixer[kColorToolbarButtonIconHovered] = {p.foreground};
   mixer[kColorToolbarButtonIconPressed] = {p.foreground};
   mixer[kColorToolbarButtonIconInactive] = {p.toolbar_icon_disabled};
@@ -171,8 +171,8 @@ void AddMoriColorMixer(ui::ColorProvider* provider,
   // would show.
   mixer[kColorOmniboxIconBackground] = {SK_ColorTRANSPARENT};
   mixer[kColorOmniboxIconBackgroundTonal] = {SK_ColorTRANSPARENT};
-  mixer[kColorOmniboxIconForeground] = {p.toolbar_icon};
-  mixer[kColorOmniboxIconForegroundTonal] = {p.toolbar_icon};
+  mixer[kColorOmniboxIconForeground] = {p.foreground};
+  mixer[kColorOmniboxIconForegroundTonal] = {p.foreground};
   mixer[kColorLocationBarBackground] = {p.field};
   mixer[kColorLocationBarBackgroundHovered] = {p.field_hover};
   mixer[kColorOmniboxResultsBackground] = {p.popover};

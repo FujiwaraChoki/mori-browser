@@ -10,8 +10,8 @@ use anyhow::{Context as _, bail};
 use serde_json::Value;
 
 use super::{
-    BrowserKind, Contents, DbCopy, HISTORY_LIMIT, Imported, ImportedBookmark, ImportedSpace, ImportedTab,
-    ImportedVisit, Source, Step, is_importable_url, read_json_file,
+    BrowserKind, Contents, DbCopy, HISTORY_LIMIT, Imported, ImportedBookmark, ImportedCookie, ImportedSpace,
+    ImportedTab, ImportedVisit, Source, Step, cookies, is_importable_url, read_json_file,
 };
 
 /// Seconds between 1601-01-01 (Chromium's epoch) and 1970-01-01.
@@ -51,6 +51,7 @@ pub(super) fn detect(home: &Path) -> Vec<Source> {
             let contents = Contents {
                 bookmarks: path.join("Bookmarks").is_file(),
                 history: path.join("History").is_file(),
+                cookies: cookies_db(&path).is_some(),
                 tabs: latest_session(&path).is_some(),
             };
             out.push(Source {
@@ -110,6 +111,16 @@ pub(super) fn read(source: &Source, step: Step, out: &mut Imported) -> anyhow::R
             let db = DbCopy::open(&source.path.join("History"))?;
             out.history = read_history(db.conn())?;
         }
+        Step::Cookies => {
+            let path = cookies_db(&source.path).context("no cookie database")?;
+            let db = DbCopy::open(&path)?;
+            let crypto = cookies::ChromiumCrypto::for_browser(source.kind);
+            let (found, locked) = read_cookies(db.conn(), &crypto, crate::paths::now())?;
+            if locked {
+                out.problems.push("Couldn't unlock cookies".into());
+            }
+            out.cookies = found;
+        }
         Step::Tabs => {
             let path = latest_session(&source.path).context("no session file")?;
             let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
@@ -126,6 +137,13 @@ pub(super) fn read(source: &Source, step: Step, out: &mut Imported) -> anyhow::R
         }
     }
     Ok(())
+}
+
+/// `Network/Cookies` (Chrome 96+), else the older `Cookies` file.
+fn cookies_db(profile: &Path) -> Option<PathBuf> {
+    [profile.join("Network").join("Cookies"), profile.join("Cookies")]
+        .into_iter()
+        .find(|p| p.is_file())
 }
 
 fn webkit_to_unix(micros: f64) -> f64 {
@@ -182,6 +200,96 @@ fn read_history(conn: &rusqlite::Connection) -> anyhow::Result<Vec<ImportedVisit
         })
     })?;
     Ok(rows.filter_map(Result::ok).filter(|v| is_importable_url(&v.url)).collect())
+}
+
+/// Cookies from a Chrome-family `cookies` table. The bool is true when
+/// encrypted values were present and none of them opened (the keyring or
+/// keychain didn't yield the password). Expired cookies are dropped.
+/// Partitioned cookies (CHIPS) are skipped: Mori's jar has no partition.
+fn read_cookies(
+    conn: &rusqlite::Connection,
+    crypto: &cookies::ChromiumCrypto,
+    now: f64,
+) -> anyhow::Result<(Vec<ImportedCookie>, bool)> {
+    use std::collections::HashMap;
+
+    let cols = cookies::column_names(conn, "cookies")?;
+    for required in ["host_key", "name", "value", "path", "expires_utc"] {
+        if !cookies::has_column(&cols, required) {
+            bail!("cookies table is missing {required}");
+        }
+    }
+    let sql = format!(
+        "SELECT host_key, name, value, path, expires_utc, {enc}, {secure}, {http}, {samesite}, {expires}, {partition} \
+         FROM cookies",
+        enc = cookies::sql_col(&cols, "encrypted_value", "X''"),
+        secure = cookies::sql_col(&cols, "is_secure", "0"),
+        http = cookies::sql_col(&cols, "is_httponly", "0"),
+        samesite = cookies::sql_col(&cols, "samesite", "-1"),
+        expires = cookies::sql_col(&cols, "has_expires", "1"),
+        partition = cookies::sql_col(&cols, "top_frame_site_key", "''"),
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, i64>(4)?,
+            // Empty `encrypted_value` is sometimes text, sometimes a blob.
+            r.get::<_, Vec<u8>>(5).or_else(|_| r.get::<_, String>(5).map(String::into_bytes))?,
+            r.get::<_, i64>(6)?,
+            r.get::<_, i64>(7)?,
+            r.get::<_, i64>(8)?,
+            r.get::<_, i64>(9)?,
+            r.get::<_, String>(10)?,
+        ))
+    })?;
+    let mut saw_encrypted = false;
+    let mut decrypted_any = false;
+    let mut found: HashMap<(String, String, String), ImportedCookie> = HashMap::new();
+    for row in rows.filter_map(Result::ok) {
+        let (host, name, plain, path, expires_utc, encrypted, secure_i, http_i, samesite, has_expires, partition) = row;
+        if host.is_empty() || name.is_empty() || !partition.is_empty() {
+            continue;
+        }
+        let secure = secure_i != 0;
+        let value = if encrypted.is_empty() {
+            plain
+        } else {
+            saw_encrypted = true;
+            match crypto.decrypt(&encrypted) {
+                Some(value) => {
+                    decrypted_any = true;
+                    value
+                }
+                None => continue,
+            }
+        };
+        let session = has_expires == 0 || expires_utc <= 0;
+        let expires = if session {
+            None
+        } else {
+            let unix = webkit_to_unix(expires_utc as f64);
+            if unix <= now {
+                continue;
+            }
+            Some(unix)
+        };
+        let path = if path.is_empty() { "/".to_string() } else { path };
+        found.insert((host.clone(), name.clone(), path.clone()), ImportedCookie {
+            host,
+            name,
+            value,
+            path,
+            expires,
+            secure,
+            http_only: http_i != 0,
+            same_site: cookies::same_site(samesite, secure),
+        });
+    }
+    Ok((found.into_values().collect(), saw_encrypted && !decrypted_any))
 }
 
 /// The newest session file: `Sessions/Session_<time>` (Chrome 85+), else
@@ -593,12 +701,58 @@ mod tests {
             (BrowserKind::Chrome, "Personal"),
             (BrowserKind::Chromium, "Default")
         ]);
-        assert_eq!(found[0].contents, Contents { bookmarks: false, history: true, tabs: true });
-        assert_eq!(found[1].contents, Contents { bookmarks: true, history: false, tabs: false });
+        assert_eq!(found[0].contents, Contents { bookmarks: false, history: true, cookies: false, tabs: true });
+        assert_eq!(found[1].contents, Contents { bookmarks: true, history: false, cookies: false, tabs: false });
         assert!(
             latest_session(&found[0].path)
                 .unwrap()
                 .ends_with("Session_13436651453816365")
         );
+    }
+
+    #[test]
+    fn cookies_keep_scope_and_skip_what_cannot_be_used() {
+        let mut tree = Tree::new();
+        let path = tree.path("Cookies");
+        let future = ((2_000_000_000.0 + WEBKIT_EPOCH_OFFSET) * 1e6) as i64;
+        let past = ((1_000_000_000.0 + WEBKIT_EPOCH_OFFSET) * 1e6) as i64;
+        // v10 / peanuts → "session=abc", from the decrypt test vector.
+        let encrypted = format!("X'763130{}'", "816fe85c8663fc1e0def28e6975b63d7");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(&format!(
+                "CREATE TABLE cookies(
+                    host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, path TEXT,
+                    expires_utc INTEGER, is_secure INTEGER, is_httponly INTEGER, samesite INTEGER,
+                    has_expires INTEGER, top_frame_site_key TEXT);
+                 INSERT INTO cookies VALUES('.Example.com','sid','',{encrypted},'/app',{future},1,1,1,1,'');
+                 INSERT INTO cookies VALUES('accounts.example.com','host','plain','', '/',0,0,0,2,0,'');
+                 INSERT INTO cookies VALUES('.old.test','gone','x','','/',{past},0,0,1,1,'');
+                 INSERT INTO cookies VALUES('.part.test','p','x','','/',{future},1,0,0,1,'https://example.com');
+                 INSERT INTO cookies VALUES('.locked.test','no','',X'76313100','/',{future},1,0,-1,1,'');",
+            ))
+            .unwrap();
+        }
+        tree.track(&path);
+        let db = DbCopy::open(&path).unwrap();
+        let crypto = super::super::cookies::ChromiumCrypto::new(None, false);
+        let (found, locked) = read_cookies(db.conn(), &crypto, 1_500_000_000.0).unwrap();
+        assert!(!locked, "the plaintext and v10 cookies opened");
+        let mut by_name: std::collections::HashMap<_, _> = found.into_iter().map(|c| (c.name.clone(), c)).collect();
+        assert_eq!(by_name.len(), 2, "expired, partitioned and undecryptable rows are dropped");
+        let sid = by_name.remove("sid").unwrap();
+        assert_eq!((sid.host.as_str(), sid.value.as_str(), sid.path.as_str(), sid.secure, sid.http_only), (
+            ".Example.com",
+            "session=abc",
+            "/app",
+            true,
+            true,
+        ));
+        assert_eq!(sid.same_site, super::super::SameSite::Lax);
+        assert!(sid.expires.is_some());
+        let host = by_name.remove("host").unwrap();
+        assert_eq!(host.value, "plain");
+        assert_eq!(host.expires, None, "a session cookie has no expiry");
+        assert_eq!(host.same_site, super::super::SameSite::Strict);
     }
 }

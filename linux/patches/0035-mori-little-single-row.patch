@@ -1,0 +1,54 @@
+--- a/chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.cc
+@@ -5,6 +5,8 @@
+ #include "chrome/browser/ui/views/frame/layout/browser_view_popup_layout_impl.h"
+ 
+ #include "chrome/browser/ui/views/frame/multi_contents_view.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/mori/mori_little.h"
+ #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+ #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
+ #include "ui/views/controls/separator.h"
+@@ -115,9 +117,13 @@
+ 
+   // Layout starts beneath the caption buttons because title is laid out by the
+   // OS in popup mode.
+-  params.SetTop(base::ClampCeil(
+-      std::max(params.leading_exclusion.ContentWithPadding().height(),
+-               params.trailing_exclusion.ContentWithPadding().height())));
++  // Little Mori draws navigation beside the traffic lights in this same row.
++  // Ordinary popups still need the OS-owned caption row above their toolbar.
++  if (!mori::IsLittleWindow(static_cast<BrowserView*>(views().browser_view.get())->browser())) {
++    params.SetTop(base::ClampCeil(
++        std::max(params.leading_exclusion.ContentWithPadding().height(),
++                 params.trailing_exclusion.ContentWithPadding().height())));
++  }
+ 
+   // Lay out the standard toolbar if present. This is used in tab fullscreen
+   // when custom tabs are present.
+--- a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
++++ b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
+@@ -267,6 +267,13 @@
+ void BrowserNativeWidgetMac::GetWindowFrameTitlebarHeight(
+     bool* override_titlebar_height,
+     float* titlebar_height) {
++  // Cocoa asks during window construction, before toolbar measurement is ready.
++  // Use the final row height so the traffic lights are centred from first paint.
++  if (browser_view_ && mori::IsLittleWindow(browser_view_->browser())) {
++    *override_titlebar_height = true;
++    *titlebar_height = mori::kLittleHeaderHeight;
++    return;
++  }
+   if (browser_view_ && browser_view_->browser_widget() &&
+       browser_view_->browser_widget()->GetFrameView()) {
+     *override_titlebar_height = true;
+@@ -276,7 +283,8 @@
+         std::max(top_element_info.tabstrip_preferred_height,
+                  top_element_info.toolbar_minimum_height) +
+         browser_view_->browser_widget()->GetFrameView()->GetTopInset(true);
+-    if (!browser_view_->ShouldDrawTabStrip()) {
++    if (!browser_view_->ShouldDrawTabStrip() &&
++        !mori::IsLittleWindow(browser_view_->browser())) {
+       *titlebar_height += kWebAppMenuMargin * 2;
+     }
+   } else {

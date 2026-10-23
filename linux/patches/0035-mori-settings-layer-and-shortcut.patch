@@ -1,0 +1,18 @@
+--- a/chrome/browser/app_controller_mac.mm
++++ b/chrome/browser/app_controller_mac.mm
+@@ -2097,12 +2097,9 @@
+     // Failed to load profile, show Profile Picker instead.
+     return;
+   }
+-  // Re-use an existing browser, or create a new one.
+-  if (BrowserWindowInterface* browser = ActivateBrowser(profile)) {
+-    chrome::ShowSettings(browser);
+-  } else {
+-    chrome::OpenOptionsWindow(profile);
+-  }
++  // Mori: the app menu and Cmd+, use the same settings command as the toolbar.
++  // Create a window too when Settings is chosen with no browser windows open.
++  chrome::ExecuteCommand(ActivateOrCreateBrowser(profile), IDC_OPTIONS);
+ }
+ 
+ - (IBAction)orderFrontStandardAboutPanel:(id)sender {

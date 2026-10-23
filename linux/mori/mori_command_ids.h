@@ -31,11 +31,16 @@ enum CommandId {
   kCommandBoostSite,
   // Ctrl+Shift+K: the assistant panel.
   kCommandToggleAssistant,
-  kCommandLast = kCommandToggleAssistant,
+  kCommandNewFolder,
+  kCommandLast = kCommandNewFolder,
 };
 
 bool IsMoriCommand(int command_id);
 void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id);
+
+// Handles Close Tab when its selection contains pins. Pins keep their sidebar
+// entries; closing the active pin switches away and unloads its page.
+bool HandlePinnedTabClose(BrowserWindowInterface* browser);
 
 // Mori 3's shortcuts on top of Chromium's (Ctrl+S hides the sidebar,
 // Ctrl+Shift+C copies the URL, ...). Replaces

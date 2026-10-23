@@ -28,6 +28,7 @@
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/views/mori/mori_assistant.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
+#include "chrome/browser/ui/views/mori/mori_folders.h"
 #include "chrome/browser/ui/views/mori/mori_little.h"
 #include "chrome/browser/ui/views/mori/mori_new_tab.h"
 #include "chrome/browser/ui/views/mori/mori_sidebar.h"
@@ -152,7 +153,7 @@ class MoriTabListHeader : public views::View, public TabStripModelObserver {
 
  public:
   explicit MoriTabListHeader(BrowserWindowInterface* browser)
-      : browser_(browser) {
+      : browser_(browser), model_(browser->GetTabStripModel()) {
     SetLayoutManager(std::make_unique<views::BoxLayout>(
         views::BoxLayout::Orientation::kVertical));
     separator_ = AddChildView(std::make_unique<FavoritesSeparator>());
@@ -162,11 +163,18 @@ class MoriTabListHeader : public views::View, public TabStripModelObserver {
           chrome::ExecuteCommand(browser, IDC_NEW_TAB);
         },
         browser)));
-    browser_->GetTabStripModel()->AddObserver(this);
+    model_->AddObserver(this);
     Update();
   }
 
+  ~MoriTabListHeader() override {
+    if (model_) {
+      model_->RemoveObserver(this);
+    }
+  }
+
   // TabStripModelObserver:
+  void OnTabStripModelDestroyed(TabStripModel* model) override { model_ = nullptr; }
   void OnTabStripModelChanged(TabStripModel* tab_strip_model,
                               const TabStripModelChange& change,
                               const TabStripSelectionChange& selection) override {
@@ -180,18 +188,17 @@ class MoriTabListHeader : public views::View, public TabStripModelObserver {
 
  private:
   void Update() {
-    // Mori 3: the hairline 6px under the favorites (the tab strip already
-    // adds 8px there, so it sits at its top) and "Add Tab" 8px under it;
-    // without favorites, "Add Tab" sits 4px under the address field.
-    const bool has_favorites =
-        browser_->GetTabStripModel()->IndexOfFirstNonPinnedTab() > 0;
-    separator_->SetVisible(has_favorites);
+    // Separate saved folders from Add Tab and the ordinary tabs below it.
+    const bool has_saved_items = model_ &&
+        (model_->IndexOfFirstNonPinnedTab() > 0 || !ListFolders(browser_).empty());
+    separator_->SetVisible(has_saved_items);
     add_tab_->SetProperty(views::kMarginsKey,
-                          gfx::Insets::TLBR(has_favorites ? 8 : 4, 0, 0, 0));
+                          gfx::Insets::TLBR(has_saved_items ? 8 : 4, 0, 0, 0));
     InvalidateLayout();
   }
 
   raw_ptr<BrowserWindowInterface> browser_;
+  raw_ptr<TabStripModel> model_ = nullptr;
   raw_ptr<FavoritesSeparator> separator_ = nullptr;
   raw_ptr<views::View> add_tab_ = nullptr;
 };
@@ -351,7 +358,7 @@ class SidebarBar : public views::View,
   }
 
   // Arc's auto-archive (Mori 3's default of 24 hours): tabs nobody looked
-  // at for a day close. Favorites, sound and the tab on screen stay; closed
+  // at for a day close. Favorites, folder tabs, sound and the active tab stay; closed
   // tabs stay in History and Reopen Closed Tab.
   void ArchiveIdleTabs() {
     TabStripModel* model = browser_->GetTabStripModel();
@@ -364,7 +371,7 @@ class SidebarBar : public views::View,
     for (int i = 0; i < model->count(); ++i) {
       tabs::TabInterface* tab = model->GetTabAtIndex(i);
       content::WebContents* contents = tab->GetContents();
-      if (i == model->active_index() || tab->IsPinned() || tab->IsSplit() ||
+      if (i == model->active_index() || tab->IsPinned() || GetTabFolder(tab) || tab->IsSplit() ||
           !contents || contents->IsCurrentlyAudible() ||
           !contents->GetLastCommittedURL().SchemeIsHTTPOrHTTPS() ||
           contents->GetLastActiveTime() > cutoff) {
@@ -397,14 +404,16 @@ END_METADATA
 }  // namespace
 
 int IndexForNewTab(BrowserWindowInterface* browser) {
-  return browser->GetTabStripModel()->IndexOfFirstNonPinnedTab();
+  return IndexAfterFolders(browser);
 }
 
 void ArchiveUnpinnedTabs(BrowserWindowInterface* browser) {
   TabStripModel* model = browser->GetTabStripModel();
   std::vector<tabs::TabHandle> old_tabs;
   for (int i = model->IndexOfFirstNonPinnedTab(); i < model->count(); ++i) {
-    old_tabs.push_back(model->GetTabAtIndex(i)->GetHandle());
+    if (!GetTabFolder(model->GetTabAtIndex(i))) {
+      old_tabs.push_back(model->GetTabAtIndex(i)->GetHandle());
+    }
   }
   if (old_tabs.empty()) {
     return;

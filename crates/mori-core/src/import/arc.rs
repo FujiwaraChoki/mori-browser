@@ -39,6 +39,7 @@ pub(super) fn detect(home: &Path) -> Vec<Source> {
             contents: Contents {
                 bookmarks: false,
                 history: false,
+                cookies: false,
                 tabs: true,
             },
         })

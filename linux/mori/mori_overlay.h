@@ -10,6 +10,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/views/view_tracker.h"
 #include "ui/views/widget/widget_observer.h"
 
 class BrowserView;
@@ -25,14 +26,24 @@ class Widget;
 
 namespace mori {
 
+// Place a TYPE_CONTROL child widget using bounds in BrowserView coordinates.
+// These widgets take parent-relative bounds, unlike top-level/popup widgets.
+void PlaceChildWidget(BrowserView* browser_view,
+                      views::Widget* widget,
+                      const gfx::Rect& bounds);
+
 class Overlay : public views::WidgetObserver {
  public:
+  // Page content and sheets share the browser compositor below floating chrome.
+  enum class Layer { kWindow, kPageContent, kPageSheet };
+
   Overlay(BrowserView* browser_view,
           std::unique_ptr<views::View> contents,
-          const char* name);
+          const char* name,
+          Layer layer = Layer::kWindow);
   ~Overlay() override;
 
-  views::View* contents() { return contents_; }
+  views::View* contents() { return contents_.view(); }
   bool IsVisible() const;
   // `bounds` in the BrowserView's coordinates.
   void Show(const gfx::Rect& bounds);
@@ -44,7 +55,8 @@ class Overlay : public views::WidgetObserver {
  private:
   raw_ptr<BrowserView> browser_view_;
   std::unique_ptr<views::Widget> widget_;
-  raw_ptr<views::View> contents_ = nullptr;
+  views::ViewTracker contents_;
+  views::ViewTracker page_host_;
   base::ScopedObservation<views::Widget, views::WidgetObserver> observation_{
       this};
 };

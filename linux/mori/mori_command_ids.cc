@@ -7,6 +7,7 @@
 #include "chrome/browser/resource_coordinator/lifecycle_unit_state.mojom.h"
 #include "chrome/browser/resource_coordinator/tab_lifecycle_unit_external.h"
 #include "chrome/browser/ui/accelerator_table.h"
+#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
@@ -18,6 +19,7 @@
 #include "chrome/browser/ui/views/mori/mori_boosts.h"
 #include "chrome/browser/ui/views/mori/mori_cheatsheet.h"
 #include "chrome/browser/ui/views/mori/mori_peek.h"
+#include "chrome/browser/ui/views/mori/mori_folders.h"
 #include "chrome/browser/ui/views/mori/mori_settings.h"
 #include "chrome/browser/ui/views/mori/mori_tab_list.h"
 #include "chrome/browser/ui/views/mori/mori_tab_switcher.h"
@@ -94,7 +96,8 @@ constexpr AcceleratorMapping kMoriAccelerators[] = {
     {ui::VKEY_8, kAlt, IDC_SELECT_TAB_7},
     {ui::VKEY_9, kAlt, IDC_SELECT_LAST_TAB},
 #endif
-    // Tabs.
+    // Tabs: Ctrl+N shares the new-tab flow with Ctrl+T.
+    {ui::VKEY_N, kCtrl, IDC_NEW_TAB},
     {ui::VKEY_DOWN, kCtrl | kAlt, IDC_SELECT_NEXT_TAB},
     {ui::VKEY_UP, kCtrl | kAlt, IDC_SELECT_PREVIOUS_TAB},
     {ui::VKEY_P, kCtrl | kShift, kCommandTogglePin},
@@ -129,8 +132,69 @@ bool IsMoriCommand(int command_id) {
   return command_id >= kCommandFirst && command_id <= kCommandLast;
 }
 
+bool HandlePinnedTabClose(BrowserWindowInterface* browser) {
+  if (browser->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
+    return false;
+  }
+  TabStripModel* model = browser->GetTabStripModel();
+  const int index = model->active_index();
+  if (index == TabStripModel::kNoTab) {
+    return false;
+  }
+
+  if (model->IsTabPinned(index)) {
+    const tabs::TabHandle pin = model->GetTabAtIndex(index)->GetHandle();
+    // Select first: Chromium cannot discard the foreground tab. Use a real
+    // blank tab for the last pin, rather than Mori's new-tab launcher overlay.
+    if (model->count() == 1) {
+      chrome::NewTab(browser, NewTabTypes::kNewTabCommand);
+    } else {
+      model->ActivateTabAt((index + 1) % model->count(),
+                          TabStripUserGestureDetails(
+                              TabStripUserGestureDetails::GestureType::kKeyboard));
+    }
+    if (tabs::TabInterface* tab = pin.Get()) {
+      if (auto* lifecycle =
+              resource_coordinator::TabLifecycleUnitExternal::FromWebContents(
+                  tab->GetContents())) {
+        lifecycle->DiscardTab(mojom::LifecycleUnitDiscardReason::EXTERNAL);
+      }
+    }
+    return true;
+  }
+
+  // A mixed multi-selection must not let Chromium's CloseSelectedTabs remove
+  // pins alongside ordinary tabs. Snapshot handles before any close mutates it.
+  bool has_pin = false;
+  std::vector<tabs::TabHandle> unpinned;
+  for (const tabs::TabInterface* tab : model->selection_model().selected_tabs()) {
+    if (tab->IsPinned()) {
+      has_pin = true;
+    } else {
+      unpinned.push_back(tab->GetHandle());
+    }
+  }
+  if (!has_pin) {
+    return false;
+  }
+  for (const tabs::TabHandle& handle : unpinned) {
+    if (tabs::TabInterface* tab = handle.Get()) {
+      const int tab_index = model->GetIndexOfTab(tab);
+      if (tab_index != TabStripModel::kNoTab && !model->IsTabPinned(tab_index)) {
+        model->CloseWebContentsAt(tab_index,
+                                 TabCloseTypes::CLOSE_USER_GESTURE |
+                                     TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
+      }
+    }
+  }
+  return true;
+}
+
 void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id) {
   switch (command_id) {
+    case kCommandNewFolder:
+      NewFolder(browser);
+      break;
     case kCommandSleepBackgroundTabs:
       SleepBackgroundTabs(browser);
       break;

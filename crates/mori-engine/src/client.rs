@@ -13,6 +13,17 @@ use std::{
 
 use cef::*;
 
+// CEF's native event and window types differ by OS. The handlers below
+// only need the parameter to exist; Mori reads the cross-platform fields.
+#[cfg(target_os = "macos")]
+type OsKeyEvent<'a> = *mut u8;
+#[cfg(not(target_os = "macos"))]
+type OsKeyEvent<'a> = Option<&'a mut cef::sys::XEvent>;
+#[cfg(target_os = "macos")]
+type OsCursor = *mut u8;
+#[cfg(not(target_os = "macos"))]
+type OsCursor = ::std::os::raw::c_ulong;
+
 use crate::view::{
     AuthId, AuthRequest, CertErrorId, CertificateError, ContextMenuInfo, CursorKind, DialogId,
     DialogKind, Disposition, Frame, JsDialog, PendingPermission, PermissionId, PermissionKind,
@@ -434,7 +445,7 @@ wrap_display_handler! {
         fn on_cursor_change(
             &self,
             _browser: Option<&mut Browser>,
-            _cursor: ::std::os::raw::c_ulong,
+            _cursor: OsCursor,
             type_: CursorType,
             _custom_cursor_info: Option<&CursorInfo>,
         ) -> ::std::os::raw::c_int {
@@ -617,7 +628,14 @@ wrap_life_span_handler! {
             });
             if let Some(info) = window_info {
                 info.windowless_rendering_enabled = true as _;
-                info.parent_window = 0;
+                #[cfg(target_os = "macos")]
+                {
+                    info.parent_view = std::ptr::null_mut();
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    info.parent_window = 0;
+                }
             }
             if let Some(settings) = settings {
                 *settings = browser_settings();
@@ -1155,7 +1173,7 @@ wrap_keyboard_handler! {
             &self,
             _browser: Option<&mut Browser>,
             event: Option<&KeyEvent>,
-            _os_event: Option<&mut cef::sys::XEvent>,
+            _os_event: OsKeyEvent<'_>,
         ) -> ::std::os::raw::c_int {
             let (Some(view), Some(event)) = (self.view.upgrade(), event) else { return 0 };
             if matches!(event.type_, KeyEventType::RAWKEYDOWN | KeyEventType::KEYDOWN) {

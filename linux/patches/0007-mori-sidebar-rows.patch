@@ -10,91 +10,6 @@
  
  // Per-window state for the vertical tab strip.
  struct VerticalTabStripState {
---- a/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
-+++ b/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
-@@ -19,6 +19,7 @@
- #include "chrome/browser/ui/tabs/tab_strip_model.h"
- #include "chrome/browser/ui/views/frame/browser_view.h"
- #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
-+#include "chrome/browser/ui/views/mori/mori_tab_list.h"
- #include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
- #include "chrome/browser/ui/views/tabs/common/tab_collection_node.h"
- #include "chrome/browser/ui/views/tabs/common/tab_group_view.h"
-@@ -198,6 +199,13 @@
-       views::ScrollView::ScrollWithLayers::kEnabled));
-   SetScrollViewProperties(unpinned_tabs_scroll_view_);
- 
-+  // Mori: the header ("Add Tab") between the favorites and the tabs.
-+  // TabStripViewLayout finds it by class name.
-+  if (IsVerticalOrientation(collection_node_)) {
-+    AddChildView(mori::CreateTabListHeader(
-+        collection_node_->GetController()->GetBrowserView()->browser()));
-+  }
-+
-   if (!IsVerticalOrientation(collection_node_)) {
-     unpinned_tab_scroll_type_recorder_ =
-         std::make_unique<tabs::UnpinnedTabScrollTypeRecorder>(
---- a/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
-+++ b/chrome/browser/ui/views/tabs/common/tab_strip_view_layout.cc
-@@ -5,6 +5,7 @@
- #include "chrome/browser/ui/views/tabs/common/tab_strip_view_layout.h"
- 
- #include <algorithm>
-+#include <string_view>
- 
- #include "base/logging.h"
- #include "chrome/browser/ui/layout_constants.h"
-@@ -232,6 +233,23 @@
- 
-   int y = 0;
- 
-+  // Mori: the header ("Add Tab") sits between the favorites and the tabs
-+  // while the sidebar is expanded.
-+  views::View* mori_header = nullptr;
-+  for (views::View* child : tab_strip_view->children()) {
-+    if (child->GetClassName() == std::string_view("MoriTabListHeader")) {
-+      mori_header = child;
-+    }
-+  }
-+  const bool show_mori_header =
-+      mori_header && !is_collapsed && IsChildIncludedInLayout(mori_header);
-+  const int mori_header_width = std::max(
-+      0, size_bounds.width().value() - 2 * region_horizontal_padding);
-+  const int mori_header_height =
-+      show_mori_header
-+          ? mori_header->GetHeightForWidth(mori_header_width)
-+          : 0;
-+
-   // Determine container preferred heights.
-   views::SizeBounds pinned_tab_container_size_bounds =
-       size_bounds.Inset(gfx::Insets::TLBR(0, region_horizontal_padding, 0, 0));
-@@ -250,7 +268,7 @@
-   // pinned and unpinned containers.
-   int remaining_height = 0;
-   if (size_bounds.height().is_bounded()) {
--    remaining_height = size_bounds.height().value();
-+    remaining_height = size_bounds.height().value() - mori_header_height;
-     if (pinned_preferred_height != 0 && unpinned_preferred_height != 0) {
-       remaining_height -= region_vertical_padding;
-     }
-@@ -304,6 +322,17 @@
-   layouts.child_layouts.emplace_back(tabs_separator, should_show_separator,
-                                      separator_bounds);
- 
-+  if (mori_header) {
-+    gfx::Rect header_bounds;
-+    if (show_mori_header) {
-+      header_bounds = gfx::Rect(region_horizontal_padding, y,
-+                                mori_header_width, mori_header_height);
-+      y += mori_header_height;
-+    }
-+    layouts.child_layouts.emplace_back(mori_header, show_mori_header,
-+                                       header_bounds);
-+  }
-+
-   // Place the unpinned container using the entire available width, we do not
-   // inset the x value by `region_horizontal_padding` here because, when the tab
-   // strip is collapsed, tab groups need to draw the group colored line in this
 --- a/chrome/browser/ui/views/tabs/common/tab_group_view_layout.cc
 +++ b/chrome/browser/ui/views/tabs/common/tab_group_view_layout.cc
 @@ -25,7 +25,8 @@
@@ -109,15 +24,15 @@
  constexpr int kGroupHeaderHeight = 26;
 --- a/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
 +++ b/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
-@@ -4,6 +4,8 @@
+@@ -3,6 +3,8 @@
+ // found in the LICENSE file.
  
  #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.h"
- 
-+#include "chrome/browser/ui/views/mori/mori_folders.h"
 +
++#include "chrome/browser/ui/views/mori/mori_folders.h"
+
  #include <algorithm>
  #include <vector>
- 
 @@ -25,7 +27,8 @@
  #include "ui/views/view_utils.h"
  
@@ -128,64 +43,60 @@
  }  // namespace
  
  UnpinnedTabContainerViewLayout::UnpinnedTabContainerViewLayout(
-@@ -227,12 +230,45 @@
+@@ -227,12 +230,35 @@
    const int horizontal_padding =
        GetLayoutConstant(LayoutConstant::kVerticalTabStripHorizontalPadding);
  
-+  // Mori: folders (mori_folders.h): a header above each folder's tabs,
-+  // which are indented, and hidden while it is closed.
-+  const std::vector<mori::FolderRow> folder_rows =
-+      collapse_state == tabs::VerticalTabStripCollapseState::kExpanded
-+          ? mori::GetFolderRows(tab_container_view,
-+                                tab_container_view->collection_node_)
-+          : std::vector<mori::FolderRow>();
-+  size_t row_index = 0;
-+
-   for (auto* child : children) {
-+    const mori::FolderRow* folder_row =
-+        row_index < folder_rows.size() ? &folder_rows[row_index] : nullptr;
-+    ++row_index;
-+    if (folder_row && folder_row->header) {
-+      gfx::Rect folder_bounds(
-+          horizontal_padding, height, 0,
-+          folder_row->header->GetPreferredSize(size_bounds).height());
-+      if (size_bounds.width().is_bounded()) {
-+        folder_bounds.set_width(std::max(
-+            0, size_bounds.width().value() - 2 * horizontal_padding));
-+      }
-+      layouts.child_layouts.emplace_back(folder_row->header.get(), true,
-+                                         folder_bounds);
-+      height += folder_bounds.height() + kTabVerticalPadding;
-+      width = std::max(width, folder_bounds.right());
+-  for (auto* child : children) {
+-    int x =
+-        views::AsViewClass<TabGroupView>(child) &&
+-                collapse_state != tabs::VerticalTabStripCollapseState::kExpanded
+-            ? 0
+-            : horizontal_padding;
++  // Mori: a depth-first folder tree, then Add Tab, then ordinary tabs.
++  std::vector<mori::FolderRow> rows;
++  if (collapse_state == tabs::VerticalTabStripCollapseState::kExpanded) {
++    rows = mori::GetFolderRows(tab_container_view,
++                                tab_container_view->collection_node_);
++  } else {
++    for (auto* child : children) {
++      rows.push_back({child, false, 0});
 +    }
-     int x =
-         views::AsViewClass<TabGroupView>(child) &&
-                 collapse_state != tabs::VerticalTabStripCollapseState::kExpanded
-             ? 0
-             : horizontal_padding;
-+    if (folder_row && folder_row->hidden) {
-+      layouts.child_layouts.emplace_back(child, false,
-+                                         gfx::Rect(x, height, 0, 0));
++  }
++  for (const auto& row : rows) {
++    auto* child = row.view.get();
++    const int x = horizontal_padding + row.indent;
++    if (row.hidden) {
++      layouts.child_layouts.emplace_back(child, false, gfx::Rect());
 +      continue;
 +    }
-+    if (folder_row) {
-+      x += folder_row->indent;
++    const bool is_tab_row = std::ranges::find(children, child) != children.end();
++    if (!is_tab_row) {
++      const int available_width = size_bounds.width().is_bounded()
++          ? std::max(0, size_bounds.width().value() - x - horizontal_padding)
++          : child->GetPreferredSize(size_bounds).width();
++      gfx::Rect bounds(x, height, available_width,
++                        child->GetHeightForWidth(available_width));
++      layouts.child_layouts.emplace_back(child, true, bounds);
++      height += bounds.height() + kTabVerticalPadding;
++      width = std::max(width, bounds.right());
++      continue;
 +    }
      views::SizeBound child_height_bound = size_bounds.height();
      // In focused mode, pass the scroll viewport height constraint to the child
      // focused group if the incoming size bounds height is unbounded, so that
-@@ -274,6 +310,11 @@
+@@ -272,6 +298,11 @@
+     layouts.child_layouts.emplace_back(child, true, bounds);
+     height += bounds.height() + kTabVerticalPadding;
      width = std::max(width, bounds.width() + bounds.x());
-   }
- 
-+  for (views::View* header :
-+       mori::GetUnplacedFolderHeaders(tab_container_view, folder_rows)) {
-+    layouts.child_layouts.emplace_back(header, false, gfx::Rect());
 +  }
 +
-   if (height > 0) {
-     height -= kTabVerticalPadding;
++  for (views::View* header :
++       mori::GetUnplacedFolderHeaders(tab_container_view, rows)) {
++    layouts.child_layouts.emplace_back(header, false, gfx::Rect());
    }
+
+   if (height > 0) {
 --- a/chrome/browser/ui/views/tabs/common/tab_view_vertical_layout.cc
 +++ b/chrome/browser/ui/views/tabs/common/tab_view_vertical_layout.cc
 @@ -189,7 +189,8 @@

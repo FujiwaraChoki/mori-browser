@@ -5,7 +5,8 @@
 use futures::StreamExt as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use mori_core::import::{self, Options, Source, Step, Summary};
+use mori_core::import::{self, Options, SameSite, Source, Step, Summary};
+use mori_engine::{BrowsingContext, privacy::CookieToSet};
 
 use crate::{
     browser::{Browser, ToastStyle},
@@ -30,6 +31,8 @@ struct Running {
     step: Step,
     /// Steps done and total.
     progress: (usize, usize),
+    /// Cookies are in Chromium's jar, which answers after the read finishes.
+    writing_cookies: bool,
 }
 
 struct Finished {
@@ -103,6 +106,7 @@ impl Browser {
             title: title.clone(),
             step: Step::Bookmarks,
             progress: (0, 1),
+            writing_cookies: false,
         });
         let (tx, mut rx) = futures::channel::mpsc::unbounded::<(Step, usize, usize)>();
         let reader = source.clone();
@@ -129,28 +133,57 @@ impl Browser {
         cx.spawn(async move |this, cx| {
             let imported = read.await;
             this.update(cx, |this, cx| {
-                let summary = import::apply(
+                let mut summary = import::apply(
                     source.kind,
                     &imported,
                     &mut this.ws,
                     &mut this.bookmarks,
                     &mut this.history,
                 );
-                this.import.running = None;
-                let text = format!("{title}: {}", summary.describe());
-                let style = if imported.problems.is_empty() { ToastStyle::Success } else { ToastStyle::Warning };
-                this.toast(text, style, None, cx);
-                this.import.last = Some(Finished {
-                    title,
-                    summary,
-                    problems: imported.problems,
+                let batch = cookies_to_set(&imported.cookies);
+                let mut problems = imported.problems;
+                if batch.is_empty() {
+                    if !imported.cookies.is_empty() {
+                        problems.push("Couldn't save cookies".into());
+                    }
+                    this.finish_import(title, summary, problems, cx);
+                    return;
+                }
+                if let Some(r) = this.import.running.as_mut() {
+                    r.writing_cookies = true;
+                    cx.notify();
+                }
+                let context = cookie_context(this);
+                let (tx, rx) = futures::channel::oneshot::channel();
+                mori_engine::privacy::set_cookies(&context, batch, move |n| {
+                    let _ = tx.send(n);
                 });
-                this.schedule_save(cx);
-                cx.notify();
+                cx.spawn(async move |this, cx| {
+                    let n = rx.await.unwrap_or(0);
+                    this.update(cx, |this, cx| {
+                        summary.cookies = n;
+                        if n == 0 {
+                            problems.push("Couldn't save cookies".into());
+                        }
+                        this.finish_import(title, summary, problems, cx);
+                    })
+                    .ok();
+                })
+                .detach();
             })
             .ok();
         })
         .detach();
+    }
+
+    fn finish_import(&mut self, title: String, summary: Summary, problems: Vec<String>, cx: &mut Context<Self>) {
+        self.import.running = None;
+        let text = format!("{title}: {}", summary.describe());
+        let style = if problems.is_empty() { ToastStyle::Success } else { ToastStyle::Warning };
+        self.toast(text, style, None, cx);
+        self.import.last = Some(Finished { title, summary, problems });
+        self.schedule_save(cx);
+        cx.notify();
     }
 
     /// The source list, options, Import button and progress or result.
@@ -263,7 +296,11 @@ impl Browser {
                         div()
                             .text_size(metrics::TEXT_LABEL)
                             .text_color(t.muted_foreground)
-                            .child(format!("{} — {}", r.title, r.step.label())),
+                            .child(format!(
+                                "{} — {}",
+                                r.title,
+                                if r.writing_cookies { "Saving cookies…" } else { r.step.label() }
+                            )),
                     )
                     .child(
                         div()
@@ -305,6 +342,7 @@ impl Browser {
                     .gap(px(16.))
                     .child(checkbox("import-bookmarks", "Bookmarks", options.bookmarks, contents.bookmarks, |o, v| o.bookmarks = v, cx))
                     .child(checkbox("import-history", "History", options.history, contents.history, |o, v| o.history = v, cx))
+                    .child(checkbox("import-cookies", "Cookies", options.cookies, contents.cookies, |o, v| o.cookies = v, cx))
                     .child(checkbox("import-tabs", "Open tabs & spaces", options.tabs, contents.tabs, |o, v| o.tabs = v, cx)),
             )
             .child(
@@ -324,6 +362,41 @@ impl Browser {
             )
             .into_any_element()
     }
+}
+
+/// Cookies go into the profile this window browses with. A private window
+/// keeps nothing, so they land in the default profile instead.
+fn cookie_context(browser: &Browser) -> BrowsingContext {
+    if browser.kind == crate::windows::WindowKind::Private {
+        BrowsingContext::shared()
+    } else {
+        crate::windows::context_for_space(browser, browser.ws.active_space)
+    }
+}
+
+fn cookies_to_set(cookies: &[mori_core::import::ImportedCookie]) -> Vec<CookieToSet> {
+    cookies
+        .iter()
+        .filter_map(|cookie| {
+            let (url, domain) = cookie.storage_target()?;
+            Some(CookieToSet {
+                url,
+                domain,
+                name: cookie.name.clone(),
+                value: cookie.value.clone(),
+                path: cookie.path.clone(),
+                expires_unix: cookie.expires,
+                secure: cookie.secure,
+                http_only: cookie.http_only,
+                same_site: match cookie.same_site {
+                    SameSite::Unspecified => mori_engine::privacy::SameSiteMode::Unspecified,
+                    SameSite::None => mori_engine::privacy::SameSiteMode::None,
+                    SameSite::Lax => mori_engine::privacy::SameSiteMode::Lax,
+                    SameSite::Strict => mori_engine::privacy::SameSiteMode::Strict,
+                },
+            })
+        })
+        .collect()
 }
 
 fn radio(on: bool, cx: &App) -> Div {

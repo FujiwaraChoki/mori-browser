@@ -344,8 +344,8 @@
 +    // Mori: the sidebar toggle next to the menu (only shown by Mori's
 +    // sidebar toolbar layout).
 +    AddChildView(mori::CreateSidebarToggle(browser_));
-+    // Mori: glass capsules behind the sidebar toolbar's button groups.
-+    AddChildViewAt(mori::CreateToolbarCapsules(this), 0);
++    // Mori: observe toolbar input for address-field hover actions.
++    AddChildViewAt(mori::CreateToolbarController(this), 0);
    }
  
    if (base::FeatureList::IsEnabled(contextual_tasks::kContextualTasks) &&

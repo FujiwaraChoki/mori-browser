@@ -1,0 +1,21 @@
+--- a/chrome/browser/ui/cocoa/accelerators_cocoa.mm
++++ b/chrome/browser/ui/cocoa/accelerators_cocoa.mm
+@@ -42,7 +42,7 @@
+     {IDC_NEW_INCOGNITO_WINDOW, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN,
+      ui::VKEY_N},
+     {IDC_NEW_TAB, ui::EF_COMMAND_DOWN, ui::VKEY_T},
+-    {IDC_NEW_WINDOW, ui::EF_COMMAND_DOWN, ui::VKEY_N},
++    // Mori: Cmd+N is a hidden new-tab alias; New Window remains in the menu.
+     {IDC_PASTE, ui::EF_COMMAND_DOWN, ui::VKEY_V},
+     {IDC_PRINT, ui::EF_COMMAND_DOWN, ui::VKEY_P},
+     {IDC_RESTORE_TAB, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN, ui::VKEY_T},
+--- a/chrome/browser/global_keyboard_shortcuts_mac.mm
++++ b/chrome/browser/global_keyboard_shortcuts_mac.mm
+@@ -118,6 +118,7 @@
+       // Mori: Mori 3's shortcuts (mori_command_ids.cc on other systems),
+       // with Command for Control and Arc's keys where macOS needs others.
+       // First, so they win over Chromium's below.
++      {true,  false, false, false, kVK_ANSI_N,            IDC_NEW_TAB},
+       {true,  false, false, true,  kVK_DownArrow,         IDC_SELECT_NEXT_TAB},
+       {true,  false, false, true,  kVK_UpArrow,           IDC_SELECT_PREVIOUS_TAB},
+       {true,  true,  false, false, kVK_ANSI_P,            mori::kCommandTogglePin},

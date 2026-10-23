@@ -1,7 +1,7 @@
 // Little Mori (Arc's Little Arc, Mori 3's Little Mori): links handed over
 // by other apps open in a small window of their own, with a slim header of
-// back, the address, "Open in Mori" and close. Opening the page in Mori
-// moves it to the top of the last window's tabs.
+// navigation, a centred domain, and an "Open in Mori" window picker. Opening
+// the page in Mori moves it to the top of the last window's tabs.
 
 #ifndef CHROME_BROWSER_UI_VIEWS_MORI_MORI_LITTLE_H_
 #define CHROME_BROWSER_UI_VIEWS_MORI_MORI_LITTLE_H_
@@ -15,6 +15,10 @@ class BrowserWindowInterface;
 class GURL;
 class Profile;
 class ToolbarView;
+
+namespace gfx {
+class Point;
+}
 
 namespace mori {
 
@@ -41,6 +45,18 @@ void WhenMoriSettingsLoaded(Profile* profile, base::OnceClosure closure);
 // Whether the tabs Mori kept in spaces (tab groups) came out of them.
 bool SpacesUngrouped(Profile* profile);
 void SetSpacesUngrouped(Profile* profile);
+
+// True only for Mori's disposable link windows, including during construction.
+bool IsLittleWindow(BrowserWindowInterface* browser);
+
+// Empty header space drags the window; buttons remain clickable.
+bool IsLittleHeaderCaption(BrowserView* browser_view, const gfx::Point& point);
+
+// Move the live tab into the last active regular window. False for other
+// windows.
+bool OpenLittleInMori(BrowserWindowInterface* browser);
+
+inline constexpr int kLittleHeaderHeight = 44;
 
 // Called as a popup window's toolbar is built: in a Little Mori window, adds
 // its header buttons.

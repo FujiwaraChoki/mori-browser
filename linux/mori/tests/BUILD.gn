@@ -1,0 +1,28 @@
+# Generate with gn gen out/Default --root-target=//chrome/browser/ui/views/mori/tests
+# Build mori_import_tests and run out/Default/mori_import_tests.
+group("all") {
+  testonly = true
+  deps = [
+    "//:gn_all",
+    ":mori_import_tests",
+    ":mori_passkey_tests",
+  ]
+}
+
+executable("mori_passkey_tests") {
+  testonly = true
+  sources = [ "mori_passkey_test.cc" ]
+  deps = [
+    "//base",
+    "//url",
+  ]
+}
+
+executable("mori_import_tests") {
+  testonly = true
+  sources = [ "mori_import_test.cc" ]
+  deps = [
+    "//base",
+    "//url",
+  ]
+}

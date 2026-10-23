@@ -12,8 +12,8 @@ use anyhow::{Context as _, bail};
 use serde_json::Value;
 
 use super::{
-    BrowserKind, Contents, DbCopy, HISTORY_LIMIT, Imported, ImportedBookmark, ImportedFolder, ImportedSpace,
-    ImportedTab, ImportedVisit, Source, Step, is_importable_url,
+    BrowserKind, Contents, DbCopy, HISTORY_LIMIT, Imported, ImportedBookmark, ImportedCookie, ImportedFolder,
+    ImportedSpace, ImportedTab, ImportedVisit, Source, Step, cookies, is_importable_url,
 };
 
 /// Profile roots (holding `profiles.ini`) per browser, relative to home.
@@ -46,6 +46,7 @@ pub(super) fn detect(home: &Path) -> Vec<Source> {
             let contents = Contents {
                 bookmarks: places,
                 history: places,
+                cookies: path.join("cookies.sqlite").is_file(),
                 tabs: session_file(&path).is_some(),
             };
             out.push(Source {
@@ -123,6 +124,10 @@ pub(super) fn read(source: &Source, step: Step, out: &mut Imported) -> anyhow::R
         Step::History => {
             let db = DbCopy::open(&source.path.join("places.sqlite"))?;
             out.history = read_history(db.conn())?;
+        }
+        Step::Cookies => {
+            let db = DbCopy::open(&source.path.join("cookies.sqlite"))?;
+            out.cookies = read_cookies(db.conn(), crate::paths::now())?;
         }
         Step::Tabs => {
             let path = session_file(&source.path).context("no session file")?;
@@ -239,6 +244,71 @@ fn read_history(conn: &rusqlite::Connection) -> anyhow::Result<Vec<ImportedVisit
         })
     })?;
     Ok(rows.filter_map(Result::ok).filter(|v| is_importable_url(&v.url)).collect())
+}
+
+/// Cookies from `cookies.sqlite`. Container cookies (a non-empty
+/// `originAttributes`) are skipped so one Firefox container doesn't
+/// overwrite another's login. Expired cookies are dropped. `expiry` is
+/// UNIX seconds; `0` is a session cookie.
+fn read_cookies(conn: &rusqlite::Connection, now: f64) -> anyhow::Result<Vec<ImportedCookie>> {
+    use std::collections::HashMap;
+
+    let cols = cookies::column_names(conn, "moz_cookies")?;
+    for required in ["host", "name", "value", "path", "expiry"] {
+        if !cookies::has_column(&cols, required) {
+            bail!("moz_cookies is missing {required}");
+        }
+    }
+    let sql = format!(
+        "SELECT host, name, value, path, expiry, {secure}, {http}, {samesite}, {attrs} FROM moz_cookies",
+        secure = cookies::sql_col(&cols, "isSecure", "0"),
+        http = cookies::sql_col(&cols, "isHttpOnly", "0"),
+        samesite = cookies::sql_col(&cols, "sameSite", "-1"),
+        attrs = cookies::sql_col(&cols, "originAttributes", "''"),
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, Option<String>>(0)?.unwrap_or_default(),
+            r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+            r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+            r.get::<_, Option<String>>(3)?.unwrap_or_default(),
+            r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+            r.get::<_, Option<i64>>(5)?.unwrap_or(0),
+            r.get::<_, Option<i64>>(6)?.unwrap_or(0),
+            r.get::<_, Option<i64>>(7)?.unwrap_or(-1),
+            r.get::<_, Option<String>>(8)?.unwrap_or_default(),
+        ))
+    })?;
+    let mut found: HashMap<(String, String, String), ImportedCookie> = HashMap::new();
+    for row in rows.filter_map(Result::ok) {
+        let (host, name, value, path, expiry, secure_i, http_i, samesite, attrs) = row;
+        if host.is_empty() || name.is_empty() || !attrs.trim().is_empty() {
+            continue;
+        }
+        let secure = secure_i != 0;
+        // A value past year 2286 was stored as microseconds.
+        let expiry_secs = if expiry > 10_000_000_000 { expiry as f64 / 1e6 } else { expiry as f64 };
+        let expires = if expiry <= 0 {
+            None
+        } else if expiry_secs <= now {
+            continue;
+        } else {
+            Some(expiry_secs)
+        };
+        let path = if path.is_empty() { "/".to_string() } else { path };
+        found.insert((host.clone(), name.clone(), path.clone()), ImportedCookie {
+            host,
+            name,
+            value,
+            path,
+            expires,
+            secure,
+            http_only: http_i != 0,
+            same_site: cookies::same_site(samesite, secure),
+        });
+    }
+    Ok(found.into_values().collect())
 }
 
 /// Favorites (Zen essentials) and spaces from a session: Zen's
@@ -547,7 +617,41 @@ mod tests {
         let names: Vec<(BrowserKind, &str)> = found.iter().map(|s| (s.kind, s.profile.as_str())).collect();
         // The Firefox profile directory doesn't exist; Zen's second profile is empty.
         assert_eq!(names, [(BrowserKind::Zen, "Default (release)"), (BrowserKind::Zen, "Default Profile")]);
-        assert_eq!(found[0].contents, Contents { bookmarks: true, history: true, tabs: true });
+        assert_eq!(found[0].contents, Contents { bookmarks: true, history: true, cookies: false, tabs: true });
         assert!(!found[1].contents.any());
+    }
+
+    #[test]
+    fn cookies_skip_containers_and_expired_rows() {
+        let mut tree = Tree::new();
+        let path = tree.path("cookies.sqlite");
+        {
+            let conn = rusqlite::Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE moz_cookies(
+                    host TEXT, name TEXT, value TEXT, path TEXT, expiry INTEGER,
+                    isSecure INTEGER, isHttpOnly INTEGER, sameSite INTEGER, originAttributes TEXT);
+                 INSERT INTO moz_cookies VALUES('.Example.com','sid','abc','/app',2000000000,1,1,1,'');
+                 INSERT INTO moz_cookies VALUES('accounts.example.com','host','z','',0,0,0,2,'');
+                 INSERT INTO moz_cookies VALUES('.old.test','gone','x','/',1000,0,0,1,'');
+                 INSERT INTO moz_cookies VALUES('.box.test','c','x','/',2000000000,1,0,0,'^userContextId=2');
+                 INSERT INTO moz_cookies VALUES('.none.test','n','x','/',2000000000,1,0,0,'');",
+            )
+            .unwrap();
+        }
+        tree.track(&path);
+        let db = DbCopy::open(&path).unwrap();
+        let found = read_cookies(db.conn(), 1_500_000_000.0).unwrap();
+        let mut by_name: std::collections::HashMap<_, _> = found.into_iter().map(|c| (c.name.clone(), c)).collect();
+        assert_eq!(by_name.len(), 3);
+        let sid = by_name.remove("sid").unwrap();
+        assert_eq!((sid.host.as_str(), sid.value.as_str(), sid.http_only), (".Example.com", "abc", true));
+        assert_eq!(sid.same_site, super::super::SameSite::Lax);
+        assert_eq!(sid.expires, Some(2_000_000_000.0));
+        let host = by_name.remove("host").unwrap();
+        assert_eq!(host.expires, None);
+        assert_eq!(host.path, "/");
+        assert_eq!(host.same_site, super::super::SameSite::Strict);
+        assert_eq!(by_name.remove("n").unwrap().same_site, super::super::SameSite::None);
     }
 }

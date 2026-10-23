@@ -1,5 +1,6 @@
 #include "chrome/browser/ui/views/mori/mori_menu.h"
 
+#include <set>
 #include <array>
 #include <memory>
 #include <optional>
@@ -239,7 +240,7 @@ void CloseTabs(TabStripModel* model, const std::vector<tabs::TabHandle>& tabs) {
   for (const tabs::TabHandle& handle : tabs) {
     tabs::TabInterface* tab = handle.Get();
     const int index = tab ? model->GetIndexOfTab(tab) : TabStripModel::kNoTab;
-    if (index != TabStripModel::kNoTab) {
+    if (index != TabStripModel::kNoTab && !model->IsTabPinned(index)) {
       model->CloseWebContentsAt(index,
                                 TabCloseTypes::CLOSE_USER_GESTURE |
                                     TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
@@ -411,6 +412,19 @@ void TidySeparators(ui::SimpleMenuModel* model) {
   }
 }
 
+// The tree stays nested in the sidebar; destinations use breadcrumbs so
+// identically named subfolders remain distinguishable in menus.
+std::u16string FolderMenuName(const FolderInfo& folder) {
+  std::u16string name = folder.name;
+  std::set<std::string> seen{folder.id};
+  auto parent = GetFolder(folder.parent);
+  while (parent && seen.insert(parent->id).second) {
+    name = parent->name + u" / " + name;
+    parent = GetFolder(parent->parent);
+  }
+  return name;
+}
+
 }  // namespace
 
 void ShowTabMenu(BrowserWindowInterface* browser,
@@ -519,7 +533,7 @@ void ShowTabMenu(BrowserWindowInterface* browser,
       if (in_folder && in_folder->id == folder.id) {
         continue;
       }
-      host->Item(u"Add to " + folder.name, "folder",
+      host->Item(u"Add to " + FolderMenuName(folder), "folder",
                  OnTab(tab, base::BindRepeating(
                                 [](BrowserWindowInterface* b, std::string id,
                                    tabs::TabInterface* t) {
@@ -595,7 +609,7 @@ void ShowTabMenu(BrowserWindowInterface* browser,
   host->Item(u"Close Tab", "x",
              base::BindRepeating(&CloseTabs, model,
                                  std::vector<tabs::TabHandle>{tab->GetHandle()}),
-             /*enabled=*/true, selected ? IDC_CLOSE_TAB : 0);
+             /*enabled=*/!favorite, selected ? IDC_CLOSE_TAB : 0);
   host->Command(IDC_RESTORE_TAB, u"Reopen Closed Tab", "rotate-ccw");
   host->Run(parent, point, source_type);
 }
@@ -626,6 +640,26 @@ void ShowFolderMenu(BrowserWindowInterface* browser,
   // Mori 3's folder menu (folder_entries in menus.rs), Zen's Delete Folder.
   host->Item(u"New Tab in Folder", "plus",
              base::BindRepeating(&NewTabInFolder, browser, folder_id));
+  host->Item(u"New Subfolder", "folder-plus",
+             base::BindRepeating(&NewSubfolder, browser, folder_id));
+  if (!folder->parent.empty()) {
+    host->Item(u"Move to Top Level", "corner-up-left",
+               base::BindRepeating(&MoveFolder, browser, folder_id, std::string()));
+  }
+  auto* destinations = host->SubMenu(u"Move Folder Into", "folder");
+  for (const auto& target : ListFolders(browser)) {
+    std::set<std::string> seen;
+    auto ancestor = std::make_optional(target);
+    bool descendant = false;
+    while (ancestor && seen.insert(ancestor->id).second) {
+      descendant |= ancestor->id == folder_id;
+      ancestor = ancestor->parent.empty() ? std::nullopt : GetFolder(ancestor->parent);
+    }
+    if (!descendant && target.id != folder->parent) {
+      host->SubItem(destinations, FolderMenuName(target), "folder",
+                    base::BindRepeating(&MoveFolder, browser, folder_id, target.id));
+    }
+  }
   host->Separator();
   host->Item(u"Rename Folder", "pencil",
              base::BindRepeating(&RenameFolder, browser, folder_id));

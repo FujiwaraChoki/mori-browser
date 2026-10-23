@@ -83,6 +83,27 @@ Data lives in `$MORI_DATA_DIR`: `session.json` (spaces, folders, tabs),
 
 The macOS build is the Mori browser work on top of ungoogled-chromium.
 
+### Views-based macOS build
+
+The newer `ungoogled-chromium-mac` checkout uses the shared Views UI:
+
+```sh
+mac/build.sh
+mac/package.sh                      # -> dist/Mori.app
+open dist/Mori.app
+```
+
+`mac/build.sh` applies the Mori name and icon after building Chromium.
+`mac/package.sh /Applications/Mori.app` installs a branded bundle (moving any
+previous Mori bundle to the trash). The internal executable remains Chromium;
+the bundle name, localized display names, and Dock icon are Mori. The icon is
+kept in `mac/assets/AppIcon.svg`; run `mac/build-icon.sh` (requires librsvg and
+Xcode) to regenerate the PNG, ICNS, and macOS asset catalog. The branding step
+replaces Chromium's icon assets and ad-hoc signs the modified app. The standalone
+recolorable logo is `mac/assets/mori-mark.svg`.
+
+The instructions below apply to the older SwiftUI checkout.
+
 ### Layout
 
 - `ungoogled-chromium-macos/build/src` is the Chromium source tree used for

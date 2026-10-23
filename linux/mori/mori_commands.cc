@@ -75,6 +75,7 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
   tabs::TabInterface* tab = model->GetActiveTab();
 
   command(u"New Tab", u"open blank", "plus", IDC_NEW_TAB);
+  command(u"New Folder", u"create organize tabs", "folder-plus", kCommandNewFolder);
   command(u"New Window", u"browser", "app-window", IDC_NEW_WINDOW);
   command(u"New Private Window", u"incognito", "hat-glasses",
           IDC_NEW_INCOGNITO_WINDOW);

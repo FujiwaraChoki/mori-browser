@@ -1,0 +1,105 @@
+--- a/chrome/browser/ui/views/toolbar/toolbar_view.cc
++++ b/chrome/browser/ui/views/toolbar/toolbar_view.cc
+@@ -1395,7 +1395,9 @@
+       size = custom_tab_bar_->GetPreferredSize();
+       break;
+     case DisplayMode::kLocation:
+-      size = location_bar_->PreferredSize();
++      size = mori::IsLittleWindow(browser_)
++                 ? gfx::Size(900, mori::kLittleHeaderHeight)
++                 : location_bar_->PreferredSize();
+       break;
+     case DisplayMode::kNormal:
+       size = AccessiblePaneView::CalculatePreferredSize(available_size);
+@@ -1425,7 +1427,9 @@
+       size = custom_tab_bar_->GetMinimumSize();
+       break;
+     case DisplayMode::kLocation:
+-      size = location_bar_->MinimumSize();
++      size = mori::IsLittleWindow(browser_)
++                 ? gfx::Size(560, mori::kLittleHeaderHeight)
++                 : location_bar_->MinimumSize();
+       break;
+     case DisplayMode::kNormal:
+       size = AccessiblePaneView::GetMinimumSize();
+--- a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
++++ b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
+@@ -41,6 +41,7 @@
+ #include "chrome/browser/ui/ui_features.h"
+ #include "chrome/browser/ui/views/frame/browser_frame_view.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/mori/mori_little.h"
+ #include "chrome/browser/ui/views/frame/browser_widget.h"
+ #include "chrome/browser/ui/views/frame/glass_frame_service.h"
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+@@ -703,6 +704,10 @@
+         browser_view_);
+   }
+ 
++  // Little Arc: Cmd+O promotes the live page instead of opening a file.
++  if (command == IDC_OPEN_FILE && mori::OpenLittleInMori(browser)) {
++    return true;
++  }
+   chrome::ExecuteCommandWithDisposition(browser, command,
+                                         window_open_disposition);
+   return true;
+@@ -724,6 +729,7 @@
+                          NSWindowStyleMaskTitled | NSWindowStyleMaskResizable;
+     params->window_title_hidden = true;
+   } else if (browser_view_->GetIsNormalType() ||
++             mori::IsLittleWindow(browser_view_->browser()) ||
+              browser_view_->GetIsWebAppType()) {
+     params->window_class = remote_cocoa::mojom::WindowClass::kBrowser;
+     params->style_mask |= NSWindowStyleMaskFullSizeContentView;
+@@ -732,7 +738,8 @@
+     params->titlebar_appears_transparent = true;
+ 
+     // Hosted apps draw their own window title.
+-    if (browser_view_->GetIsWebAppType()) {
++    if (browser_view_->GetIsWebAppType() ||
++        mori::IsLittleWindow(browser_view_->browser())) {
+       params->window_title_hidden = true;
+     }
+   } else {
+--- a/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
++++ b/chrome/browser/ui/views/frame/browser_frame_view_mac.mm
+@@ -35,6 +35,7 @@
+ #include "chrome/browser/ui/views/bookmarks/bookmark_bar_view.h"
+ #include "chrome/browser/ui/views/frame/browser_native_widget.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/mori/mori_little.h"
+ #include "chrome/browser/ui/views/frame/browser_widget.h"
+ #include "chrome/browser/ui/views/frame/caption_button_placeholder_container.h"
+ #include "chrome/browser/ui/views/frame/glass_frame_service.h"
+@@ -461,8 +462,9 @@
+ 
+   // In popups, the titlebar is system-drawn and the caption buttons aren't part
+   // of the client area.
+-  if (GetBrowserView()->browser()->GetType() ==
+-          BrowserWindowInterface::Type::TYPE_POPUP ||
++  if ((!mori::IsLittleWindow(GetBrowserView()->browser()) &&
++       GetBrowserView()->browser()->GetType() ==
++           BrowserWindowInterface::Type::TYPE_POPUP) ||
+       GetBrowserView()->browser()->GetType() ==
+           BrowserWindowInterface::Type::TYPE_DEVTOOLS) {
+     return result;
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -3,6 +3,7 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/mori/mori_little.h"
+ 
+ #include <stdint.h>
+ 
+@@ -4607,6 +4608,9 @@
+ }
+ 
+ int BrowserView::NonClientHitTest(const gfx::Point& point) {
++  if (mori::IsLittleHeaderCaption(this, point)) {
++    return HTCAPTION;
++  }
+   // Mori's page card starts below infobars. Test them before treating the
+   // strip above the card as a draggable caption, including in fullscreen.
+   if (infobar_container_ && infobar_container_->GetVisible()) {

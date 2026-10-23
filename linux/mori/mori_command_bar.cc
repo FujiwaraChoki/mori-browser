@@ -4,10 +4,12 @@
 // suggestions and open tabs.
 
 #include "chrome/browser/ui/views/mori/mori_command_bar.h"
+#include "chrome/browser/ui/views/mori/mori_little.h"
 
 #include <algorithm>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -33,6 +35,8 @@
 #include "chrome/browser/ui/views/mori/mori_commands.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_new_tab.h"
+#include "chrome/browser/ui/views/mori/mori_overlay.h"
+#include "chrome/browser/ui/views/mori/mori_settings.h"
 #include "chrome/browser/ui/views/mori/mori_tab_list.h"
 #include "chrome/browser/ui/views/theme_copying_widget.h"
 #include "components/keyed_service/core/service_access_type.h"
@@ -87,6 +91,18 @@
 namespace mori {
 namespace {
 
+// Resolve Mori's internal addresses before Chromium's scheme classifier,
+// which otherwise treats the unregistered mori:// scheme as a search query.
+GURL InternalAddress(std::u16string_view text) {
+  text = base::TrimWhitespace(text, base::TRIM_ALL);
+  if (!base::StartsWith(text, u"mori://",
+                        base::CompareCase::INSENSITIVE_ASCII)) {
+    return GURL();
+  }
+  GURL url("chrome://" + base::UTF16ToUTF8(text.substr(7)));
+  return url.is_valid() && url.has_host() ? url : GURL();
+}
+
 // Mori 3's launcher (crates/mori/src/ui/launcher.rs), itself measured from
 // Zen's.
 constexpr size_t kMaxResults = 10;
@@ -136,7 +152,7 @@ BarColors ColorsFor(const views::View* view) {
     c.border = SkColorSetRGB(0xE2, 0xE2, 0xE2);
     c.text = SkColorSetRGB(0x1D, 0x1F, 0x22);
     c.muted = SkColorSetRGB(0x5A, 0x5C, 0x5E);
-    c.highlight = SkColorSetRGB(0x71, 0xAF, 0xFB);
+    c.highlight = SkColorSetRGB(0x19, 0x67, 0xD2);
     c.highlight_text = SK_ColorWHITE;
   }
   c.hairline = color_utils::AlphaBlend(c.text, c.panel, dark ? 0.08f : 0.07f);
@@ -258,29 +274,36 @@ class ResultRow : public views::Button {
       return;
     }
     const BarColors c = ColorsFor(this);
-    // Light mode highlights in saturated blue with white text.
-    const bool on_blue = highlighted_ && !c.dark;
-    const SkColor title = on_blue ? c.highlight_text : c.text;
+    const SkColor background = highlighted_ ? c.highlight : c.panel;
+    const SkColor title = highlighted_ ? c.highlight_text : c.text;
     const SkColor secondary =
-        on_blue ? SkColorSetA(SK_ColorWHITE, 0xD9)
-        : highlighted_ ? color_utils::AlphaBlend(c.text, c.highlight, 0.75f)
-                       : c.muted;
+        highlighted_ ? color_utils::AlphaBlend(c.highlight_text, c.highlight, 0.9f)
+                     : c.muted;
+    // Labels don't inherit our painted row background. Give readability
+    // correction the actual surface, or it turns white selection text grey
+    // because it assumes the row is still on the white panel.
+    for (views::Label* label :
+         {title_, dash_, source_, tab_label_, shortcut_}) {
+      label->SetBackgroundColor(background);
+    }
     title_->SetEnabledColor(title);
-    dash_->SetEnabledColor(color_utils::AlphaBlend(
-        c.muted, highlighted_ ? c.highlight : c.panel, 0.7f));
+    dash_->SetEnabledColor(secondary);
     source_->SetEnabledColor(secondary);
     tab_label_->SetEnabledColor(secondary);
     shortcut_->SetEnabledColor(secondary);
     tab_arrow_->SetImage(ui::ImageModel::FromVectorIcon(
-        vector_icons::kArrowForwardIcon, c.muted, 12));
-    tab_arrow_->SetBackground(views::CreateRoundedRectBackground(c.chip, 4));
+        vector_icons::kArrowForwardIcon, secondary, 12));
+    const SkColor chip = highlighted_
+                             ? color_utils::AlphaBlend(title, background, 0.12f)
+                             : c.chip;
+    tab_arrow_->SetBackground(views::CreateRoundedRectBackground(chip, 4));
     if (icon_model_.IsVectorIcon()) {
       // Ask Assistant's sparkles are in Mori's blue, as in Mori 3.
       const SkColor accent = c.dark ? SkColorSetRGB(0x48, 0x95, 0xCA)
                                     : SkColorSetRGB(0x29, 0x8E, 0xCD);
       icon_->SetImage(ui::ImageModel::FromVectorIcon(
           *icon_model_.GetVectorIcon().vector_icon(),
-          accent_icon_ && !on_blue ? accent : title, kIconSize));
+          accent_icon_ && !highlighted_ ? accent : title, kIconSize));
     } else {
       icon_->SetImage(icon_model_);
     }
@@ -529,6 +552,16 @@ class CommandBar : public views::View,
  private:
   void StartAutocomplete() {
     const std::u16string text(field_->GetText());
+    if (InternalAddress(text).is_valid()) {
+      controller_->Stop(AutocompleteStopReason::kClobbered);
+      history_tracker_.TryCancelAll();
+      idle_ = false;
+      input_is_url_ = true;
+      RebuildMatches();
+      UpdateResults();
+      UpdateBounds();
+      return;
+    }
     if (auto* service = TemplateURLServiceFactory::GetForProfile(profile_)) {
       if (const TemplateURL* engine = service->GetDefaultSearchProvider()) {
         engine_name_ = engine->short_name();
@@ -647,6 +680,19 @@ class CommandBar : public views::View,
     commands_.clear();
     ask_ = false;
     if (field_->GetText().empty()) {
+      return;
+    }
+    const GURL internal_url = InternalAddress(field_->GetText());
+    if (internal_url.is_valid()) {
+      AutocompleteMatch match(nullptr, 0, true,
+                              AutocompleteMatchType::URL_WHAT_YOU_TYPED);
+      match.destination_url = internal_url;
+      match.contents = std::u16string(field_->GetText());
+      match.description = internal_url.host() == "settings"
+                              ? u"Mori Settings"
+                              : base::UTF8ToUTF16(internal_url.host());
+      match.transition = ui::PAGE_TRANSITION_TYPED;
+      matches_.push_back(std::move(match));
       return;
     }
     // Mori 3 offers to ask the assistant about anything but an address.
@@ -805,9 +851,17 @@ class CommandBar : public views::View,
       return;
     }
     BrowserWindowInterface* browser = browser_view_->browser();
+    const GURL internal_url = InternalAddress(field_->GetText());
     Hide();
+    // The root settings address opens Mori's native sheet. Subpages and other
+    // internal addresses retain Chromium's full WebUI (permissions, etc.).
+    if (internal_url.is_valid() && internal_url.host() == "settings" &&
+        internal_url.path() == "/" && !internal_url.has_query() &&
+        !internal_url.has_ref() && ShowSettings(browser)) {
+      return;
+    }
     NavigateParams params(browser, match.destination_url, match.transition);
-    const bool switch_to_tab = IsTabMatch(match);
+    const bool switch_to_tab = IsTabMatch(match) && !IsLittleWindow(browser);
     if (switch_to_tab) {
       params.disposition = WindowOpenDisposition::SWITCH_TO_TAB;
     } else if (mode_ == CommandBarMode::kNewTab) {
@@ -866,8 +920,7 @@ class CommandBar : public views::View,
                      area.y() + top - kShadowInsets.top(),
                      width + kShadowInsets.width(),
                      GetPreferredSize().height());
-    views::View::ConvertRectToScreen(browser_view_, &bounds);
-    GetWidget()->SetBounds(bounds);
+    PlaceChildWidget(browser_view_, GetWidget(), bounds);
   }
 
   raw_ptr<BrowserView> browser_view_;
@@ -954,7 +1007,8 @@ DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(CommandBarHost, kCommandBarHostKey)
 }  // namespace
 
 bool ShowCommandBar(BrowserWindowInterface* browser, CommandBarMode mode) {
-  if (!browser || browser->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
+  if (!browser || (browser->GetType() != BrowserWindowInterface::TYPE_NORMAL &&
+                   !IsLittleWindow(browser))) {
     return false;
   }
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
@@ -969,7 +1023,7 @@ bool ShowCommandBar(BrowserWindowInterface* browser, CommandBarMode mode) {
   if (!host->bar()) {
     return false;
   }
-  host->bar()->Show(mode);
+  host->bar()->Show(IsLittleWindow(browser) ? CommandBarMode::kCurrentTab : mode);
   return true;
 }
 

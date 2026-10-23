@@ -7,14 +7,14 @@
 #include <utility>
 #include <vector>
 
-#include "build/build_config.h"
-#include "base/files/file_enumerator.h"
 #include "base/base_paths.h"
 #include "base/containers/span.h"
+#include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/json/json_reader.h"
+#include "base/json/json_writer.h"
 #include "base/path_service.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
@@ -22,11 +22,16 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
+#include "base/uuid.h"
 #include "base/values.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/browser_tabrestore.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/mori/mori_favicons.h"
+#include "chrome/browser/ui/views/mori/mori_folder_session.h"
+#include "chrome/browser/ui/views/mori/mori_folders.h"
+#include "chrome/browser/ui/views/mori/mori_import_parser.h"
 #include "chrome/browser/ui/views/mori/mori_toast.h"
 #include "components/sessions/core/serialized_navigation_entry.h"
 #include "components/sessions/core/serialized_user_agent_override.h"
@@ -35,29 +40,10 @@
 namespace mori {
 namespace {
 
-struct ImportedTab {
-  std::string url;
-  std::string title;
-};
-
-// A Zen workspace, Firefox window or Arc space: its pinned tabs first,
-// then its folders' tabs, then the rest.
-struct ImportedSpace {
-  std::string name;
-  std::vector<ImportedTab> tabs;
-};
-
-struct Imported {
-  bool found = false;
-  std::vector<ImportedTab> favorites;
-  std::vector<ImportedSpace> spaces;
-};
-
-// Pages worth bringing over (not about:, chrome:, file: pages...).
-bool Importable(const std::string& url) {
-  const GURL gurl(url);
-  return gurl.is_valid() && gurl.SchemeIsHTTPOrHTTPS();
-}
+using importer::Imported;
+using importer::ImportedSpace;
+using importer::ImportedTab;
+using importer::ParseMozillaSession;
 
 // ---- Firefox and Zen ----------------------------------------------------
 
@@ -166,7 +152,8 @@ std::optional<base::FilePath> ProfileFromIni(const base::FilePath& root) {
     if (!name.starts_with("Profile")) {
       continue;
     }
-    if (auto it = values.find("Default"); it != values.end() && it->second == "1") {
+    if (auto it = values.find("Default");
+        it != values.end() && it->second == "1") {
       return resolve(values);
     }
     if (!first) {
@@ -213,172 +200,6 @@ std::optional<base::FilePath> FindMozillaProfile(ImportSource source) {
 #endif
 }
 
-const std::string* Str(const base::DictValue& dict, std::string_view key) {
-  return dict.FindString(key);
-}
-
-bool Flag(const base::DictValue& dict, std::string_view key) {
-  return dict.FindBool(key).value_or(false);
-}
-
-// The page a session tab shows (`index` is 1-based into `entries`); for
-// pinned tabs Zen remembers the page they were pinned at, which is where
-// they reset to.
-std::optional<ImportedTab> SessionTab(const base::DictValue& tab) {
-  const base::DictValue* entry = nullptr;
-  if (const base::DictValue* pinned =
-          tab.FindDictByDottedPath("_zenPinnedInitialState.entry");
-      pinned && Str(*pinned, "url")) {
-    entry = pinned;
-  }
-  if (!entry) {
-    const base::ListValue* entries = tab.FindList("entries");
-    if (!entries || entries->empty()) {
-      return std::nullopt;
-    }
-    const int index = tab.FindInt("index").value_or(entries->size());
-    const size_t at = std::clamp<size_t>(index > 0 ? index - 1 : 0, 0,
-                                         entries->size() - 1);
-    entry = (*entries)[at].GetIfDict();
-  }
-  const std::string* url = entry ? Str(*entry, "url") : nullptr;
-  if (!url || !Importable(*url)) {
-    return std::nullopt;
-  }
-  std::string title;
-  if (const std::string* label = Str(tab, "zenStaticLabel");
-      label && !base::TrimWhitespaceASCII(*label, base::TRIM_ALL).empty()) {
-    title = *label;
-  } else if (const std::string* entry_title = Str(*entry, "title")) {
-    title = *entry_title;
-  }
-  return ImportedTab{*url, title};
-}
-
-Imported ParseMozillaSession(const base::Value& json) {
-  Imported out;
-  out.found = true;
-  std::vector<const base::DictValue*> windows;
-  if (const base::ListValue* list =
-          json.is_dict() ? json.GetDict().FindList("windows") : nullptr) {
-    for (const base::Value& window : *list) {
-      if (const base::DictValue* dict = window.GetIfDict()) {
-        windows.push_back(dict);
-      }
-    }
-  } else if (json.is_dict()) {
-    windows.push_back(&json.GetDict());  // Zen's zen-sessions.
-  }
-  auto tabs_of = [](const base::DictValue& window) {
-    std::vector<const base::DictValue*> tabs;
-    if (const base::ListValue* list = window.FindList("tabs")) {
-      for (const base::Value& tab : *list) {
-        if (const base::DictValue* dict = tab.GetIfDict()) {
-          tabs.push_back(dict);
-        }
-      }
-    }
-    return tabs;
-  };
-  bool zen = false;
-  for (const base::DictValue* window : windows) {
-    if (window->Find("spaces")) {
-      zen = true;
-    }
-    for (const base::DictValue* tab : tabs_of(*window)) {
-      if (Str(*tab, "zenWorkspace")) {
-        zen = true;
-      }
-    }
-  }
-
-  if (!zen) {
-    // Firefox: a space per window; pinned tabs first, then the rest.
-    int number = 0;
-    for (const base::DictValue* window : windows) {
-      ImportedSpace space;
-      space.name = "Window " + base::NumberToString(++number);
-      std::vector<ImportedTab> rest;
-      for (const base::DictValue* tab : tabs_of(*window)) {
-        if (Flag(*tab, "hidden")) {
-          continue;
-        }
-        if (std::optional<ImportedTab> imported = SessionTab(*tab)) {
-          (Flag(*tab, "pinned") ? space.tabs : rest).push_back(*imported);
-        }
-      }
-      space.tabs.insert(space.tabs.end(), rest.begin(), rest.end());
-      out.spaces.push_back(std::move(space));
-    }
-    return out;
-  }
-
-  // Zen: essentials become favorites; each workspace a space.
-  std::vector<std::string> order;
-  std::map<std::string, ImportedSpace> spaces;
-  std::map<std::string, std::vector<ImportedTab>> pinned;
-  std::map<std::string, std::vector<ImportedTab>> folders;
-  for (const base::DictValue* window : windows) {
-    if (const base::ListValue* list = window->FindList("spaces")) {
-      for (const base::Value& item : *list) {
-        const base::DictValue* dict = item.GetIfDict();
-        const std::string* uuid = dict ? Str(*dict, "uuid") : nullptr;
-        if (uuid && !spaces.contains(*uuid)) {
-          order.push_back(*uuid);
-          const std::string* name = Str(*dict, "name");
-          spaces[*uuid].name = name ? *name : std::string();
-        }
-      }
-    }
-  }
-  std::set<std::string> favorite_urls;
-  for (const base::DictValue* window : windows) {
-    for (const base::DictValue* tab : tabs_of(*window)) {
-      if (Flag(*tab, "zenIsEmpty") || Flag(*tab, "zenIsGlance")) {
-        continue;
-      }
-      std::optional<ImportedTab> imported = SessionTab(*tab);
-      if (!imported) {
-        continue;
-      }
-      if (Flag(*tab, "zenEssential")) {
-        if (favorite_urls.insert(imported->url).second) {
-          out.favorites.push_back(*imported);
-        }
-        continue;
-      }
-      // Tabs of a workspace the file doesn't list go to the first one.
-      std::string workspace;
-      if (const std::string* id = Str(*tab, "zenWorkspace");
-          id && spaces.contains(*id)) {
-        workspace = *id;
-      } else if (!order.empty()) {
-        workspace = order.front();
-      }
-      if (!spaces.contains(workspace)) {
-        order.push_back(workspace);
-        spaces[workspace];
-      }
-      if (Str(*tab, "groupId")) {
-        folders[workspace].push_back(*imported);
-      } else if (Flag(*tab, "pinned")) {
-        pinned[workspace].push_back(*imported);
-      } else {
-        spaces[workspace].tabs.push_back(*imported);
-      }
-    }
-  }
-  for (const std::string& id : order) {
-    ImportedSpace space = std::move(spaces[id]);
-    std::vector<ImportedTab> tabs = std::move(pinned[id]);
-    tabs.insert(tabs.end(), folders[id].begin(), folders[id].end());
-    tabs.insert(tabs.end(), space.tabs.begin(), space.tabs.end());
-    space.tabs = std::move(tabs);
-    out.spaces.push_back(std::move(space));
-  }
-  return out;
-}
-
 Imported ReadMozilla(ImportSource source) {
   std::optional<base::FilePath> profile = FindMozillaProfile(source);
   if (!profile) {
@@ -403,22 +224,6 @@ Imported ReadMozilla(ImportSource source) {
 }
 
 // ---- Arc ------------------------------------------------------------------
-
-std::optional<ImportedTab> ArcTab(const base::DictValue& item) {
-  const base::DictValue* tab = item.FindDictByDottedPath("data.tab");
-  const std::string* url = tab ? Str(*tab, "savedURL") : nullptr;
-  if (!url || !Importable(*url)) {
-    return std::nullopt;
-  }
-  std::string title;
-  if (const std::string* own = Str(item, "title");
-      own && !base::TrimWhitespaceASCII(*own, base::TRIM_ALL).empty()) {
-    title = *own;
-  } else if (const std::string* saved = Str(*tab, "savedTitle")) {
-    title = *saved;
-  }
-  return ImportedTab{*url, title};
-}
 
 Imported ReadArc() {
   base::FilePath home;
@@ -451,119 +256,15 @@ Imported ReadArc() {
            "Library/Application Support/Arc/StorableSidebar.json",
 #endif
            "StorableSidebar.json", "Downloads/StorableSidebar.json"}) {
-    if (!text.empty() || base::ReadFileToString(home.AppendASCII(where), &text)) {
+    if (!text.empty() ||
+        base::ReadFileToString(home.AppendASCII(where), &text)) {
       break;
     }
   }
   std::optional<base::Value> json =
       text.empty() ? std::nullopt
                    : base::JSONReader::Read(text, base::JSON_PARSE_RFC);
-  const base::ListValue* containers =
-      json && json->is_dict()
-          ? json->GetDict().FindListByDottedPath("sidebar.containers")
-          : nullptr;
-  if (!containers) {
-    return {};
-  }
-  const base::DictValue* container = nullptr;
-  for (const base::Value& item : *containers) {
-    if (item.is_dict() && item.GetDict().Find("items")) {
-      container = &item.GetDict();
-    }
-  }
-  if (!container) {
-    return {};
-  }
-  Imported out;
-  out.found = true;
-  // Arc's lists are flattened [id, object, id, object, ...].
-  std::map<std::string, const base::DictValue*> items;
-  for (const base::Value& item : *container->FindList("items")) {
-    if (const base::DictValue* dict = item.GetIfDict()) {
-      if (const std::string* id = Str(*dict, "id")) {
-        items[*id] = dict;
-      }
-    }
-  }
-  auto ids = [](const base::ListValue* list) {
-    std::vector<std::string> out;
-    if (list) {
-      for (const base::Value& v : *list) {
-        if (v.is_string()) {
-          out.push_back(v.GetString());
-        }
-      }
-    }
-    return out;
-  };
-  auto children = [&](const std::string& id) {
-    std::vector<const base::DictValue*> out;
-    auto it = items.find(id);
-    if (it != items.end()) {
-      for (const std::string& child : ids(it->second->FindList("childrenIds"))) {
-        if (auto c = items.find(child); c != items.end()) {
-          out.push_back(c->second);
-        }
-      }
-    }
-    return out;
-  };
-  // Tabs under an item, folders flattened.
-  auto collect = [&](auto& self, const base::DictValue& item,
-                     std::vector<ImportedTab>& tabs, int depth) -> void {
-    if (depth > 32) {
-      return;
-    }
-    const std::string* id = Str(item, "id");
-    if (!id) {
-      return;
-    }
-    for (const base::DictValue* child : children(*id)) {
-      if (std::optional<ImportedTab> tab = ArcTab(*child)) {
-        tabs.push_back(*tab);
-      } else {
-        self(self, *child, tabs, depth + 1);
-      }
-    }
-  };
-  for (const std::string& top : ids(container->FindList("topAppsContainerIDs"))) {
-    for (const base::DictValue* child : children(top)) {
-      if (std::optional<ImportedTab> tab = ArcTab(*child)) {
-        out.favorites.push_back(*tab);
-      }
-    }
-  }
-  if (const base::ListValue* spaces = container->FindList("spaces")) {
-    for (const base::Value& value : *spaces) {
-      const base::DictValue* space = value.GetIfDict();
-      if (!space) {
-        continue;
-      }
-      ImportedSpace imported;
-      if (const std::string* title = Str(*space, "title")) {
-        imported.name = *title;
-      }
-      const std::vector<std::string> container_ids =
-          ids(space->FindList("containerIDs"));
-      auto after = [&](std::string_view label) -> std::optional<std::string> {
-        for (size_t i = 0; i + 1 < container_ids.size(); ++i) {
-          if (container_ids[i] == label) {
-            return container_ids[i + 1];
-          }
-        }
-        return std::nullopt;
-      };
-      for (std::string_view part : {"pinned", "unpinned"}) {
-        if (std::optional<std::string> id = after(part)) {
-          if (auto it = items.find(*id); it != items.end()) {
-            collect(collect, *it->second, imported.tabs, 0);
-          }
-        }
-      }
-      out.spaces.push_back(std::move(imported));
-    }
-  }
-  return out;
+  return json ? importer::ParseArcSidebar(*json) : Imported();
 }
 
 // ---- Into the window ----------------------------------------------------
@@ -573,7 +274,8 @@ void AddUnloadedTab(BrowserWindowInterface* browser,
                     const ImportedTab& tab,
                     int index,
                     std::optional<tab_groups::TabGroupId> group,
-                    bool pin) {
+                    bool pin,
+                    const std::map<std::string, std::string>& extra_data = {}) {
   sessions::SerializedNavigationEntry entry;
   entry.set_index(0);
   entry.set_virtual_url(GURL(tab.url));
@@ -584,10 +286,13 @@ void AddUnloadedTab(BrowserWindowInterface* browser,
   content::WebContents* contents = chrome::AddRestoredTab(
       browser, entries, index, 0, std::string(), group,
       /*select=*/false, pin, base::TimeTicks(), base::Time(), nullptr,
-      sessions::SerializedUserAgentOverride(), {},
+      sessions::SerializedUserAgentOverride(), extra_data,
       /*from_session_restore=*/false, std::nullopt);
   if (contents) {
     FetchIconForUnloadedTab(contents);
+    if (!extra_data.empty()) {
+      PersistTabFolder(contents);
+    }
   }
 }
 
@@ -608,8 +313,7 @@ void Apply(base::WeakPtr<BrowserWindowInterface> weak_browser,
     ShowToast(browser, source == ImportSource::kArc
                            ? u"Put a copy of Arc's StorableSidebar.json in "
                              u"your home or Downloads folder"
-                           : std::u16string(u"No ") + name +
-                                 u" profile found");
+                           : std::u16string(u"No ") + name + u" profile found");
 #endif
     return;
   }
@@ -629,17 +333,34 @@ void Apply(base::WeakPtr<BrowserWindowInterface> weak_browser,
   // tabs already open.
   int added = 0;
   for (const ImportedSpace& space : imported.spaces) {
+    std::map<std::string, std::string> folder_ids;
     for (const ImportedTab& tab : space.tabs) {
+      std::map<std::string, std::string> extra_data;
+      if (tab.folder) {
+        std::vector<FolderSessionNode> path;
+        auto append = [&](const importer::ImportedFolder& source) {
+          auto [it, fresh] = folder_ids.try_emplace(source.id);
+          if (fresh) {
+            it->second = base::Uuid::GenerateRandomV4().AsLowercaseString();
+          }
+          path.push_back({it->second, source.name, {}, source.open});
+        };
+        for (const auto& ancestor : tab.folder->ancestors) {
+          append(ancestor);
+        }
+        append(*tab.folder);
+        extra_data[kTabFolderKey] = EncodeFolderSession(path);
+      }
       AddUnloadedTab(browser, tab, model->count(), std::nullopt,
-                     /*pin=*/false);
+                     /*pin=*/false, extra_data);
       ++added;
     }
   }
-  ShowToast(browser,
-            added == 0 ? std::u16string(u"Nothing to import from ") + name
-                       : u"Imported " + base::NumberToString16(added) +
-                             (added == 1 ? u" tab" : u" tabs") + u" from " +
-                             name);
+  ShowToast(browser, added == 0
+                         ? std::u16string(u"Nothing to import from ") + name
+                         : u"Imported " + base::NumberToString16(added) +
+                               (added == 1 ? u" tab" : u" tabs") + u" from " +
+                               name);
 }
 
 }  // namespace

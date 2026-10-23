@@ -9,7 +9,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, LazyLock, Mutex, RwLock,
-        atomic::{AtomicBool, AtomicI32, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering},
     },
 };
 
@@ -411,6 +411,126 @@ pub fn delete_cookies(
     done: impl FnOnce(Vec<CookieInfo>) + Send + 'static,
 ) {
     walk_cookies(context, Some(Box::new(delete)), Box::new(done));
+}
+
+/// How an imported cookie is sent on cross-site requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SameSiteMode {
+    Unspecified,
+    None,
+    Lax,
+    Strict,
+}
+
+/// A cookie to store in a browsing context. An empty `domain` is host-only;
+/// a non-empty one is visible to that domain and its subdomains. `url`'s
+/// host must be the cookie's host.
+#[derive(Clone, Debug)]
+pub struct CookieToSet {
+    pub url: String,
+    pub domain: String,
+    pub name: String,
+    pub value: String,
+    pub path: String,
+    /// UNIX seconds. `None` is a session cookie.
+    pub expires_unix: Option<f64>,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: SameSiteMode,
+}
+
+type SetDone = Mutex<Option<Box<dyn FnOnce(usize) + Send>>>;
+
+struct SetState {
+    left: AtomicUsize,
+    ok: AtomicUsize,
+    done: SetDone,
+}
+
+impl SetState {
+    fn settle(&self, success: bool) {
+        if success {
+            self.ok.fetch_add(1, Ordering::Relaxed);
+        }
+        if self.left.fetch_sub(1, Ordering::AcqRel) == 1 {
+            let n = self.ok.load(Ordering::Relaxed);
+            if let Some(done) = self.done.lock().ok().and_then(|mut d| d.take()) {
+                done(n);
+            }
+        }
+    }
+}
+
+wrap_set_cookie_callback! {
+    struct CookieSet {
+        state: Arc<SetState>,
+    }
+
+    impl SetCookieCallback {
+        fn on_complete(&self, success: ::std::os::raw::c_int) {
+            self.state.settle(success == 1);
+        }
+    }
+}
+
+fn basetime_from_unix(secs: f64) -> Basetime {
+    Basetime { val: WINDOWS_EPOCH_OFFSET_US + (secs * 1_000_000.0) as i64 }
+}
+
+fn cef_same_site(mode: SameSiteMode) -> CookieSameSite {
+    match mode {
+        SameSiteMode::Unspecified => CookieSameSite::UNSPECIFIED,
+        SameSiteMode::None => CookieSameSite::NO_RESTRICTION,
+        SameSiteMode::Lax => CookieSameSite::LAX_MODE,
+        SameSiteMode::Strict => CookieSameSite::STRICT_MODE,
+    }
+}
+
+/// Store `cookies`, overwriting any with the same host, name and path.
+/// `done` receives how many Chromium accepted and may run on any thread.
+pub fn set_cookies(context: &BrowsingContext, cookies: Vec<CookieToSet>, done: impl FnOnce(usize) + Send + 'static) {
+    let Some(manager) = context.cef_context().and_then(|c| c.cookie_manager(None)) else {
+        done(0);
+        return;
+    };
+    if cookies.is_empty() {
+        done(0);
+        return;
+    }
+    let state = Arc::new(SetState {
+        left: AtomicUsize::new(cookies.len()),
+        ok: AtomicUsize::new(0),
+        done: Mutex::new(Some(Box::new(done))),
+    });
+    for cookie in &cookies {
+        let (has_expires, expires) = match cookie.expires_unix {
+            Some(secs) => (1, basetime_from_unix(secs)),
+            None => (0, basetime_from_unix(0.0)),
+        };
+        let cef = Cookie {
+            name: CefString::from(cookie.name.as_str()),
+            value: CefString::from(cookie.value.as_str()),
+            domain: CefString::from(cookie.domain.as_str()),
+            path: CefString::from(if cookie.path.is_empty() { "/" } else { cookie.path.as_str() }),
+            secure: cookie.secure as _,
+            httponly: cookie.http_only as _,
+            same_site: cef_same_site(cookie.same_site),
+            priority: CookiePriority::MEDIUM,
+            creation: basetime_from_unix(0.0),
+            last_access: basetime_from_unix(0.0),
+            has_expires,
+            expires,
+            ..Cookie::default()
+        };
+        let url = CefString::from(cookie.url.as_str());
+        let mut callback = CookieSet::new(state.clone());
+        if manager.set_cookie(Some(&url), Some(&cef), Some(&mut callback)) != 1 {
+            state.settle(false);
+        }
+    }
+    // Sets were queued on Chromium's IO thread; a flush queued after them
+    // runs once they have landed.
+    manager.flush_store(None);
 }
 
 /// A completion callback that runs once, from whichever thread finishes.

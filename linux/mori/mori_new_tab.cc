@@ -33,11 +33,8 @@
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/text_utils.h"
 #include "ui/views/accessibility/view_accessibility.h"
-#include "ui/views/controls/native/native_view_host.h"
 #include "ui/views/view.h"
-#include "ui/views/view_class_properties.h"
 #include "ui/views/view_observer.h"
-#include "ui/views/view_tracker.h"
 #include "ui/views/widget/widget.h"
 #include "url/gurl.h"
 
@@ -268,8 +265,8 @@ class NewTabPages : public TabStripModelObserver,
                       IsNewTabPage(contents->GetVisibleURL()) &&
                       browser_view_->GetWidget();
     if (!show) {
-      if (host_.view()) {
-        host_.view()->SetVisible(false);
+      if (overlay_) {
+        overlay_->Hide();
       }
       return;
     }
@@ -277,25 +274,7 @@ class NewTabPages : public TabStripModelObserver,
       overlay_ = std::make_unique<Overlay>(
           browser_view_,
           std::make_unique<NewTabView>(browser_view_->browser()),
-          "MoriNewTab");
-      // A child widget on its own sits above every view in the window,
-      // the floating sidebar too. Hosted in the view tree, as the page
-      // itself is, it stacks just above the card and below the sidebar.
-      size_t index = browser_view_->children().size();
-      for (views::View* child = card; child; child = child->parent()) {
-        if (child->parent() == browser_view_) {
-          index = *browser_view_->GetIndexOf(child) + 1;
-          break;
-        }
-      }
-      auto* host = browser_view_->AddChildViewAt(
-          std::make_unique<views::NativeViewHost>(), index);
-      host->SetProperty(views::kViewIgnoredByLayoutKey, true);
-      host->SetVisible(false);
-      views::Widget* widget = overlay_->contents()->GetWidget();
-      host->Attach(widget->GetNativeView());
-      widget->Show();
-      host_.SetView(host);
+          "MoriNewTab", Overlay::Layer::kPageContent);
     }
     // The card moves with the sidebar and resizes with the window.
     if (!view_observation_.IsObservingSource(card)) {
@@ -304,19 +283,12 @@ class NewTabPages : public TabStripModelObserver,
     if (!view_observation_.IsObservingSource(browser_view_.get())) {
       view_observation_.AddObservation(browser_view_.get());
     }
-    views::View* host = host_.view();
-    if (!host) {
-      return;
-    }
-    host->SetBoundsRect(views::View::ConvertRectToTarget(
+    overlay_->Show(views::View::ConvertRectToTarget(
         card, browser_view_, card->GetLocalBounds()));
-    host->SetVisible(true);
   }
 
   raw_ptr<BrowserView> browser_view_;
   std::unique_ptr<Overlay> overlay_;
-  // The overlay's place in the BrowserView, which owns (and may delete) it.
-  views::ViewTracker host_;
   base::ScopedMultiSourceObservation<views::View, views::ViewObserver>
       view_observation_{this};
 };

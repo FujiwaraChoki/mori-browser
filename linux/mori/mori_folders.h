@@ -1,11 +1,6 @@
-// Zen's folders (Arc's, Mori 3's): a named run of tabs under a header with
-// Zen's folder icon, which opens and closes. A closed folder keeps showing
-// its active tab, as in Zen.
-//
-// Folders are Mori's own, not Chromium's tab groups: each tab carries its
-// folder (id, name, icon, open) in its session data, and a folder is the
-// run of tabs that share one. Moving a tab between two tabs of a folder
-// puts it in the folder; moving it away from the run takes it out.
+// Nested sidebar folders. Every tab saves its immediate folder and all
+// ancestors in Chromium's session. Folder subtrees precede Add Tab; ordinary
+// tabs follow it. Collapsing a folder hides its complete subtree.
 
 #ifndef CHROME_BROWSER_UI_VIEWS_MORI_MORI_FOLDERS_H_
 #define CHROME_BROWSER_UI_VIEWS_MORI_MORI_FOLDERS_H_
@@ -52,20 +47,18 @@ struct FolderInfo {
   // A Lucide icon's name shown on the folder; empty for none.
   std::string icon;
   bool open = true;
+  std::string parent;
 };
 
 // How UnpinnedTabContainerViewLayout lays out one of its rows (a tab or a
 // split pair) when folders are involved.
 struct FolderRow {
-  // The folder header that goes above the row, if the row starts a folder.
-  raw_ptr<views::View> header = nullptr;
-  // In a closed folder (and not the active tab).
+  raw_ptr<views::View> view = nullptr;
   bool hidden = false;
   int indent = 0;
 };
 
-// One FolderRow per row of the vertical tab list `container` (`node`'s
-// children, in order).
+// Folder headers, member tabs, Add Tab, then ordinary tabs in display order.
 std::vector<FolderRow> GetFolderRows(const views::View* container,
                                      const TabCollectionNode* node);
 
@@ -82,6 +75,9 @@ std::unique_ptr<views::View> CreateFolderHeaders();
 // rewrites of the session file).
 std::string GetTabFolderData(const content::WebContents* contents);
 
+// Persists a newly imported tab's folder once the tab belongs to a window.
+void PersistTabFolder(content::WebContents* contents);
+
 // From a restored tab's session data.
 void RestoreTabFolder(content::WebContents* contents,
                       const std::map<std::string, std::string>& extra_data);
@@ -91,6 +87,14 @@ std::optional<FolderInfo> GetTabFolder(const tabs::TabInterface* tab);
 
 // The folders, in sidebar order.
 std::vector<FolderInfo> ListFolders(BrowserWindowInterface* browser);
+
+// Creates a folder with a blank tab and starts renaming its header.
+void NewFolder(BrowserWindowInterface* browser);
+void NewSubfolder(BrowserWindowInterface* browser, const std::string& parent);
+// An empty parent moves a folder to the root. Rejects cycles.
+void MoveFolder(BrowserWindowInterface* browser, const std::string& folder,
+                const std::string& parent);
+int IndexAfterFolders(BrowserWindowInterface* browser);
 
 // Makes a "New Folder" holding `tab` and starts renaming it.
 void NewFolderWithTab(BrowserWindowInterface* browser, tabs::TabInterface* tab);

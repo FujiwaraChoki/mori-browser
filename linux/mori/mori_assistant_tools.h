@@ -62,7 +62,8 @@ std::optional<Approval> ApprovalFor(BrowserWindowInterface* browser,
 void ExecuteTool(BrowserWindowInterface* browser,
                  const std::string& tool,
                  base::DictValue args,
-                 base::OnceCallback<void(ToolOutcome)> done);
+                 base::OnceCallback<void(ToolOutcome)> done,
+                 base::RepeatingCallback<bool()> is_current);
 
 // `text` capped at `max` characters, marking the cut.
 std::string Clip(const std::string& text, size_t max);

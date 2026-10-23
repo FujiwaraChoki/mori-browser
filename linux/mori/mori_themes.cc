@@ -20,6 +20,7 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/vector2d.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/views/view.h"
 
@@ -28,6 +29,17 @@ namespace {
 
 // The opacity Mori 3 paints the wash at over the window background.
 constexpr float kWashOpacity = 0.5f;
+
+// Theme pixels are recorded in each view's local paint coordinates. Compositor
+// transforms move those pixels afterwards, so they must not affect which part
+// of the window's gradient is recorded (notably while the sidebar slides).
+gfx::Vector2d LayoutOffset(const views::View* view) {
+  gfx::Vector2d offset;
+  for (; view; view = view->parent()) {
+    offset += view->GetMirroredPosition().OffsetFromOrigin();
+  }
+  return offset;
+}
 
 std::string ColorHex(SkColor color) {
   return base::StringPrintf("#%02X%02X%02X", SkColorGetR(color),
@@ -211,9 +223,11 @@ void PaintThemeWash(gfx::Canvas* canvas,
   if (!colors) {
     return;
   }
-  // The wash spans the window, wherever `view` sits in it.
-  const gfx::Rect dest = views::View::ConvertRectToTarget(
-      browser_view, view, browser_view->GetLocalBounds());
+  // Align every chrome surface to the same window gradient using layout
+  // positions. ConvertRectToTarget also includes animated layer transforms,
+  // which would bake a different tint into whichever surface repaints mid-slide.
+  gfx::Rect dest = browser_view->GetLocalBounds();
+  dest.Offset(LayoutOffset(browser_view) - LayoutOffset(view));
   const SkBitmap& bitmap = WashBitmap(*colors);
   cc::PaintFlags flags;
   flags.setAlphaf(kWashOpacity);

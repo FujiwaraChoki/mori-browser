@@ -1,0 +1,18 @@
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -4607,6 +4607,15 @@
+ }
+ 
+ int BrowserView::NonClientHitTest(const gfx::Point& point) {
++  // Mori's page card starts below infobars. Test them before treating the
++  // strip above the card as a draggable caption, including in fullscreen.
++  if (infobar_container_ && infobar_container_->GetVisible()) {
++    gfx::Point infobar_point(point);
++    if (ConvertedHitTest(parent(), infobar_container_, &infobar_point)) {
++      return HTCLIENT;
++    }
++  }
++
+ #if BUILDFLAG(IS_MAC)
+   // The top container while in immersive fullscreen on macOS lives in another
+   // Widget (OverlayWidgetMac). This means that BrowserView does not need to

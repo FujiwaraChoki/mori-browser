@@ -9,14 +9,20 @@
 //! Mapping (Arc's onboarding does the same):
 //! - bookmarks → the bookmarks list (History & Bookmarks),
 //! - history → history,
+//! - cookies → the profile's cookie jar (so sites stay signed in),
 //! - open tabs and saved sessions → a space per window or workspace, with
 //!   pinned tabs pinned and tab groups / folders as folders,
 //! - Zen essentials and Arc favorites ("top apps") → Mori's favorites,
 //!   which every space shares (pinned rows of the first imported space
 //!   once the favorites are full).
+//!
+//! Cookies are not applied here: they live in Chromium, so the caller
+//! stores [`Imported::cookies`] and reports how many landed in
+//! [`Summary::cookies`].
 
 mod arc;
 mod chromium;
+mod cookies;
 mod firefox;
 
 pub use arc::SIDEBAR_FILE as ARC_SIDEBAR_FILE;
@@ -97,6 +103,7 @@ enum Family {
 pub struct Contents {
     pub bookmarks: bool,
     pub history: bool,
+    pub cookies: bool,
     /// Open tabs or a saved session (Zen workspaces and pinned tabs, Arc
     /// spaces).
     pub tabs: bool,
@@ -104,7 +111,7 @@ pub struct Contents {
 
 impl Contents {
     pub fn any(&self) -> bool {
-        self.bookmarks || self.history || self.tabs
+        self.bookmarks || self.history || self.cookies || self.tabs
     }
 
     /// "Bookmarks, history and tabs".
@@ -112,6 +119,7 @@ impl Contents {
         let parts: Vec<&str> = [
             (self.bookmarks, "bookmarks"),
             (self.history, "history"),
+            (self.cookies, "cookies"),
             (self.tabs, "tabs"),
         ]
         .iter()
@@ -159,6 +167,7 @@ impl Source {
 pub struct Options {
     pub bookmarks: bool,
     pub history: bool,
+    pub cookies: bool,
     pub tabs: bool,
 }
 
@@ -166,6 +175,7 @@ impl Options {
     pub const ALL: Options = Options {
         bookmarks: true,
         history: true,
+        cookies: true,
         tabs: true,
     };
 
@@ -174,12 +184,13 @@ impl Options {
         Options {
             bookmarks: self.bookmarks && contents.bookmarks,
             history: self.history && contents.history,
+            cookies: self.cookies && contents.cookies,
             tabs: self.tabs && contents.tabs,
         }
     }
 
     pub fn any(&self) -> bool {
-        self.bookmarks || self.history || self.tabs
+        self.bookmarks || self.history || self.cookies || self.tabs
     }
 }
 
@@ -198,6 +209,58 @@ pub struct ImportedVisit {
     /// UNIX seconds.
     pub last_visited: f64,
     pub visit_count: u32,
+}
+
+/// Whether a cookie is sent on cross-site requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SameSite {
+    Unspecified,
+    /// Sent on cross-site requests too (`SameSite=None`).
+    None,
+    Lax,
+    Strict,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImportedCookie {
+    /// Host as the other browser stored it. A leading `.` is a domain cookie
+    /// (visible to subdomains); without one it is host-only.
+    pub host: String,
+    pub name: String,
+    pub value: String,
+    pub path: String,
+    /// UNIX seconds. `None` is a session cookie.
+    pub expires: Option<f64>,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: SameSite,
+}
+
+impl ImportedCookie {
+    /// `(url, domain)` for Chromium's cookie jar. `domain` is empty for a
+    /// host-only cookie; a domain cookie's domain has no leading dot.
+    pub fn storage_target(&self) -> Option<(String, String)> {
+        let raw = self.host.trim();
+        let host = raw.trim_start_matches('.').to_ascii_lowercase();
+        let host = host.as_str();
+        let host_ok = !host.is_empty()
+            && host.bytes().all(|b| b.is_ascii_graphic() && !matches!(b, b'/' | b'?' | b'#' | b':' | b'@'));
+        if !host_ok {
+            return None;
+        }
+        let path = if self.path.is_empty() {
+            "/"
+        } else if self.path.starts_with('/')
+            && self.path.bytes().all(|b| b.is_ascii() && !b.is_ascii_control() && !matches!(b, b'?' | b'#' | b' '))
+        {
+            self.path.as_str()
+        } else {
+            return None;
+        };
+        let scheme = if self.secure { "https" } else { "http" };
+        let domain = if raw.starts_with('.') { host.to_string() } else { String::new() };
+        Some((format!("{scheme}://{host}{path}"), domain))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -242,6 +305,7 @@ impl ImportedSpace {
 pub struct Imported {
     pub bookmarks: Vec<ImportedBookmark>,
     pub history: Vec<ImportedVisit>,
+    pub cookies: Vec<ImportedCookie>,
     /// Zen essentials and Arc favorites.
     pub favorites: Vec<ImportedTab>,
     pub spaces: Vec<ImportedSpace>,
@@ -254,6 +318,8 @@ pub struct Imported {
 pub struct Summary {
     pub bookmarks: usize,
     pub history: usize,
+    /// Set by the caller after the cookies are stored in Chromium.
+    pub cookies: usize,
     pub tabs: usize,
     pub spaces: usize,
 }
@@ -272,6 +338,9 @@ impl Summary {
         }
         if self.history > 0 {
             parts.push(plural(self.history, "history entry", "history entries"));
+        }
+        if self.cookies > 0 {
+            parts.push(plural(self.cookies, "cookie", "cookies"));
         }
         if self.tabs > 0 {
             let mut tabs = plural(self.tabs, "tab", "tabs");
@@ -305,6 +374,7 @@ fn group_digits(n: usize) -> String {
 pub enum Step {
     Bookmarks,
     History,
+    Cookies,
     Tabs,
 }
 
@@ -313,6 +383,7 @@ impl Step {
         match self {
             Step::Bookmarks => "Reading bookmarks…",
             Step::History => "Reading history…",
+            Step::Cookies => "Reading cookies…",
             Step::Tabs => "Reading tabs…",
         }
     }
@@ -331,7 +402,7 @@ pub fn detect(home: &Path) -> Vec<Source> {
 /// The source to offer first: the one with the most to import (bookmarks,
 /// history and tabs), the earliest found on a tie.
 pub fn suggested(sources: &[Source]) -> usize {
-    let score = |c: &Contents| c.bookmarks as u8 + c.history as u8 + c.tabs as u8;
+    let score = |c: &Contents| c.bookmarks as u8 + c.history as u8 + c.cookies as u8 + c.tabs as u8;
     let mut best = 0;
     for (i, s) in sources.iter().enumerate() {
         if score(&s.contents) > score(&sources[best].contents) {
@@ -349,6 +420,7 @@ pub fn read(source: &Source, options: Options, progress: &mut dyn FnMut(Step, us
     let steps: Vec<Step> = [
         (options.bookmarks, Step::Bookmarks),
         (options.history, Step::History),
+        (options.cookies, Step::Cookies),
         (options.tabs, Step::Tabs),
     ]
     .into_iter()
@@ -368,6 +440,7 @@ pub fn read(source: &Source, options: Options, progress: &mut dyn FnMut(Step, us
             let what = match step {
                 Step::Bookmarks => "bookmarks",
                 Step::History => "history",
+                Step::Cookies => "cookies",
                 Step::Tabs => "tabs",
             };
             imported.problems.push(format!("Couldn't read {what}"));
@@ -382,6 +455,7 @@ pub fn read(source: &Source, options: Options, progress: &mut dyn FnMut(Step, us
 /// the tabs it doesn't have yet, and favorites already saved (a favorite or
 /// a pinned tab of the same site) are skipped.
 /// Imported spaces are named "<browser> · <name>" (or just the browser).
+/// Cookies are left in [`Imported::cookies`] for the caller to store.
 pub fn apply(
     kind: BrowserKind,
     imported: &Imported,
@@ -946,20 +1020,43 @@ mod tests {
     #[test]
     fn summaries_read_naturally() {
         assert_eq!(Summary::default().describe(), "Nothing new to import");
-        let s = Summary { bookmarks: 1, history: 2000, tabs: 34, spaces: 2 };
-        assert_eq!(s.describe(), "1 bookmark, 2,000 history entries and 34 tabs in 2 new spaces");
+        let s = Summary { bookmarks: 1, history: 2000, cookies: 40, tabs: 34, spaces: 2 };
+        assert_eq!(s.describe(), "1 bookmark, 2,000 history entries, 40 cookies and 34 tabs in 2 new spaces");
         assert_eq!(Summary { tabs: 3, ..Default::default() }.describe(), "3 tabs");
-        let c = Contents { bookmarks: true, history: false, tabs: true };
-        assert_eq!(c.describe(), "Bookmarks and tabs");
+        assert_eq!(Summary { cookies: 1, ..Default::default() }.describe(), "1 cookie");
+        let c = Contents { bookmarks: true, history: false, cookies: true, tabs: true };
+        assert_eq!(c.describe(), "Bookmarks, cookies and tabs");
         assert_eq!(Contents { history: true, ..Default::default() }.describe(), "History");
     }
 
     #[test]
     fn options_follow_what_a_source_has() {
-        let c = Contents { bookmarks: true, history: false, tabs: true };
+        let c = Contents { bookmarks: true, history: false, cookies: false, tabs: true };
         let o = Options::ALL.limited_to(c);
-        assert_eq!(o, Options { bookmarks: true, history: false, tabs: true });
-        assert!(!Options { bookmarks: false, history: false, tabs: false }.any());
+        assert_eq!(o, Options { bookmarks: true, history: false, cookies: false, tabs: true });
+        assert!(!Options { bookmarks: false, history: false, cookies: false, tabs: false }.any());
+    }
+
+    #[test]
+    fn a_cookie_keeps_its_host_scope() {
+        let domain = ImportedCookie {
+            host: ".Example.com".into(),
+            name: "sid".into(),
+            value: "abc".into(),
+            path: "/app".into(),
+            expires: Some(1.0),
+            secure: true,
+            http_only: true,
+            same_site: SameSite::Lax,
+        };
+        assert_eq!(domain.storage_target(), Some(("https://example.com/app".into(), "example.com".into())));
+        let mut host_only = domain.clone();
+        host_only.host = "accounts.example.com".into();
+        host_only.secure = false;
+        host_only.path.clear();
+        assert_eq!(host_only.storage_target(), Some(("http://accounts.example.com/".into(), String::new())));
+        host_only.host = "not a host".into();
+        assert_eq!(host_only.storage_target(), None);
     }
 
     #[test]
@@ -968,7 +1065,7 @@ mod tests {
             kind,
             profile: "Default".into(),
             path: PathBuf::new(),
-            contents: Contents { bookmarks, history, tabs },
+            contents: Contents { bookmarks, history, cookies: false, tabs },
         };
         let sources = vec![
             source(BrowserKind::Chrome, false, true, false),

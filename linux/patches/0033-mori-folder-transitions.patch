@@ -1,0 +1,178 @@
+--- a/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
++++ b/chrome/browser/ui/views/tabs/common/unpinned_tab_container_view_layout.cc
+@@ -244,7 +244,14 @@
+     auto* child = row.view.get();
+     const int x = horizontal_padding + row.indent;
+     if (row.hidden) {
+-      layouts.child_layouts.emplace_back(child, false, gfx::Rect());
++      // Mori: retain the row's horizontal geometry and collapse it beneath
++      // its folder. Empty bounds at (0, 0) make reopening rows fly diagonally
++      // from the top of the sidebar, including nested folder headers.
++      const int available_width = size_bounds.width().is_bounded()
++          ? std::max(0, size_bounds.width().value() - x - horizontal_padding)
++          : child->GetPreferredSize(size_bounds).width();
++      layouts.child_layouts.emplace_back(
++          child, false, gfx::Rect(x, height, available_width, 0));
+       continue;
+     }
+     const bool is_tab_row = std::ranges::find(children, child) != children.end();
+--- a/chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.cc
+@@ -557,16 +557,40 @@
+         }
+       } else if (auto start_it = start_view_layout_map_.find(child_view);
+                  start_it != start_view_layout_map_.end()) {
+-        // Moved child.
+-        // Interpolate between start and target bounds.
+-        interpolated_child.bounds = gfx::Tween::RectValueBetween(
+-            value, start_it->second.bounds, target_it->second.bounds);
+-        // Snap visibility to target.
+-        interpolated_child.visible = target_it->second.visible;
++        const bool opening_sidebar_row =
++            animation_axis_ == AnimationAxis::kVertical &&
++            !start_it->second.visible && target_it->second.visible;
++        if (opening_sidebar_row) {
++          // Mori: reveal a full-height row with a short slide and fade. Growing
++          // from zero height repeatedly relayouts the favicon, title and close
++          // button into a cramped row, making folder opening look crushed.
++          gfx::Rect initial_bounds = target_it->second.bounds;
++          initial_bounds.Offset(0, -6);
++          interpolated_child.bounds = gfx::Tween::RectValueBetween(
++              value, initial_bounds, target_it->second.bounds);
++          if (!child_view->layer()) {
++            child_view->SetPaintToLayer();
++            child_view->layer()->SetFillsBoundsOpaquely(false);
++          }
++          child_view->layer()->SetOpacity(static_cast<float>(value));
++          SetMoriScale(child_view, interpolated_child.bounds, 1.0);
++        } else {
++          // Moved or closing child: retain the existing bounds transition.
++          interpolated_child.bounds = gfx::Tween::RectValueBetween(
++              value, start_it->second.bounds, target_it->second.bounds);
++        }
++        // Mori: keep collapsing sidebar rows visible while their bounds
++        // shrink. Opening rows become visible immediately; at completion use
++        // the target visibility so collapsed descendants cannot take input.
++        interpolated_child.visible =
++            target_it->second.visible ||
++            (animation_axis_ == AnimationAxis::kVertical && value < 1.0 &&
++             start_it->second.visible);
+         // In the case layouts are updated mid-animation, ensure any previously
+         // added views that are now treated as moved views are snapped to being
+         // opaque.
+-        if (child_view->layer() && (child_view->layer()->opacity() != 1.0f)) {
++        if (!opening_sidebar_row && child_view->layer() &&
++            (child_view->layer()->opacity() != 1.0f)) {
+           child_view->layer()->SetOpacity(1.0f);
+           // Mori: and back to full size.
+           SetMoriScale(child_view, target_it->second.bounds, 1.0);
+--- a/chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager_unittest.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager_unittest.cc
+@@ -14,6 +14,7 @@
+ #include "base/time/time.h"
+ #include "testing/gmock/include/gmock/gmock.h"
+ #include "testing/gtest/include/gtest/gtest.h"
++#include "ui/compositor/layer.h"
+ #include "ui/gfx/animation/animation.h"
+ #include "ui/gfx/animation/animation_test_api.h"
+ #include "ui/gfx/geometry/rect.h"
+@@ -32,6 +33,23 @@
+  public:
+   MOCK_METHOD(bool, IsViewDragging, (const views::View&), (const, override));
+   MOCK_METHOD(void, OnAnimationEnded, (), (override));
++};
++
++// Models a nested folder's child at a nonzero sidebar offset.
++class FolderTransitionLayout : public views::LayoutManagerBase {
++ public:
++  bool open = false;
++
++  views::ProposedLayout CalculateProposedLayout(
++      const views::SizeBounds& size_bounds) const override {
++    views::ProposedLayout layout;
++    layout.host_size = gfx::Size(200, open ? 160 : 120);
++    for (const auto& child : host_view()->children()) {
++      layout.child_layouts.emplace_back(
++          child, open, gfx::Rect(28, 120, 160, open ? 40 : 0));
++    }
++    return layout;
++  }
+ };
+ 
+ class TestLayoutManager : public views::LayoutManagerBase {
+@@ -171,6 +189,75 @@
+   raw_ptr<views::View> host_view_;
+   raw_ptr<TabCollectionAnimatingLayoutManager> layout_manager_;
+ };
++
++TEST_P(TabCollectionAnimatingLayoutManagerTest, FolderVisibilityTransition) {
++  if (animation_axis() !=
++      TabCollectionAnimatingLayoutManager::AnimationAxis::kVertical) {
++    return;
++  }
++  gfx::ScopedAnimationDurationScaleMode normal_duration_mode(
++      gfx::ScopedAnimationDurationScaleMode::NORMAL_DURATION);
++  auto folder_layout = std::make_unique<FolderTransitionLayout>();
++  auto* folder = folder_layout.get();
++  SetLayoutManager(std::make_unique<TabCollectionAnimatingLayoutManager>(
++      std::move(folder_layout), *layout_manager_delegate(), animation_axis()));
++  widget()->SetBounds(gfx::Rect(0, 0, 200, 200));
++  auto* child = host_view()->AddChildView(std::make_unique<views::View>());
++  widget()->LayoutRootViewIfNecessary();
++  task_environment()->FastForwardBy(base::Seconds(1));
++  widget()->LayoutRootViewIfNecessary();
++  EXPECT_FALSE(child->GetVisible());
++
++  folder->open = true;
++  host_view()->InvalidateLayout();
++  widget()->LayoutRootViewIfNecessary();
++  task_environment()->FastForwardBy(base::Milliseconds(40));
++  widget()->LayoutRootViewIfNecessary();
++  EXPECT_TRUE(child->GetVisible());
++  EXPECT_EQ(child->x(), 28);
++  EXPECT_GE(child->y(), 114);
++  EXPECT_LT(child->y(), 120);
++  EXPECT_EQ(child->width(), 160);
++  EXPECT_EQ(child->height(), 40);
++  ASSERT_TRUE(child->layer());
++  EXPECT_GT(child->layer()->opacity(), 0.0f);
++  EXPECT_LT(child->layer()->opacity(), 1.0f);
++
++  task_environment()->FastForwardBy(base::Seconds(1));
++  widget()->LayoutRootViewIfNecessary();
++  EXPECT_EQ(child->bounds(), gfx::Rect(28, 120, 160, 40));
++  EXPECT_FLOAT_EQ(child->layer()->opacity(), 1.0f);
++
++  folder->open = false;
++  host_view()->InvalidateLayout();
++  widget()->LayoutRootViewIfNecessary();
++  task_environment()->FastForwardBy(base::Milliseconds(40));
++  widget()->LayoutRootViewIfNecessary();
++  EXPECT_TRUE(child->GetVisible());
++  EXPECT_EQ(child->x(), 28);
++  EXPECT_EQ(child->y(), 120);
++  EXPECT_GT(child->height(), 0);
++  EXPECT_LT(child->height(), 40);
++
++  // Reopening during collapse continues from the current bounds.
++  const gfx::Rect interrupted_bounds = child->bounds();
++  folder->open = true;
++  host_view()->InvalidateLayout();
++  widget()->LayoutRootViewIfNecessary();
++  EXPECT_EQ(child->bounds(), interrupted_bounds);
++  task_environment()->FastForwardBy(base::Seconds(1));
++  widget()->LayoutRootViewIfNecessary();
++  EXPECT_TRUE(child->GetVisible());
++  EXPECT_EQ(child->bounds(), gfx::Rect(28, 120, 160, 40));
++  EXPECT_FLOAT_EQ(child->layer()->opacity(), 1.0f);
++
++  folder->open = false;
++  host_view()->InvalidateLayout();
++  widget()->LayoutRootViewIfNecessary();
++  task_environment()->FastForwardBy(base::Seconds(1));
++  widget()->LayoutRootViewIfNecessary();
++  EXPECT_FALSE(child->GetVisible());
++}
+ 
+ TEST_P(TabCollectionAnimatingLayoutManagerTest, AddChild) {
+   const bool is_vertical =

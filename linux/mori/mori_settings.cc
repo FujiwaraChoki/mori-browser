@@ -1,6 +1,7 @@
 #include "chrome/browser/ui/views/mori/mori_settings.h"
 
 #include "build/build_config.h"
+#include "base/callback_list.h"
 #include <algorithm>
 #include <limits>
 #include <memory>
@@ -19,6 +20,8 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
+#include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "cc/paint/paint_flags.h"
 #include "cc/paint/paint_shader.h"
 #include "chrome/app/chrome_command_ids.h"
@@ -53,6 +56,7 @@
 #include "components/performance_manager/public/user_tuning/prefs.h"
 #include "components/prefs/pref_service.h"
 #include "components/search_engines/template_url.h"
+#include "components/search_engines/template_url_data.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/version_info/version_info.h"
 #include "content/public/browser/web_contents.h"
@@ -385,9 +389,24 @@ class SettingsSheet : public views::View {
   }
 
   void Open() {
+    // The sheet is reused between opens. Recheck rather than retaining a
+    // previous visit's result, and watch for asynchronous OS confirmation.
+    CheckDefaultBrowser();
+    default_browser_timer_.Start(
+        FROM_HERE, base::Seconds(2), this, &SettingsSheet::RefreshDefaultBrowser);
+    auto* engines = TemplateURLServiceFactory::GetForProfile(profile());
+    if (engines && !engines->loaded()) {
+      engines_loaded_ = engines->RegisterOnLoadedCallback(base::BindOnce(
+          &SettingsSheet::SearchEnginesLoaded, weak_factory_.GetWeakPtr()));
+      engines->Load();
+    } else if (engines) {
+      EnsureGoogleEngine(engines);
+    }
     Rebuild();
     scroll_->ScrollToOffset(gfx::PointF());
   }
+
+  void Close() { default_browser_timer_.Stop(); }
 
   // Opens on the Appearance category (the theme).
   void ShowAppearance() { Pick(Category::kAppearance); }
@@ -734,6 +753,28 @@ class SettingsSheet : public views::View {
 
   // ---- Categories.
 
+  // Offer ordinary Google search without opting the user into it or changing
+  // the ungoogled default. This entry is persisted in Chromium's engine model.
+  static void EnsureGoogleEngine(TemplateURLService* engines) {
+    if (!engines->GetTemplateURLForKeyword(u"google.com")) {
+      TemplateURLData data;
+      data.SetShortName(u"Google");
+      data.SetKeyword(u"google.com");
+      data.SetURL("https://www.google.com/search?q={searchTerms}");
+      data.safe_for_autoreplace = false;
+      data.is_active = TemplateURLData::ActiveStatus::kTrue;
+      engines->Add(std::make_unique<TemplateURL>(data));
+    }
+  }
+
+  void SearchEnginesLoaded() {
+    auto* engines = TemplateURLServiceFactory::GetForProfile(profile());
+    if (engines && engines->loaded()) {
+      EnsureGoogleEngine(engines);
+      PostRebuild();
+    }
+  }
+
   void BuildGeneral(views::View* column) {
     Card* startup = Section(column, u"Startup");
     const bool restore =
@@ -761,8 +802,7 @@ class SettingsSheet : public views::View {
       std::vector<std::pair<std::u16string, base::RepeatingClosure>> options;
       int selected = -1;
       for (TemplateURL* engine : engines->GetTemplateURLs()) {
-        if (engine->prepopulate_id() <= 0 ||
-            (engine != current && !engines->CanMakeDefault(engine))) {
+        if (engine != current && !engines->CanMakeDefault(engine)) {
           continue;
         }
         if (engine == current) {
@@ -771,10 +811,14 @@ class SettingsSheet : public views::View {
         options.emplace_back(
             engine->short_name(),
             base::BindRepeating(
-                [](TemplateURLService* service, TemplateURL* engine) {
-                  service->SetUserSelectedDefaultSearchProvider(engine);
+                [](TemplateURLService* service, std::u16string keyword) {
+                  if (TemplateURL* engine =
+                          service->GetTemplateURLForKeyword(keyword);
+                      engine && service->CanMakeDefault(engine)) {
+                    service->SetUserSelectedDefaultSearchProvider(engine);
+                  }
                 },
-                engines, engine));
+                engines, engine->keyword()));
       }
       if (!options.empty()) {
         Field(search, u"Search engine", Choice(std::move(options), selected));
@@ -794,18 +838,29 @@ class SettingsSheet : public views::View {
     auto* status_label = status->AddChildView(std::make_unique<ThemedLabel>(
         default_browser_ == shell_integration::IS_DEFAULT
             ? u"Mori is your default browser."
-            : default_browser_ == shell_integration::NOT_DEFAULT
+            : default_browser_ == shell_integration::NOT_DEFAULT ||
+                      default_browser_ == shell_integration::OTHER_MODE_IS_DEFAULT
                   ? u"Another browser opens links from other apps."
                   : u"Your desktop doesn't say which browser is the default.",
         13, false));
     status->SetFlexForView(status_label, 1);
-    if (default_browser_ == shell_integration::NOT_DEFAULT) {
-      status->AddChildView(TextButton(
-          u"Make Default", true,
+    if (default_browser_ != shell_integration::IS_DEFAULT &&
+        CanMakeDefault()) {
+      auto* button = status->AddChildView(TextButton(
+          setting_default_browser_ ? u"Setting…" : u"Make Default", true,
           base::BindRepeating(&SettingsSheet::MakeDefault,
                               weak_factory_.GetWeakPtr())));
+      button->SetEnabled(!setting_default_browser_);
     }
-    CheckDefaultBrowser();
+    if (!CanMakeDefault()) {
+      Hint(browser_card, u"Changing the default browser is disabled on this system.");
+    } else if (default_browser_requested_ &&
+               default_browser_ != shell_integration::IS_DEFAULT) {
+      Hint(browser_card,
+           u"Confirm the change in your system's dialog if prompted. "
+           u"If Mori is not selected, try again or choose Mori in your system's "
+           u"default browser settings.");
+    }
 
     Card* links = Section(column, u"Links from other apps");
     const bool little = LinksOpenInLittle(profile());
@@ -824,17 +879,34 @@ class SettingsSheet : public views::View {
                          u"window you used last.");
   }
 
+  bool CanMakeDefault() {
+    const auto* policy = g_browser_process->local_state()->FindPreference(
+        prefs::kDefaultBrowserSettingEnabled);
+    return shell_integration::CanSetAsDefaultBrowser() &&
+           !(policy && policy->IsManaged() && !policy->GetValue()->GetBool());
+  }
+
+  void RefreshDefaultBrowser() {
+    if (category_ == Category::kGeneral) {
+      CheckDefaultBrowser();
+    }
+  }
+
   void CheckDefaultBrowser() {
-    if (default_browser_checked_) {
+    if (checking_default_browser_ || setting_default_browser_) {
       return;
     }
-    default_browser_checked_ = true;
+    checking_default_browser_ = true;
     base::MakeRefCounted<shell_integration::DefaultBrowserWorker>()
         ->StartCheckIsDefault(base::BindOnce(
             &SettingsSheet::OnDefaultBrowser, weak_factory_.GetWeakPtr()));
   }
 
   void OnDefaultBrowser(shell_integration::DefaultWebClientState state) {
+    checking_default_browser_ = false;
+    if (default_browser_ == state) {
+      return;
+    }
     default_browser_ = state;
     if (category_ == Category::kGeneral) {
       PostRebuild();
@@ -842,9 +914,25 @@ class SettingsSheet : public views::View {
   }
 
   void MakeDefault() {
+    if (setting_default_browser_ || !CanMakeDefault()) {
+      return;
+    }
+    setting_default_browser_ = true;
+    default_browser_requested_ = true;
+    PostRebuild();
     base::MakeRefCounted<shell_integration::DefaultBrowserWorker>()
-        ->StartSetAsDefault(base::BindOnce(&SettingsSheet::OnDefaultBrowser,
-                                           weak_factory_.GetWeakPtr()));
+        ->StartSetAsDefault(base::BindOnce(
+            &SettingsSheet::OnSetDefaultBrowser, weak_factory_.GetWeakPtr()));
+  }
+
+  void OnSetDefaultBrowser(shell_integration::DefaultWebClientState state) {
+    setting_default_browser_ = false;
+    default_browser_ = state;
+    // A failed/cancelled attempt must re-enable the button too. On macOS
+    // this callback can precede the user's answer; the timer rechecks it.
+    if (category_ == Category::kGeneral) {
+      PostRebuild();
+    }
   }
 
   void BuildAppearance(views::View* column) {
@@ -1181,9 +1269,13 @@ class SettingsSheet : public views::View {
   raw_ptr<CenterColumn> center_ = nullptr;
   shell_integration::DefaultWebClientState default_browser_ =
       shell_integration::UNKNOWN_DEFAULT;
-  bool default_browser_checked_ = false;
+  bool checking_default_browser_ = false;
+  bool setting_default_browser_ = false;
+  bool default_browser_requested_ = false;
+  base::RepeatingTimer default_browser_timer_;
   std::optional<base::FilePath> codex_;
   bool codex_pending_ = false;
+  base::CallbackListSubscription engines_loaded_;
   base::WeakPtrFactory<SettingsSheet> weak_factory_{this};
 };
 
@@ -1199,7 +1291,7 @@ class Settings : public ui::EventObserver, public views::ViewObserver {
         std::make_unique<SettingsSheet>(
             browser_view,
             base::BindRepeating(&Settings::PostClose, base::Unretained(this))),
-        "MoriSettings");
+        "MoriSettings", Overlay::Layer::kPageSheet);
   }
 
   void Show(bool appearance) {
@@ -1226,6 +1318,7 @@ class Settings : public ui::EventObserver, public views::ViewObserver {
     open_ = false;
     monitor_.reset();
     observation_.RemoveAllObservations();
+    static_cast<SettingsSheet*>(overlay_->contents())->Close();
     overlay_->Hide();
     if (content::WebContents* contents = browser_view_->browser()
                                              ->GetTabStripModel()

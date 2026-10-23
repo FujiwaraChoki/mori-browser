@@ -1,0 +1,568 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0129CAEC4D4FFFE7E7A0CF9D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 566C1F4920EEF77CA68C0083 /* Assets.xcassets */; };
+		099681F3DCA7FF45D0EE6515 /* Components.swift in Sources */ = {isa = PBXBuildFile; fileRef = B050A3C574598C5374A62C9E /* Components.swift */; };
+		0F73A81126B43808719B548A /* CommandBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE0BD8BA889F6A4998142559 /* CommandBar.swift */; };
+		181933CFF3EDCB8891E87845 /* SessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5E337F8D9CBBEB1249801EA /* SessionStore.swift */; };
+		26D3813DA0E0DE01160F7B33 /* FaviconLoader.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F2E678491E8E7B2FC90C76 /* FaviconLoader.swift */; };
+		3476E0EC0BF441FB01BD10A5 /* MoriBrowserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 603FBFA7A1B55E6D874B0C6A /* MoriBrowserTests.swift */; };
+		3668DF35039E804A693D50D2 /* WebSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50CCEABC754C25995F55A58C /* WebSession.swift */; };
+		398BC42A007C300DC98E3E19 /* Workspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6CD1E6599139400E99CA49F3 /* Workspace.swift */; };
+		408C9AD0D9FD4C0D8F2E58FD /* Chrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA1C1B413B1F55207C8F1CD9 /* Chrome.swift */; };
+		47410B4179B1E20BE400A023 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1DF68A294DB89C8381BB376 /* RootView.swift */; };
+		4C35924B9B58A93B51E65DF2 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8DCB29F5DC4929CA15F2E314 /* SettingsView.swift */; };
+		5D4392B7FF68636221C53777 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C888C94A5A5F9006978D782 /* OnboardingView.swift */; };
+		6FC27186F52269B0CFE23ABA /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = FFF4B0D66F228DC97701C0FF /* PrivacyInfo.xcprivacy */; };
+		731822FDB5EE8C5F7AF09840 /* CommandIndex.swift in Sources */ = {isa = PBXBuildFile; fileRef = 512B37B8EF13CEE653D75144 /* CommandIndex.swift */; };
+		779EB185232D2333F22FAAA0 /* BrowserStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A0ED6B7DDADBBD5998BAA06 /* BrowserStore.swift */; };
+		7BE78F2FF65ED46B95521C1A /* Reader.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23282B58ED747A596DA9156C /* Reader.swift */; };
+		7C566AD2FDABFD9FEFACFCE7 /* MoriTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F5D5AA645570732938EA372 /* MoriTheme.swift */; };
+		99A1ABC4279238E9732BF6E2 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F6ADEF2A80CACAA2AE6426C /* SidebarView.swift */; };
+		A3DA7FD72E0C0DA984FAC5B8 /* ReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACFE85440AD3CBA19925637B /* ReaderView.swift */; };
+		B1D0FE35A8FB089045037E3A /* Records.swift in Sources */ = {isa = PBXBuildFile; fileRef = 249214592DCBDF14970E7A9B /* Records.swift */; };
+		C85418F4A06B2237E1DF5AAD /* WebContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBE0007508C0B5C1B9B9F0E9 /* WebContainer.swift */; };
+		D9AD70C80E527AE04EFF5636 /* LibraryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = ED82E43A22B96085419E6772 /* LibraryView.swift */; };
+		E3A776E3D9B0C7B93AA84715 /* Omnibox.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C62D932BEF7A0027D8C081D /* Omnibox.swift */; };
+		F2A9402BE316984FAC3F189C /* MoriBrowserApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11DA3DACB4A3C62CCC730E84 /* MoriBrowserApp.swift */; };
+		FCF443361407F9227AF03437 /* SpaceEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9FDABC07023338B48227FA5D /* SpaceEditor.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		C950AA7D98E9B980D7F07875 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 8AE6D82003E44ADE10D81C0E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B66A77F05188FDB5AE55312A;
+			remoteInfo = MoriBrowser;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		0C888C94A5A5F9006978D782 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		11DA3DACB4A3C62CCC730E84 /* MoriBrowserApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoriBrowserApp.swift; sourceTree = "<group>"; };
+		1ABAB55EE6D4ACBC67AB8008 /* MoriBrowserTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = MoriBrowserTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		23282B58ED747A596DA9156C /* Reader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Reader.swift; sourceTree = "<group>"; };
+		249214592DCBDF14970E7A9B /* Records.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Records.swift; sourceTree = "<group>"; };
+		50CCEABC754C25995F55A58C /* WebSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebSession.swift; sourceTree = "<group>"; };
+		512B37B8EF13CEE653D75144 /* CommandIndex.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandIndex.swift; sourceTree = "<group>"; };
+		566C1F4920EEF77CA68C0083 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		5F5D5AA645570732938EA372 /* MoriTheme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoriTheme.swift; sourceTree = "<group>"; };
+		603FBFA7A1B55E6D874B0C6A /* MoriBrowserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MoriBrowserTests.swift; sourceTree = "<group>"; };
+		6CD1E6599139400E99CA49F3 /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
+		7C62D932BEF7A0027D8C081D /* Omnibox.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Omnibox.swift; sourceTree = "<group>"; };
+		7F6ADEF2A80CACAA2AE6426C /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		8DCB29F5DC4929CA15F2E314 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		96AAD4A67E50AF55A7F9789D /* MoriBrowser.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = MoriBrowser.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		9A0ED6B7DDADBBD5998BAA06 /* BrowserStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowserStore.swift; sourceTree = "<group>"; };
+		9FDABC07023338B48227FA5D /* SpaceEditor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpaceEditor.swift; sourceTree = "<group>"; };
+		A1F2E678491E8E7B2FC90C76 /* FaviconLoader.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FaviconLoader.swift; sourceTree = "<group>"; };
+		ACFE85440AD3CBA19925637B /* ReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReaderView.swift; sourceTree = "<group>"; };
+		AE0BD8BA889F6A4998142559 /* CommandBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandBar.swift; sourceTree = "<group>"; };
+		B050A3C574598C5374A62C9E /* Components.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Components.swift; sourceTree = "<group>"; };
+		C5E337F8D9CBBEB1249801EA /* SessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionStore.swift; sourceTree = "<group>"; };
+		DA1C1B413B1F55207C8F1CD9 /* Chrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Chrome.swift; sourceTree = "<group>"; };
+		DBE0007508C0B5C1B9B9F0E9 /* WebContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WebContainer.swift; sourceTree = "<group>"; };
+		ED82E43A22B96085419E6772 /* LibraryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryView.swift; sourceTree = "<group>"; };
+		F1DF68A294DB89C8381BB376 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
+		FFF4B0D66F228DC97701C0FF /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		03F2E8DE1113E0F5DF7B856D /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				96AAD4A67E50AF55A7F9789D /* MoriBrowser.app */,
+				1ABAB55EE6D4ACBC67AB8008 /* MoriBrowserTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		08D3DDCEF0EA2163E80396E5 = {
+			isa = PBXGroup;
+			children = (
+				F20AB0E53951F78FA091A80E /* MoriBrowser */,
+				483F298EC4B8853E61E0D23E /* MoriBrowserTests */,
+				03F2E8DE1113E0F5DF7B856D /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		1DFBCB83F9927B6A813E801F /* Theme */ = {
+			isa = PBXGroup;
+			children = (
+				5F5D5AA645570732938EA372 /* MoriTheme.swift */,
+			);
+			path = Theme;
+			sourceTree = "<group>";
+		};
+		483F298EC4B8853E61E0D23E /* MoriBrowserTests */ = {
+			isa = PBXGroup;
+			children = (
+				603FBFA7A1B55E6D874B0C6A /* MoriBrowserTests.swift */,
+			);
+			path = MoriBrowserTests;
+			sourceTree = "<group>";
+		};
+		7D993B417351CEF3B41E0015 /* Store */ = {
+			isa = PBXGroup;
+			children = (
+				9A0ED6B7DDADBBD5998BAA06 /* BrowserStore.swift */,
+			);
+			path = Store;
+			sourceTree = "<group>";
+		};
+		C2E904B85E318A33F99147F1 /* Model */ = {
+			isa = PBXGroup;
+			children = (
+				512B37B8EF13CEE653D75144 /* CommandIndex.swift */,
+				7C62D932BEF7A0027D8C081D /* Omnibox.swift */,
+				249214592DCBDF14970E7A9B /* Records.swift */,
+				C5E337F8D9CBBEB1249801EA /* SessionStore.swift */,
+				6CD1E6599139400E99CA49F3 /* Workspace.swift */,
+			);
+			path = Model;
+			sourceTree = "<group>";
+		};
+		D0462510142B30539F63B5EE /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				DA1C1B413B1F55207C8F1CD9 /* Chrome.swift */,
+				AE0BD8BA889F6A4998142559 /* CommandBar.swift */,
+				B050A3C574598C5374A62C9E /* Components.swift */,
+				ED82E43A22B96085419E6772 /* LibraryView.swift */,
+				0C888C94A5A5F9006978D782 /* OnboardingView.swift */,
+				ACFE85440AD3CBA19925637B /* ReaderView.swift */,
+				F1DF68A294DB89C8381BB376 /* RootView.swift */,
+				8DCB29F5DC4929CA15F2E314 /* SettingsView.swift */,
+				7F6ADEF2A80CACAA2AE6426C /* SidebarView.swift */,
+				9FDABC07023338B48227FA5D /* SpaceEditor.swift */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
+		E31CFA925ED48DBE51EE68D7 /* Web */ = {
+			isa = PBXGroup;
+			children = (
+				A1F2E678491E8E7B2FC90C76 /* FaviconLoader.swift */,
+				23282B58ED747A596DA9156C /* Reader.swift */,
+				DBE0007508C0B5C1B9B9F0E9 /* WebContainer.swift */,
+				50CCEABC754C25995F55A58C /* WebSession.swift */,
+			);
+			path = Web;
+			sourceTree = "<group>";
+		};
+		F20AB0E53951F78FA091A80E /* MoriBrowser */ = {
+			isa = PBXGroup;
+			children = (
+				C2E904B85E318A33F99147F1 /* Model */,
+				7D993B417351CEF3B41E0015 /* Store */,
+				1DFBCB83F9927B6A813E801F /* Theme */,
+				D0462510142B30539F63B5EE /* UI */,
+				E31CFA925ED48DBE51EE68D7 /* Web */,
+				566C1F4920EEF77CA68C0083 /* Assets.xcassets */,
+				11DA3DACB4A3C62CCC730E84 /* MoriBrowserApp.swift */,
+				FFF4B0D66F228DC97701C0FF /* PrivacyInfo.xcprivacy */,
+			);
+			path = MoriBrowser;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A3F4E1FCCBE2F6A604DAE008 /* MoriBrowserTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 99C2E6B688D2F59DBB9073FA /* Build configuration list for PBXNativeTarget "MoriBrowserTests" */;
+			buildPhases = (
+				BD19731F520447F024F04103 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				44E7BA175D9AAEEA06D2AA1C /* PBXTargetDependency */,
+			);
+			name = MoriBrowserTests;
+			packageProductDependencies = (
+			);
+			productName = MoriBrowserTests;
+			productReference = 1ABAB55EE6D4ACBC67AB8008 /* MoriBrowserTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		B66A77F05188FDB5AE55312A /* MoriBrowser */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FBCB1D6A83C3CC7B7EA8E29A /* Build configuration list for PBXNativeTarget "MoriBrowser" */;
+			buildPhases = (
+				1D865F7A09963B521378B91C /* Sources */,
+				E74C5E0BB2BC32DA98E18031 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = MoriBrowser;
+			packageProductDependencies = (
+			);
+			productName = MoriBrowser;
+			productReference = 96AAD4A67E50AF55A7F9789D /* MoriBrowser.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		8AE6D82003E44ADE10D81C0E /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					B66A77F05188FDB5AE55312A = {
+						DevelopmentTeam = HL34V4TRZ5;
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = DD699A8EC2BF2BD684153035 /* Build configuration list for PBXProject "MoriBrowser" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = 08D3DDCEF0EA2163E80396E5;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				B66A77F05188FDB5AE55312A /* MoriBrowser */,
+				A3F4E1FCCBE2F6A604DAE008 /* MoriBrowserTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		E74C5E0BB2BC32DA98E18031 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				0129CAEC4D4FFFE7E7A0CF9D /* Assets.xcassets in Resources */,
+				6FC27186F52269B0CFE23ABA /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		1D865F7A09963B521378B91C /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				779EB185232D2333F22FAAA0 /* BrowserStore.swift in Sources */,
+				408C9AD0D9FD4C0D8F2E58FD /* Chrome.swift in Sources */,
+				0F73A81126B43808719B548A /* CommandBar.swift in Sources */,
+				731822FDB5EE8C5F7AF09840 /* CommandIndex.swift in Sources */,
+				099681F3DCA7FF45D0EE6515 /* Components.swift in Sources */,
+				26D3813DA0E0DE01160F7B33 /* FaviconLoader.swift in Sources */,
+				D9AD70C80E527AE04EFF5636 /* LibraryView.swift in Sources */,
+				F2A9402BE316984FAC3F189C /* MoriBrowserApp.swift in Sources */,
+				7C566AD2FDABFD9FEFACFCE7 /* MoriTheme.swift in Sources */,
+				E3A776E3D9B0C7B93AA84715 /* Omnibox.swift in Sources */,
+				5D4392B7FF68636221C53777 /* OnboardingView.swift in Sources */,
+				7BE78F2FF65ED46B95521C1A /* Reader.swift in Sources */,
+				A3DA7FD72E0C0DA984FAC5B8 /* ReaderView.swift in Sources */,
+				B1D0FE35A8FB089045037E3A /* Records.swift in Sources */,
+				47410B4179B1E20BE400A023 /* RootView.swift in Sources */,
+				181933CFF3EDCB8891E87845 /* SessionStore.swift in Sources */,
+				4C35924B9B58A93B51E65DF2 /* SettingsView.swift in Sources */,
+				99A1ABC4279238E9732BF6E2 /* SidebarView.swift in Sources */,
+				FCF443361407F9227AF03437 /* SpaceEditor.swift in Sources */,
+				C85418F4A06B2237E1DF5AAD /* WebContainer.swift in Sources */,
+				3668DF35039E804A693D50D2 /* WebSession.swift in Sources */,
+				398BC42A007C300DC98E3E19 /* Workspace.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		BD19731F520447F024F04103 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3476E0EC0BF441FB01BD10A5 /* MoriBrowserTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		44E7BA175D9AAEEA06D2AA1C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B66A77F05188FDB5AE55312A /* MoriBrowser */;
+			targetProxy = C950AA7D98E9B980D7F07875 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		0D4C77EB346E882C908B6505 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		2CDF4033AD9EACE64446B435 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
+				MARKETING_VERSION = 1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = minimal;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		36153F872A9EEC0A8BD3EB4D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.mori.browser.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MoriBrowser.app/MoriBrowser";
+			};
+			name = Release;
+		};
+		3B5E8EC6DA9A4D7C14100020 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.mori.browser.tests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MoriBrowser.app/MoriBrowser";
+			};
+			name = Debug;
+		};
+		CB9F06D4CC973997220B0A2B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = HL34V4TRZ5;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MoriBrowser/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Mori;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIApplicationSupportsMultipleScenes = NO;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_UIColorName = LaunchBackground;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.mori.browser;
+				PRODUCT_NAME = MoriBrowser;
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		D5BA4F35B8429173BC5C42C8 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = HL34V4TRZ5;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = MoriBrowser/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = Mori;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UIApplicationSupportsMultipleScenes = NO;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UILaunchScreen_UIColorName = LaunchBackground;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.mori.browser;
+				PRODUCT_NAME = MoriBrowser;
+				SDKROOT = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		99C2E6B688D2F59DBB9073FA /* Build configuration list for PBXNativeTarget "MoriBrowserTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3B5E8EC6DA9A4D7C14100020 /* Debug */,
+				36153F872A9EEC0A8BD3EB4D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		DD699A8EC2BF2BD684153035 /* Build configuration list for PBXProject "MoriBrowser" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				0D4C77EB346E882C908B6505 /* Debug */,
+				2CDF4033AD9EACE64446B435 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		FBCB1D6A83C3CC7B7EA8E29A /* Build configuration list for PBXNativeTarget "MoriBrowser" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				CB9F06D4CC973997220B0A2B /* Debug */,
+				D5BA4F35B8429173BC5C42C8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 8AE6D82003E44ADE10D81C0E /* Project object */;
+}

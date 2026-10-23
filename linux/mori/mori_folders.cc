@@ -33,6 +33,9 @@
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
+#include "chrome/browser/ui/views/mori/mori_folder_tree.h"
+#include "chrome/browser/ui/views/mori/mori_folder_session.h"
+#include "chrome/browser/ui/views/mori/mori_tab_list.h"
 #include "chrome/browser/ui/views/mori/mori_menu.h"
 #include "chrome/browser/ui/views/mori/mori_themes.h"
 #include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
@@ -84,6 +87,7 @@ struct FolderState {
   std::u16string name;
   std::string icon;
   bool open = true;
+  std::string parent;
 };
 
 // Every folder a tab has held this run, by id. Folders are tiny and their
@@ -137,9 +141,37 @@ std::optional<std::string> FolderIdOf(const tabs::TabInterface* tab) {
   return tab ? FolderIdOf(tab->GetContents()) : std::nullopt;
 }
 
+std::vector<std::string> FolderPath(const std::string& id) {
+  std::vector<std::string> path;
+  std::set<std::string> seen;
+  std::string current = id;
+  while (!current.empty() && Folders().contains(current) &&
+         seen.insert(current).second) {
+    path.push_back(current);
+    current = Folders().at(current).parent;
+  }
+  std::reverse(path.begin(), path.end());
+  return path;
+}
+
+bool InFolder(const std::optional<std::string>& leaf, const std::string& parent) {
+  if (!leaf) {
+    return false;
+  }
+  const auto path = FolderPath(*leaf);
+  return std::ranges::find(path, parent) != path.end();
+}
+
+bool FolderVisible(const std::string& id, bool include_self) {
+  return FolderPathVisible(FolderPath(id), include_self,
+                            [](const std::string& folder) {
+                              return Folders().at(folder).open;
+                            });
+}
+
 FolderInfo InfoFor(const std::string& id) {
   const FolderState& state = Folders()[id];
-  return FolderInfo{id, state.name, state.icon, state.open};
+  return FolderInfo{id, state.name, state.icon, state.open, state.parent};
 }
 
 void NotifyFoldersChanged() {
@@ -183,7 +215,7 @@ void SaveFolderTabs(BrowserWindowInterface* browser, const std::string& id) {
   TabStripModel* model = browser->GetTabStripModel();
   for (int i = 0; i < model->count(); ++i) {
     content::WebContents* contents = model->GetWebContentsAt(i);
-    if (FolderIdOf(contents) == id) {
+    if (InFolder(FolderIdOf(contents), id)) {
       SaveTabFolder(contents);
     }
   }
@@ -196,7 +228,7 @@ std::optional<std::pair<int, int>> FolderRange(TabStripModel* model,
   std::optional<std::pair<int, int>> range;
   for (int i = 0; i < model->count(); ++i) {
     tabs::TabInterface* tab = model->GetTabAtIndex(i);
-    if (tab == skip || FolderIdOf(tab) != id) {
+    if (tab == skip || !InFolder(FolderIdOf(tab), id)) {
       continue;
     }
     if (!range) {
@@ -215,42 +247,35 @@ void MoveTabAfter(TabStripModel* model, int from, int after) {
   }
 }
 
-// Keeps folders runs of tabs: a tab between two tabs of a folder (in the
-// same tab group, if an extension made one) joins it, and a folder's tabs
-// away from its first run leave it, as do favorites.
+// Keep the model in the same depth-first order as the sidebar. Folder
+// membership is explicit: moving a sibling never dissolves its descendants.
 void NormalizeFolders(TabStripModel* model) {
-  const int count = model->count();
-  auto folder_at = [model](int i) { return FolderIdOf(model->GetTabAtIndex(i)); };
-  auto group_at = [model](int i) { return model->GetTabAtIndex(i)->GetGroup(); };
-
-  for (int i = 1; i + 1 < count; ++i) {
-    if (model->IsTabPinned(i) || folder_at(i)) {
+  std::vector<tabs::TabHandle> tabs;
+  std::vector<std::vector<std::string>> paths;
+  for (int i = 0; i < model->count(); ++i) {
+    auto* tab = model->GetTabAtIndex(i);
+    if (tab->IsPinned()) {
+      if (FolderIdOf(tab)) {
+        SetTabFolderId(tab->GetContents(), std::nullopt);
+      }
       continue;
     }
-    const std::optional<std::string> before = folder_at(i - 1);
-    if (before && before == folder_at(i + 1) && group_at(i - 1) == group_at(i) &&
-        group_at(i) == group_at(i + 1)) {
-      SetTabFolderId(model->GetWebContentsAt(i), before);
-    }
+    tabs.push_back(tab->GetHandle());
+    const auto folder = FolderIdOf(tab);
+    paths.push_back(folder ? FolderPath(*folder) : std::vector<std::string>());
   }
-
-  std::set<std::string> started;
-  for (int i = 0; i < count; ++i) {
-    const std::optional<std::string> folder = folder_at(i);
-    if (!folder) {
+  int index = model->IndexOfFirstNonPinnedTab();
+  for (const auto& row : FolderTreeRows(paths)) {
+    if (!row.tab) {
       continue;
     }
-    if (model->IsTabPinned(i)) {
-      SetTabFolderId(model->GetWebContentsAt(i), std::nullopt);
-      continue;
-    }
-    const bool continues_run =
-        i > 0 && folder_at(i - 1) == folder && group_at(i - 1) == group_at(i);
-    if (continues_run) {
-      continue;
-    }
-    if (!started.insert(*folder).second) {
-      SetTabFolderId(model->GetWebContentsAt(i), std::nullopt);
+    auto* tab = tabs[*row.tab].Get();
+    if (tab) {
+      const int from = model->GetIndexOfTab(tab);
+      if (from != index && from != TabStripModel::kNoTab) {
+        model->MoveWebContentsAt(from, index, /*select_after_move=*/false);
+      }
+      ++index;
     }
   }
 }
@@ -451,6 +476,20 @@ constexpr float kRowRadius = 8.0f;
 
 class FolderHeader;
 
+class FolderNameLabel : public views::Label {
+  METADATA_HEADER(FolderNameLabel, views::Label)
+
+ public:
+  bool IsOverText(const gfx::Point& point) const {
+    gfx::Rect text = GetTextBounds();
+    text.Intersect(GetLocalBounds());
+    return text.Contains(point);
+  }
+};
+
+BEGIN_METADATA(FolderNameLabel)
+END_METADATA
+
 class RenameField : public views::Textfield, public views::TextfieldController {
   METADATA_HEADER(RenameField, views::Textfield)
 
@@ -522,7 +561,7 @@ class FolderHeader : public views::View, public gfx::AnimationDelegate {
  public:
   FolderHeader(BrowserWindowInterface* browser, std::string id)
       : browser_(browser), id_(std::move(id)) {
-    label_ = AddChildView(std::make_unique<views::Label>());
+    label_ = AddChildView(std::make_unique<FolderNameLabel>());
     label_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     label_->SetElideBehavior(gfx::ELIDE_TAIL);
     label_->SetFontList(views::Label::GetDefaultFontList().DeriveWithWeight(
@@ -564,6 +603,7 @@ class FolderHeader : public views::View, public gfx::AnimationDelegate {
   }
 
   void BeginRename() {
+    text_click_count_ = 0;
     if (rename_) {
       return;
     }
@@ -629,12 +669,14 @@ class FolderHeader : public views::View, public gfx::AnimationDelegate {
   }
 
   void OnMouseExited(const ui::MouseEvent& event) override {
+    text_click_count_ = 0;
     hovered_ = false;
     SchedulePaint();
   }
 
   bool OnMousePressed(const ui::MouseEvent& event) override {
     if (event.IsRightMouseButton()) {
+      text_click_count_ = 0;
       gfx::Point point = event.location();
       views::View::ConvertPointToScreen(this, &point);
       ShowFolderMenu(browser_, id_, point, ui::mojom::MenuSourceType::kMouse,
@@ -642,12 +684,25 @@ class FolderHeader : public views::View, public gfx::AnimationDelegate {
       return true;
     }
     if (!event.IsOnlyLeftMouseButton()) {
+      text_click_count_ = 0;
       return false;
     }
-    if (event.GetClickCount() == 2) {
-      // The double-click's first press opened or closed the folder; the
-      // second puts it back and names it, as Mori 3.
-      ToggleFolder(browser_, id_);
+    gfx::Point point = event.location();
+    views::View::ConvertPointToTarget(this, label_, &point);
+    if (label_->IsOverText(point)) {
+      // All three presses must hit the visible name within half a second.
+      // Native repeat detection also rejects clicks that move too far apart.
+      if (text_click_count_ == 0 || event.GetClickCount() == 1 ||
+          event.time_stamp() - first_text_click_ > base::Milliseconds(500)) {
+        first_text_click_ = event.time_stamp();
+        text_click_count_ = 0;
+      }
+      ++text_click_count_;
+    } else {
+      text_click_count_ = 0;
+    }
+    if (text_click_count_ == 3) {
+      // The first two presses toggled the folder back to its original state.
       BeginRename();
     } else {
       ToggleFolder(browser_, id_);
@@ -656,6 +711,7 @@ class FolderHeader : public views::View, public gfx::AnimationDelegate {
   }
 
   bool OnKeyPressed(const ui::KeyEvent& event) override {
+    text_click_count_ = 0;
     if (event.key_code() == ui::VKEY_RETURN ||
         event.key_code() == ui::VKEY_SPACE) {
       ToggleFolder(browser_, id_);
@@ -690,8 +746,10 @@ class FolderHeader : public views::View, public gfx::AnimationDelegate {
 
   const raw_ptr<BrowserWindowInterface> browser_;
   const std::string id_;
-  raw_ptr<views::Label> label_ = nullptr;
+  raw_ptr<FolderNameLabel> label_ = nullptr;
   raw_ptr<RenameField> rename_ = nullptr;
+  int text_click_count_ = 0;
+  base::TimeTicks first_text_click_;
   gfx::SlideAnimation open_animation_{this};
   bool state_known_ = false;
   std::string icon_;
@@ -762,11 +820,34 @@ class FolderHeaders : public views::View, public TabStripModelObserver {
   void RemovedFromWidget() override { StopObserving(); }
 
   // TabStripModelObserver:
+  void OnTabStripModelDestroyed(TabStripModel* model) override {
+    model_ = nullptr;
+    browser_ = nullptr;
+  }
   void OnTabStripModelChanged(
       TabStripModel* tab_strip_model,
       const TabStripModelChange& change,
       const TabStripSelectionChange& selection) override {
-    ScheduleSync();
+    if (!reordering_ && change.type() == TabStripModelChange::kMoved &&
+        parent() && views::AsViewClass<UnpinnedTabContainerView>(parent()) &&
+        views::AsViewClass<UnpinnedTabContainerView>(parent())->IsHandlingDrag()) {
+      const auto* move = change.GetMove();
+      const int index = move->to_index;
+      const auto folder = FolderIdOf(move->tab.get());
+      const auto before = index > 0 ? FolderIdOf(model_->GetTabAtIndex(index - 1))
+                                    : std::nullopt;
+      const auto after = index + 1 < model_->count()
+                             ? FolderIdOf(model_->GetTabAtIndex(index + 1))
+                             : std::nullopt;
+      if (folder && !InFolder(before, *folder) && !InFolder(after, *folder)) {
+        SetTabFolderId(move->contents.get(), before == after ? before : std::nullopt);
+      } else if (!folder && before && before == after) {
+        SetTabFolderId(move->contents.get(), before);
+      }
+    }
+    if (!reordering_) {
+      ScheduleSync();
+    }
   }
   void OnTabGroupChanged(const TabGroupChange& change) override {
     ScheduleSync();
@@ -799,13 +880,32 @@ class FolderHeaders : public views::View, public TabStripModelObserver {
     if (!model_ || !container || !container->collection_node()) {
       return;
     }
+    // Wait for Chromium to finish a drag before changing model order.
+    if (container->IsHandlingDrag()) {
+      sync_pending_ = true;
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+          FROM_HERE, base::BindOnce(&FolderHeaders::Sync, weak_factory_.GetWeakPtr()),
+          base::Milliseconds(100));
+      return;
+    }
+    reordering_ = true;
     NormalizeFolders(model_);
+    reordering_ = false;
+    bool has_divider = false;
+    for (views::View* child : container->children()) {
+      has_divider |= child->GetClassName() == std::string_view("MoriTabListHeader");
+    }
+    if (!has_divider) {
+      container->AddChildView(CreateTabListHeader(browser_));
+    }
 
     // Each folder among the list's rows, whether it holds the active tab.
     std::map<std::string, bool> folders;
     for (views::View* row : container->collection_node()->GetDirectChildren()) {
       if (std::optional<std::string> id = FolderOfRow(row)) {
-        folders[*id] = folders[*id] || RowIsActive(row);
+        for (const auto& ancestor : FolderPath(*id)) {
+          folders[ancestor] = folders[ancestor] || RowIsActive(row);
+        }
       }
     }
 
@@ -838,16 +938,30 @@ class FolderHeaders : public views::View, public TabStripModelObserver {
   raw_ptr<TabStripModel> model_ = nullptr;
   base::CallbackListSubscription folders_subscription_;
   bool sync_pending_ = false;
+  bool reordering_ = false;
   base::WeakPtrFactory<FolderHeaders> weak_factory_{this};
 };
 
 BEGIN_METADATA(FolderHeaders)
 END_METADATA
 
-std::string NewFolder(std::u16string name) {
+std::string MakeFolder(std::u16string name) {
   const std::string id = base::Uuid::GenerateRandomV4().AsLowercaseString();
-  Folders()[id] = FolderState{std::move(name), std::string(), true};
+  Folders()[id] = FolderState{std::move(name), std::string(), true, {}};
   return id;
+}
+
+// Empty leaves still need a tab to carry their session data. Keep a
+// parent visible when its last child is moved or deleted.
+void EnsureEmptyFolder(BrowserWindowInterface* browser, const std::string& id) {
+  auto* model = browser->GetTabStripModel();
+  if (id.empty() || !Folders().contains(id) || FolderRange(model, id, nullptr)) {
+    return;
+  }
+  if (auto* contents = chrome::AddAndReturnTabAt(
+          browser, GURL(), model->count(), /*foreground=*/false)) {
+    SetTabFolderId(contents, id);
+  }
 }
 
 }  // namespace
@@ -858,20 +972,41 @@ std::vector<FolderRow> GetFolderRows(const views::View* container,
   if (!node) {
     return rows;
   }
-  std::optional<std::string> previous;
-  for (views::View* row : node->GetDirectChildren()) {
-    FolderRow out;
-    const std::optional<std::string> folder = FolderOfRow(row);
-    if (folder) {
-      if (folder != previous) {
-        out.header = FindHeader(container, *folder);
-      }
-      out.hidden = !Folders()[*folder].open && !RowIsActive(row);
-      out.indent = kFolderIndent;
-    }
-    previous = folder;
-    rows.push_back(out);
+  const auto children = node->GetDirectChildren();
+  std::vector<std::vector<std::string>> paths;
+  for (auto* child : children) {
+    const auto id = FolderOfRow(child);
+    paths.push_back(id ? FolderPath(*id) : std::vector<std::string>());
   }
+  views::View* divider = nullptr;
+  for (views::View* child : container->children()) {
+    if (child->GetClassName() == std::string_view("MoriTabListHeader")) {
+      divider = child;
+    }
+  }
+  auto add_divider = [&] {
+    if (divider) {
+      rows.push_back({divider, false, 0});
+      divider = nullptr;
+    }
+  };
+  for (const auto& entry : FolderTreeRows(paths)) {
+    if (!entry.tab) {
+      if (auto* header = FindHeader(container, entry.folder)) {
+        rows.push_back({header, !FolderVisible(entry.folder, false),
+                        static_cast<int>(entry.depth) * kFolderIndent});
+      }
+    } else {
+      auto* child = children[*entry.tab];
+      if (paths[*entry.tab].empty()) {
+        add_divider();
+      }
+      const auto id = FolderOfRow(child);
+      rows.push_back({child, id && !FolderVisible(*id, true),
+                      static_cast<int>(entry.depth) * kFolderIndent});
+    }
+  }
+  add_divider();
   return rows;
 }
 
@@ -881,9 +1016,17 @@ std::vector<views::View*> GetUnplacedFolderHeaders(
   std::vector<views::View*> unplaced;
   for (FolderHeader* header : HeadersOf(container)) {
     if (std::ranges::none_of(rows, [header](const FolderRow& row) {
-          return row.header == header;
+          return row.view == header;
         })) {
       unplaced.push_back(header);
+    }
+  }
+  for (views::View* child : container->children()) {
+    if (child->GetClassName() == std::string_view("MoriTabListHeader") &&
+        std::ranges::none_of(rows, [child](const FolderRow& row) {
+          return row.view == child;
+        })) {
+      unplaced.push_back(child);
     }
   }
   return unplaced;
@@ -898,13 +1041,16 @@ std::string GetTabFolderData(const content::WebContents* contents) {
   if (!id) {
     return std::string();
   }
-  const FolderState& state = Folders()[*id];
-  base::DictValue dict;
-  dict.Set("id", *id);
-  dict.Set("name", state.name);
-  dict.Set("icon", state.icon);
-  dict.Set("open", state.open);
-  return base::WriteJson(dict).value_or(std::string());
+  std::vector<FolderSessionNode> path;
+  for (const auto& folder : FolderPath(*id)) {
+    const auto& state = Folders().at(folder);
+    path.push_back({folder, base::UTF16ToUTF8(state.name), state.icon, state.open});
+  }
+  return EncodeFolderSession(path);
+}
+
+void PersistTabFolder(content::WebContents* contents) {
+  SaveTabFolder(contents);
 }
 
 void RestoreTabFolder(content::WebContents* contents,
@@ -913,25 +1059,19 @@ void RestoreTabFolder(content::WebContents* contents,
   if (it == extra_data.end() || it->second.empty()) {
     return;
   }
-  std::optional<base::DictValue> dict = base::JSONReader::ReadDict(
-      it->second, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
-  const std::string* id = dict ? dict->FindString("id") : nullptr;
-  if (!id || id->empty()) {
+  const auto path = DecodeFolderSession(it->second);
+  if (path.empty()) {
     return;
   }
-  // The first of the folder's tabs to come back brings its name and state.
-  if (!Folders().contains(*id)) {
-    FolderState state;
-    if (const std::string* name = dict->FindString("name")) {
-      state.name = base::UTF8ToUTF16(*name);
+  std::string parent;
+  for (const auto& node : path) {
+    if (!Folders().contains(node.id)) {
+      Folders()[node.id] = FolderState{base::UTF8ToUTF16(node.name),
+                                      node.icon, node.open, parent};
     }
-    if (const std::string* icon = dict->FindString("icon")) {
-      state.icon = *icon;
-    }
-    state.open = dict->FindBool("open").value_or(true);
-    Folders()[*id] = std::move(state);
+    parent = node.id;
   }
-  TabFolder::CreateForWebContents(contents, *id);
+  TabFolder::CreateForWebContents(contents, path.back().id);
 }
 
 std::optional<FolderInfo> GetTabFolder(const tabs::TabInterface* tab) {
@@ -958,11 +1098,70 @@ std::vector<FolderInfo> ListFolders(BrowserWindowInterface* browser) {
       continue;
     }
     if (std::optional<std::string> id = FolderIdOf(other);
-        id && seen.insert(*id).second) {
-      folders.push_back(InfoFor(*id));
+        id) {
+      for (const auto& ancestor : FolderPath(*id)) {
+        if (seen.insert(ancestor).second) {
+          folders.push_back(InfoFor(ancestor));
+        }
+      }
     }
   }
   return folders;
+}
+
+void NewFolder(BrowserWindowInterface* browser) {
+  content::WebContents* contents = chrome::AddAndReturnTabAt(
+      browser, GURL(), browser->GetTabStripModel()->IndexOfFirstNonPinnedTab(),
+      /*foreground=*/true);
+  if (!contents) {
+    return;
+  }
+  NewFolderWithTab(browser, browser->GetTabStripModel()->GetActiveTab());
+}
+
+void NewSubfolder(BrowserWindowInterface* browser, const std::string& parent) {
+  if (!Folders().contains(parent)) {
+    return;
+  }
+  auto* contents = chrome::AddAndReturnTabAt(
+      browser, GURL(), IndexAfterFolders(browser), /*foreground=*/true);
+  if (!contents) {
+    return;
+  }
+  const auto id = MakeFolder(u"New Folder");
+  Folders()[id].parent = parent;
+  for (const auto& ancestor : FolderPath(parent)) {
+    Folders()[ancestor].open = true;
+  }
+  FolderToRename() = id;
+  SetTabFolderId(contents, id);
+  SaveFolderTabs(browser, parent);
+  NotifyFoldersChanged();
+}
+
+void MoveFolder(BrowserWindowInterface* browser, const std::string& folder,
+                const std::string& parent) {
+  if (!Folders().contains(folder) ||
+      (!parent.empty() && (!Folders().contains(parent) ||
+                          !FolderCanContain(FolderPath(parent), folder)))) {
+    return;
+  }
+  const std::string previous = Folders()[folder].parent;
+  Folders()[folder].parent = parent;
+  EnsureEmptyFolder(browser, previous);
+  SaveFolderTabs(browser, folder);
+  NotifyFoldersChanged();
+}
+
+int IndexAfterFolders(BrowserWindowInterface* browser) {
+  auto* model = browser->GetTabStripModel();
+  int index = model->IndexOfFirstNonPinnedTab();
+  for (int i = index; i < model->count(); ++i) {
+    if (FolderIdOf(model->GetTabAtIndex(i))) {
+      index = i + 1;
+    }
+  }
+  return index;
 }
 
 void NewFolderWithTab(BrowserWindowInterface* browser,
@@ -978,7 +1177,7 @@ void NewFolderWithTab(BrowserWindowInterface* browser,
   if (model->IsTabPinned(index)) {
     model->SetTabPinned(index, false);
   }
-  const std::string id = NewFolder(u"New Folder");
+  const std::string id = MakeFolder(u"New Folder");
   FolderToRename() = id;
   SetTabFolderId(tab->GetContents(), id);
   NotifyFoldersChanged();
@@ -1014,6 +1213,7 @@ void RemoveTabFromFolder(BrowserWindowInterface* browser,
           FolderRange(model, *id, tab)) {
     MoveTabAfter(model, model->GetIndexOfTab(tab), range->second);
   }
+  EnsureEmptyFolder(browser, *id);
   NotifyFoldersChanged();
 }
 
@@ -1072,7 +1272,14 @@ void UngroupFolder(BrowserWindowInterface* browser,
   for (int i = 0; i < model->count(); ++i) {
     content::WebContents* contents = model->GetWebContentsAt(i);
     if (FolderIdOf(contents) == folder_id) {
-      SetTabFolderId(contents, std::nullopt);
+      const auto& parent = Folders()[folder_id].parent;
+      SetTabFolderId(contents, parent.empty() ? std::nullopt : std::make_optional(parent));
+    }
+  }
+  for (auto& [id, state] : Folders()) {
+    if (state.parent == folder_id) {
+      state.parent = Folders()[folder_id].parent;
+      SaveFolderTabs(browser, id);
     }
   }
   NotifyFoldersChanged();
@@ -1080,12 +1287,15 @@ void UngroupFolder(BrowserWindowInterface* browser,
 
 void DeleteFolder(BrowserWindowInterface* browser,
                   const std::string& folder_id) {
+  const std::string parent = Folders().contains(folder_id)
+                                ? Folders()[folder_id].parent : std::string();
   TabStripModel* model = browser->GetTabStripModel();
   for (int i = model->count() - 1; i >= 0; --i) {
-    if (FolderIdOf(model->GetWebContentsAt(i)) == folder_id) {
+    if (InFolder(FolderIdOf(model->GetWebContentsAt(i)), folder_id)) {
       model->CloseWebContentsAt(i, TabCloseTypes::CLOSE_USER_GESTURE);
     }
   }
+  EnsureEmptyFolder(browser, parent);
   NotifyFoldersChanged();
 }
 

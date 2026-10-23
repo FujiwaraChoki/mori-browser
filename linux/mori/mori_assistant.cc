@@ -1,5 +1,6 @@
 #include "chrome/browser/ui/views/mori/mori_assistant.h"
 
+#include <algorithm>
 #include <map>
 #include <limits>
 #include <memory>
@@ -19,12 +20,14 @@
 #include "cc/paint/paint_flags.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/mori/mori_assistant_tools.h"
 #include "chrome/browser/ui/views/mori/mori_codex.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
+#include "chrome/browser/ui/views/mori/mori_markdown.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/class_property.h"
 #include "ui/base/metadata/metadata_header_macros.h"
@@ -47,6 +50,8 @@
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/controls/label.h"
+#include "ui/views/controls/link.h"
+#include "ui/views/controls/styled_label.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/controls/separator.h"
 #include "ui/views/controls/textfield/textfield.h"
@@ -628,7 +633,14 @@ class AssistantSession : public CodexServer::Delegate {
                       }
                     },
                     weak_factory_.GetWeakPtr(), generation, index,
-                    std::move(id)));
+                    std::move(id)),
+                base::BindRepeating(
+                    [](base::WeakPtr<AssistantSession> session,
+                       uint64_t generation) {
+                      return session && session->generation_ == generation &&
+                             session->busy_ && !session->stop_requested_;
+                    },
+                    weak_factory_.GetWeakPtr(), generation));
   }
 
   void FinishToolCall(uint64_t generation,
@@ -791,6 +803,26 @@ class MessagesView : public views::View {
 BEGIN_METADATA(MessagesView)
 END_METADATA
 
+// StyledLabel owns line fragments. Keep prose selectable like the original
+// plain-text messages, while links retain their normal click/focus behavior.
+class AssistantMarkdownLabel : public views::StyledLabel {
+  METADATA_HEADER(AssistantMarkdownLabel, views::StyledLabel)
+
+ public:
+  void Layout(PassKey) override {
+    LayoutSuperclass<views::StyledLabel>(this);
+    for (views::View* child : children()) {
+      if (auto* label = views::AsViewClass<views::Label>(child);
+          label && !views::IsViewClass<views::Link>(child)) {
+        label->SetSelectable(true);
+      }
+    }
+  }
+};
+
+BEGIN_METADATA(AssistantMarkdownLabel)
+END_METADATA
+
 class AssistantPanel : public views::View, public views::TextfieldController {
   METADATA_HEADER(AssistantPanel, views::View)
 
@@ -939,6 +971,98 @@ class AssistantPanel : public views::View, public views::TextfieldController {
     return label;
   }
 
+  void AddMarkdown(const std::string& markdown_text) {
+    auto* message = content_->AddChildView(
+        std::make_unique<views::BoxLayoutView>());
+    message->SetOrientation(views::BoxLayout::Orientation::kVertical);
+    message->SetCrossAxisAlignment(
+        views::BoxLayout::CrossAxisAlignment::kStretch);
+    message->SetBetweenChildSpacing(6);
+    for (const markdown::Block& block : markdown::Parse(markdown_text)) {
+      if (block.kind == markdown::Block::kRule) {
+        message->AddChildView(std::make_unique<views::Separator>());
+        continue;
+      }
+      if (block.kind == markdown::Block::kCode) {
+        const std::string code = block.spans.empty() ? "" : block.spans[0].text;
+        auto* label = AddText(message, code, 12, Foreground(this));
+        label->SetFontList(gfx::FontList(
+            {"Menlo", "Consolas", "monospace"}, gfx::Font::NORMAL, 12,
+            gfx::Font::Weight::NORMAL));
+        const SkColor background = IsDark(this)
+                                       ? SkColorSetRGB(0x25, 0x25, 0x27)
+                                       : SkColorSetRGB(0xEF, 0xEF, 0xF1);
+        label->SetBackgroundColor(background);
+        label->SetBackground(views::CreateRoundedRectBackground(background, 6));
+        label->SetBorder(views::CreateEmptyBorder(gfx::Insets(8)));
+        continue;
+      }
+      auto spans = block.spans;
+      if (!block.prefix.empty()) {
+        spans.insert(spans.begin(), markdown::Span{block.prefix, false, false, false, {}});
+      }
+      std::u16string text;
+      for (const auto& span : spans) {
+        text += base::UTF8ToUTF16(span.text);
+      }
+      auto* label = message->AddChildView(std::make_unique<AssistantMarkdownLabel>());
+      label->SetText(std::move(text));
+      const int size = block.kind == markdown::Block::kHeading
+                           ? (block.level == 1 ? 18 : block.level == 2 ? 16 : 14)
+                           : 13;
+      label->SetLineHeight(size * 3 / 2);
+      label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+      label->SetDisplayedOnBackgroundColor(
+          IsDark(this) ? SkColorSetRGB(0x16, 0x16, 0x17)
+                       : SkColorSetRGB(0xFA, 0xFA, 0xFA));
+      if (block.kind == markdown::Block::kQuote) {
+        label->SetBorder(views::CreateSolidSidedBorder(
+            gfx::Insets::TLBR(0, 2, 0, 0), Muted(this)));
+      }
+      size_t offset = 0;
+      for (const auto& span : spans) {
+        const size_t end = std::min(
+            offset + base::UTF8ToUTF16(span.text).size(), label->GetText().size());
+        if (offset >= end) {
+          break;
+        }
+        views::StyledLabel::RangeStyleInfo style;
+        const GURL url(span.link);
+        if (url.is_valid() && url.SchemeIsHTTPOrHTTPS()) {
+          style = views::StyledLabel::RangeStyleInfo::CreateForLink(
+              base::BindRepeating(
+                  [](base::WeakPtr<BrowserWindowInterface> browser, GURL url) {
+                    if (browser) {
+                      chrome::AddTabAt(browser.get(), url, -1, true);
+                    }
+                  },
+                  browser_view_->browser()->GetWeakPtr(), url));
+          style.tooltip = base::UTF8ToUTF16(url.spec());
+          style.override_color = IsDark(this)
+                                     ? SkColorSetRGB(0x8A, 0xB4, 0xF8)
+                                     : SkColorSetRGB(0x19, 0x67, 0xD2);
+        } else {
+          style.override_color = block.kind == markdown::Block::kQuote
+                                     ? Muted(this) : Foreground(this);
+        }
+        gfx::FontList font = span.code
+            ? gfx::FontList({"Menlo", "Consolas", "monospace"},
+                            gfx::Font::NORMAL, size, gfx::Font::Weight::NORMAL)
+            : Font(size, gfx::Font::Weight::NORMAL);
+        if (span.bold || block.kind == markdown::Block::kHeading) {
+          font = font.DeriveWithWeight(gfx::Font::Weight::SEMIBOLD);
+        }
+        if (span.italic) {
+          font = font.DeriveWithStyle(gfx::Font::ITALIC);
+        }
+        style.custom_font = font;
+        label->AddStyleRange(gfx::Range(offset, end), style);
+        offset = end;
+      }
+      label->SizeToFit(kAssistantPanelWidth - 48);
+    }
+  }
+
   void Rebuild() {
     rebuild_pending_ = false;
     if (!GetColorProvider()) {
@@ -993,10 +1117,10 @@ class AssistantPanel : public views::View, public views::TextfieldController {
           break;
         }
         case Role::kAssistant:
-          AddText(content_, message.text, 13, Foreground(this));
+          AddMarkdown(message.text);
           break;
         case Role::kTool:
-          AddText(content_, "· " + message.text, 12, Muted(this));
+          AddText(content_, message.text, 12, Muted(this));
           break;
         case Role::kError: {
           auto* box = content_->AddChildView(std::make_unique<views::View>());

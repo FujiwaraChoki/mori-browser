@@ -1,0 +1,141 @@
+--- a/chrome/browser/ui/browser_commands.cc
++++ b/chrome/browser/ui/browser_commands.cc
+@@ -3,6 +3,8 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/ui/browser_commands.h"
++
++#include "chrome/browser/ui/views/mori/mori_command_ids.h"
+ 
+ #include <algorithm>
+ #include <memory>
+@@ -1446,6 +1448,10 @@
+ }
+ 
+ void CloseTab(BrowserWindowInterface* browser) {
++  // Mori: close the page of a pin, keeping its permanent sidebar entry.
++  if (mori::HandlePinnedTabClose(browser)) {
++    return;
++  }
+   base::RecordAction(UserMetricsAction("CloseTab_Accelerator"));
+ 
+   tabs::TabInterface* active_tab = browser->GetTabStripModel()->GetActiveTab();
+--- a/chrome/browser/ui/browser_commands_browsertest.cc
++++ b/chrome/browser/ui/browser_commands_browsertest.cc
+@@ -802,66 +802,58 @@
+   EXPECT_TRUE(ToastController::From(browser())->IsShowingToast());
+ }
+ 
+-IN_PROC_BROWSER_TEST_F(BrowserCommandsTest,
+-                       CloseTabShowsToastWhenAllSelectedTabsArePinned) {
+-  // Add 2 tabs so we have 3 tabs total (indices 0, 1, 2).
++// Mori: repeated close commands must never delete a pin, including when
++// Chromium would otherwise confirm its removal on the second keypress.
++IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, ClosePinnedTabKeepsPinAndSelectsNext) {
+   AddTabs(2);
+-  ASSERT_EQ(3, browser()->tab_strip_model()->count());
+-
+-  // Pin the first two tabs.
+-  browser()->tab_strip_model()->SetTabPinned(0, true);
+-  browser()->tab_strip_model()->SetTabPinned(1, true);
+-  EXPECT_TRUE(browser()->tab_strip_model()->GetTabAtIndex(0)->IsPinned());
+-  EXPECT_TRUE(browser()->tab_strip_model()->GetTabAtIndex(1)->IsPinned());
+-
+-  // Select both tab 0 (pinned) and tab 1 (pinned).
+-  browser()->tab_strip_model()->ActivateTabAt(0);
+-  browser()->tab_strip_model()->AddSelectionFromAnchorTo(1);
+-  EXPECT_TRUE(browser()->tab_strip_model()->IsTabSelected(0));
+-  EXPECT_TRUE(browser()->tab_strip_model()->IsTabSelected(1));
+-  EXPECT_FALSE(browser()->tab_strip_model()->IsTabSelected(2));
+-
+-  ToastController* const toast_controller = ToastController::From(browser());
+-  ASSERT_TRUE(toast_controller);
+-
+-  // Attempting to close selected tabs when ALL are pinned triggers the toast
+-  // rather than immediately closing the tabs.
+-  chrome::CloseTab(browser());
+-  EXPECT_EQ(ToastId::kClosePinnedTab, toast_controller->GetCurrentToastId());
+-  EXPECT_EQ(3, browser()->tab_strip_model()->count());
+-
+-  // Invoking CloseTab a second time while the toast is active closes the
+-  // selected tabs.
+-  chrome::CloseTab(browser());
+-  EXPECT_EQ(1, browser()->tab_strip_model()->count());
+-}
+-
+-IN_PROC_BROWSER_TEST_F(
+-    BrowserCommandsTest,
+-    CloseTabDoesNotShowToastWhenNotAllSelectedTabsArePinned) {
+-  // Add 2 tabs so we have 3 tabs total (indices 0, 1, 2).
++  auto* model = browser()->tab_strip_model();
++  model->SetTabPinned(0, true);
++  const auto pin = model->GetTabAtIndex(0)->GetHandle();
++  const auto next = model->GetTabAtIndex(1)->GetHandle();
++  for (int attempt = 0; attempt < 3; ++attempt) {
++    model->ActivateTabAt(0);
++    chrome::ExecuteCommand(browser(), IDC_CLOSE_TAB);
++    EXPECT_EQ(3, model->count());
++    ASSERT_TRUE(pin.Get());
++    EXPECT_TRUE(pin.Get()->IsPinned());
++    EXPECT_EQ(next.Get(), model->GetActiveTab());
++  }
++}
++
++IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, CloseOnlyPinCreatesAnotherTab) {
++  auto* model = browser()->tab_strip_model();
++  ASSERT_EQ(1, model->count());
++  model->SetTabPinned(0, true);
++  const auto pin = model->GetActiveTab()->GetHandle();
++  chrome::ExecuteCommand(browser(), IDC_CLOSE_TAB);
++  EXPECT_EQ(2, model->count());
++  ASSERT_TRUE(pin.Get());
++  EXPECT_TRUE(pin.Get()->IsPinned());
++  EXPECT_NE(pin.Get(), model->GetActiveTab());
++}
++
++IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, CloseMixedSelectionKeepsPin) {
+   AddTabs(2);
+-  ASSERT_EQ(3, browser()->tab_strip_model()->count());
+-
+-  // Pin the first tab (index 0) only.
+-  browser()->tab_strip_model()->SetTabPinned(0, true);
+-  EXPECT_TRUE(browser()->tab_strip_model()->GetTabAtIndex(0)->IsPinned());
+-
+-  // Select tab 0 (pinned) and tab 1 (unpinned).
+-  browser()->tab_strip_model()->ActivateTabAt(0);
+-  browser()->tab_strip_model()->AddSelectionFromAnchorTo(1);
+-  EXPECT_TRUE(browser()->tab_strip_model()->IsTabSelected(0));
+-  EXPECT_TRUE(browser()->tab_strip_model()->IsTabSelected(1));
+-  EXPECT_FALSE(browser()->tab_strip_model()->IsTabSelected(2));
+-
+-  ToastController* const toast_controller = ToastController::From(browser());
+-  ASSERT_TRUE(toast_controller);
+-
+-  // Attempting to close selected tabs when NOT ALL selected tabs are pinned
+-  // closes them immediately without showing the toast.
+-  chrome::CloseTab(browser());
+-  EXPECT_NE(ToastId::kClosePinnedTab, toast_controller->GetCurrentToastId());
+-  EXPECT_EQ(1, browser()->tab_strip_model()->count());
++  auto* model = browser()->tab_strip_model();
++  model->SetTabPinned(0, true);
++  const auto pin = model->GetTabAtIndex(0)->GetHandle();
++  model->ActivateTabAt(0);
++  model->AddSelectionFromAnchorTo(1);
++  ASSERT_EQ(1, model->active_index());
++  chrome::ExecuteCommand(browser(), IDC_CLOSE_TAB);
++  EXPECT_EQ(2, model->count());
++  ASSERT_TRUE(pin.Get());
++  EXPECT_TRUE(pin.Get()->IsPinned());
++}
++
++IN_PROC_BROWSER_TEST_F(BrowserCommandsTest, UnpinnedTabCanCloseNormally) {
++  AddTabs(1);
++  auto* model = browser()->tab_strip_model();
++  model->SetTabPinned(0, true);
++  model->SetTabPinned(0, false);
++  model->ActivateTabAt(0);
++  chrome::ExecuteCommand(browser(), IDC_CLOSE_TAB);
++  EXPECT_EQ(1, model->count());
+ }
+ 
+ #if BUILDFLAG(IS_LINUX)
