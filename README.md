@@ -9,6 +9,10 @@ The current Windows build uses **Chromium 156.0.8078.47** with the matching
 ungoogled-chromium base. Its exact revisions live in
 [windows/chromium.json](windows/chromium.json).
 
+**Windows download:** [Get the current Windows x64 preview](https://github.com/FujiwaraChoki/mori-browser/releases/tag/windows-156.0.8078.47-preview.1).
+Choose the `Wizard.exe` asset for the visible setup wizard. The release includes
+SHA-256 checksums and build metadata; these preview installers are unsigned.
+
 ## Implementations and platform status
 
 | Implementation | Source | Status |
