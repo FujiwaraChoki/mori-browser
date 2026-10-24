@@ -35,6 +35,10 @@ shared artwork in `mac/assets/` and native macOS integration in `linux/mori/*.mm
   suites. Verify installer version, Mori product names, and original icon assets.
 - Linux and macOS changes need checks on their target hosts; a Windows build
   does not validate those platforms.
+- Read `docs/CI.md` before changing workflows or the installed runner setup.
+  Public PRs use hosted runners. Personal runners accept only owner-dispatched
+  builds from `main`, with a separate pre-job guard outside the job workspace.
+  Preserve single-PC build serialization and keep outputs local by default.
 
 ## Linux input harness
 

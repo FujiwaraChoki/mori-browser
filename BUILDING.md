@@ -5,6 +5,9 @@ The main desktop browser uses Chromium Views. Its shared source is
 `linux/`, and `mac/`. The retired desktop SwiftUI overlay is no longer used.
 The iOS app is a separate WKWebView build.
 
+For hosted checks and manual Windows/Linux builds on the configured PC,
+see [CI and local build runners](docs/CI.md). macOS CI is deferred.
+
 ## Windows: Chromium Views
 
 

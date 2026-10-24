@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 from branding import apply_branding
-from build_config import CONFIG, CHROMIUM_VERSION, DEFAULT_CHECKOUT, checkout_build_lock, configure_toolchain, read_chromium_version
+from build_config import CONFIG, CHROMIUM_VERSION, DEFAULT_CHECKOUT, checkout_build_lock, configure_toolchain, read_chromium_version, link_mori_sources
 
 
 def run(*args, **kwargs):
@@ -20,6 +20,8 @@ def main():
     parser.add_argument('--checkout', default=DEFAULT_CHECKOUT)
     parser.add_argument('--base', help='Override the matching ungoogled-chromium patch repository')
     parser.add_argument('--setup-only', action='store_true')
+    parser.add_argument('--relink-overlay', action='store_true',
+                        help='Preserve the old source junction and link this repository revision (CI)')
     parser.add_argument('--jobs', type=int, default=12)
     parser.add_argument('--target', choices=['chrome', 'mini_installer'], default='chrome')
     args = parser.parse_args()
@@ -79,11 +81,7 @@ def build(args):
         state['domain-substitution'] = True
         save()
 
-    overlay = src / 'chrome/browser/ui/views/mori'
-    if not overlay.exists():
-        run('cmd.exe', '/c', 'mklink', '/J', str(overlay), str(repo / 'linux/mori'))
-    elif overlay.resolve() != (repo / 'linux/mori').resolve():
-        raise RuntimeError(f'{overlay} already exists and does not point to Mori sources')
+    link_mori_sources(repo, src, allow_relink=getattr(args, 'relink_overlay', False))
     for patch in sorted((repo / 'linux/patches').glob('*.patch')):
         apply_patch(patch, 'mori/' + patch.name)
     for patch in sorted((repo / 'windows/patches').glob('*.patch')):

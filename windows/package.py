@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--checkout', default=DEFAULT_CHECKOUT)
     parser.add_argument('--jobs', type=int, default=12)
     parser.add_argument('--skip-build', action='store_true')
+    parser.add_argument('--relink-overlay', action='store_true')
     args = parser.parse_args()
     with checkout_build_lock(Path(args.checkout)):
         package(args)
@@ -27,7 +28,8 @@ def package(args):
     if not args.skip_build:
         build_checkout(argparse.Namespace(
             checkout=str(checkout), base=None, setup_only=False,
-            jobs=args.jobs, target='mini_installer'))
+            jobs=args.jobs, target='mini_installer',
+            relink_overlay=getattr(args, 'relink_overlay', False)))
     version = read_chromium_version(checkout / 'src')
     if version != CHROMIUM_VERSION:
         raise RuntimeError(f'Expected Chromium {CHROMIUM_VERSION}, found {version}')

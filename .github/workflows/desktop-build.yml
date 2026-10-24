@@ -1,0 +1,85 @@
+name: Build on Sami's PC
+
+"on":
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Platform to run
+        type: choice
+        options: [both, windows, linux]
+        default: both
+      operation:
+        description: Verify runner, build browser, or package
+        type: choice
+        options: [verify, build, package]
+        default: verify
+      jobs:
+        description: Parallel compiler jobs (1-12)
+        type: choice
+        options: ['4', '8', '12']
+        default: '12'
+
+permissions:
+  contents: read
+
+# Both runners share one physical PC. Never overlap desktop build workflows.
+concurrency:
+  group: mori-sami-pc
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    if: github.repository == 'FujiwaraChoki/mori-browser' && github.actor == 'FujiwaraChoki' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - id: matrix
+        env:
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          rows = [
+              {"platform": "windows", "os": "Windows", "label": "mori-windows"},
+              {"platform": "linux", "os": "Linux", "label": "mori-linux"},
+          ]
+          selected = os.environ['PLATFORM']
+          assert selected in ('both', 'windows', 'linux')
+          rows = [row for row in rows if selected in ('both', row['platform'])]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('matrix=' + json.dumps({'include': rows}) + '\n')
+          PY
+  build:
+    needs: plan
+    if: github.repository == 'FujiwaraChoki/mori-browser' && github.actor == 'FujiwaraChoki' && github.ref == 'refs/heads/main'
+    name: ${{ matrix.platform }} / ${{ inputs.operation }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: [self-hosted, '${{ matrix.os }}', X64, '${{ matrix.label }}']
+    timeout-minutes: 4320
+    env:
+      MORI_CI_OPERATION: ${{ inputs.operation }}
+      MORI_CI_JOBS: ${{ inputs.jobs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Windows
+        if: matrix.platform == 'windows'
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $machine = Get-Content C:\mori-ci\machine.json -Raw | ConvertFrom-Json
+          $env:PATH = "$($machine.node);$env:PATH"
+          & $machine.python ci/windows_build.py --operation $env:MORI_CI_OPERATION --jobs $env:MORI_CI_JOBS
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Linux
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: python3 ci/linux_build.py --operation "$MORI_CI_OPERATION" --jobs "$MORI_CI_JOBS"

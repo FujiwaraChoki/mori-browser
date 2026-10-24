@@ -1,0 +1,52 @@
+name: Checks
+
+"on":
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tooling:
+    name: Tooling (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - run: python -m pip install -r ci/requirements.txt
+      - run: python ci/checks.py
+      - run: python -m unittest discover -s windows/tests -p "test_*.py" -v
+      - run: python -m unittest discover -s ci/tests -v
+      - run: npm ci --prefix windows --ignore-scripts --no-audit --no-fund
+      - run: npm --prefix windows run test:pip -- --list
+      - run: npm --prefix windows run test:media -- --list
+      - name: Native Markdown regressions
+        if: runner.os == 'Linux'
+        run: |
+          c++ -std=c++20 -Wall -Wextra -pedantic linux/tests/mori_markdown_test.cc -o "$RUNNER_TEMP/mori-markdown-test"
+          "$RUNNER_TEMP/mori-markdown-test"
+      - name: Workflow lint
+        if: runner.os == 'Linux'
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint"

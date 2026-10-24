@@ -57,6 +57,10 @@ are excluded from Git.
 
 ## Tests
 
+Free hosted checks run on Windows and Linux for pushes and pull requests.
+Trusted desktop builds can run manually on the Windows/WSL runners on Sami's
+PC. See [CI and local build runners](docs/CI.md) for the controls and output paths.
+
 ```powershell
 python -m unittest discover -s windows/tests -p "test_*.py" -v
 npm ci --prefix windows
@@ -74,6 +78,7 @@ copy if the build output needs to remain available to other builds.
 - [Build, package, run, and test](BUILDING.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Source layout](docs/SOURCE_LAYOUT.md)
+- [CI and local build runners](docs/CI.md)
 - [Shared desktop behavior and Linux tooling](linux/README.md)
 - [Historical Chromium migration record](docs/archive/DECISIONS-linux-chromium.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)

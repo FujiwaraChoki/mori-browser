@@ -6,10 +6,42 @@ import os
 from pathlib import Path
 import subprocess
 import time
+import uuid
 
 CONFIG = json.loads(Path(__file__).with_name('chromium.json').read_text())
 CHROMIUM_VERSION = CONFIG['version']
 DEFAULT_CHECKOUT = CONFIG['default_checkout']
+
+
+def link_mori_sources(repo, source, allow_relink=False):
+    """Bind this source revision to Chromium, preserving any previous junction."""
+    target = (Path(repo) / 'linux/mori').resolve()
+    overlay = Path(source) / 'chrome/browser/ui/views/mori'
+    if overlay.exists() and overlay.resolve() == target:
+        return
+    if overlay.exists() or overlay.is_symlink() or overlay.is_junction():
+        if not allow_relink:
+            raise RuntimeError(f'{overlay} already exists and does not point to Mori sources')
+        if not overlay.is_junction():
+            raise RuntimeError(f'Refusing to move a non-junction source folder: {overlay}')
+        previous = overlay.resolve()
+        for name in ('mori_sidebar.cc', 'mori_toolbar_layout.cc'):
+            if not (previous / name).is_file():
+                raise RuntimeError(f'{previous} does not look like Mori source')
+        source = Path(source).resolve()
+        archive = source.parent / 'mori-overlay-links'
+        archive.mkdir(exist_ok=True)
+        if not overlay.parent.resolve().is_relative_to(source):
+            raise RuntimeError('Overlay parent escapes the Chromium checkout')
+        if archive.resolve().parent != source.parent:
+            raise RuntimeError('Junction archive escapes the Chromium checkout')
+        saved = archive / uuid.uuid4().hex
+        # Rename the junction itself, never move/delete its target or contents.
+        overlay.rename(saved)
+        print(f'Preserved previous source junction at {saved}', flush=True)
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(['cmd.exe', '/d', '/c', 'mklink', '/J', str(overlay), str(target)],
+                   check=True, capture_output=True)
 
 
 def configure_toolchain(repo):
