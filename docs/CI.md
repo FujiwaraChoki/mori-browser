@@ -60,6 +60,8 @@ patch hash ledger, and serializes writes with `flock`. Unlike the older
 `linux/*.sh` wrappers it does not require a matching portablelinux packaging
 release. The initial fetch/build is large and can take many hours. Free space
 is checked on both the WSL filesystem and the Windows backing drive.
+Patch hashes normalize LF/CRLF line endings and accept the corresponding
+legacy hashes; changes to patch content still require a fresh checkout.
 
 The Windows job reuses the existing engine cache. Under the checkout lock it
 can redirect Chromium's Mori source junction to the checked-out CI revision.

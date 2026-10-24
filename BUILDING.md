@@ -16,7 +16,7 @@ synced with `depot_tools`.
 
 Prerequisites are Visual Studio 2026 C++ Build Tools (including MFC/ATL),
 Windows SDK 10.0.28000.2270 or newer with SDK Debugging Tools, Git for Windows
-(including GNU `patch`), and Python 3. Keep `depot_tools` at the repository root
+(including GNU `patch`), and Python 3.12 or newer. Keep `depot_tools` at the repository root
 and set `DEPOT_TOOLS_WIN_TOOLCHAIN=0`. The version, source revision, and matching
 ungoogled release are pinned in
 `windows/chromium.json`. The ungoogled patch repository lives in the checkout's

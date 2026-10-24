@@ -23,10 +23,16 @@ def main():
     os.environ['PATH'] = machine['depot_tools'] + os.pathsep + str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH']
     checkout = Path(machine['checkout'])
     sys.path.insert(0, str(REPO / 'windows'))
-    from build_config import CHROMIUM_VERSION, configure_toolchain, read_chromium_version
+    from build_config import CHROMIUM_VERSION, configure_toolchain, read_chromium_version, patch_content_hashes
     configure_toolchain(REPO)
     if read_chromium_version(checkout / 'src') != CHROMIUM_VERSION:
         raise RuntimeError('Prepare the pinned Chromium checkout before building')
+    state = json.loads((checkout / 'mori-setup-state.json').read_text())
+    for directory, prefix in [('linux/patches', 'mori'), ('windows/patches', 'windows')]:
+        for path in (REPO / directory).glob('*.patch'):
+            recorded = state.get(prefix + '/' + path.name)
+            if recorded is not None and recorded not in patch_content_hashes(path.read_bytes())[1]:
+                raise RuntimeError(f'{path.name} differs from the cached engine; prepare a fresh checkout')
     if shutil.disk_usage(checkout).free < 30 * 1024**3:
         raise RuntimeError('Windows builds need at least 30 GiB of free disk headroom')
     for tool in ('git', 'node', 'npm'):

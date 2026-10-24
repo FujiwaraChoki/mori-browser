@@ -2,6 +2,7 @@
 import json
 from contextlib import contextmanager
 import errno
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -11,6 +12,15 @@ import uuid
 CONFIG = json.loads(Path(__file__).with_name('chromium.json').read_text())
 CHROMIUM_VERSION = CONFIG['version']
 DEFAULT_CHECKOUT = CONFIG['default_checkout']
+
+
+def patch_content_hashes(data):
+    """Canonical hash plus compatible legacy hashes for LF/CRLF-only changes."""
+    normalized = data.replace(b'\r\n', b'\n')
+    canonical = hashlib.sha256(normalized).hexdigest()
+    compatible = {canonical, hashlib.sha256(data).hexdigest(),
+                  hashlib.sha256(normalized.replace(b'\n', b'\r\n')).hexdigest()}
+    return canonical, compatible
 
 
 def link_mori_sources(repo, source, allow_relink=False):

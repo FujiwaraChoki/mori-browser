@@ -1,6 +1,5 @@
 """Prepare and build Mori with a full, synced Chromium Windows checkout."""
 import argparse
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,7 +7,7 @@ import subprocess
 import sys
 
 from branding import apply_branding
-from build_config import CONFIG, CHROMIUM_VERSION, DEFAULT_CHECKOUT, checkout_build_lock, configure_toolchain, read_chromium_version, link_mori_sources
+from build_config import CONFIG, CHROMIUM_VERSION, DEFAULT_CHECKOUT, checkout_build_lock, configure_toolchain, read_chromium_version, link_mori_sources, patch_content_hashes
 
 
 def run(*args, **kwargs):
@@ -56,10 +55,13 @@ def build(args):
         temporary.replace(state_file)
 
     def apply_patch(path, key):
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        digest, compatible = patch_content_hashes(path.read_bytes())
         if key in state:
-            if state[key] != digest:
+            if state[key] not in compatible:
                 raise RuntimeError(f'{path.name} changed after application; use a fresh checkout')
+            if state[key] != digest:
+                state[key] = digest
+                save()
             return
         command = [str(patch_bin), '-d', str(src), '-p1', '--batch', '--forward',
                    '--ignore-whitespace', '--no-backup-if-mismatch', '-i', str(path)]

@@ -17,6 +17,8 @@ import uuid
 REPO = Path(__file__).resolve().parents[1]
 CONFIG = json.loads((REPO / 'windows/chromium.json').read_text())
 TOOLS = json.loads((REPO / 'ci/linux.json').read_text())
+sys.path.insert(0, str(REPO / 'windows'))
+from build_config import patch_content_hashes
 
 
 def run(*args, cwd=None, **kwargs):
@@ -93,10 +95,13 @@ def prepare(checkout, state, save):
     run(sys.executable, REPO / 'linux/tools/check_chromium_version.py', '--base', base, '--source', source)
 
     def patch(path, key):
-        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        digest, compatible = patch_content_hashes(path.read_bytes())
         if key in state:
-            if state[key] != digest:
+            if state[key] not in compatible:
                 raise RuntimeError(f'{key} changed after application; use a fresh checkout')
+            if state[key] != digest:
+                state[key] = digest
+                save()
             return
         command = ['patch', '-d', str(source), '-p1', '--batch', '--forward',
                    '--ignore-whitespace', '--no-backup-if-mismatch', '-i', str(path)]
