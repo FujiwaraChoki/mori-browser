@@ -29,7 +29,7 @@ ui::ImageModel Icon(std::string_view lucide) {
 }  // namespace
 
 void BuildAppMenu(ui::SimpleMenuModel* model, BrowserWindowInterface* browser) {
-  // Mori 3's order.
+  // Mori's order.
   model->AddItemWithIcon(IDC_NEW_TAB, u"New Tab", Icon("plus"));
   model->AddItemWithIcon(kCommandNewFolder, u"New Folder", Icon("folder-plus"));
   model->AddItemWithIcon(IDC_NEW_WINDOW, u"New Window", Icon("app-window"));

@@ -10,6 +10,8 @@ set -euo pipefail
 _mori_linux="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${_mori_linux}/../ungoogled-chromium-linux/scripts/shared.sh"
 setup_paths
+python3 "${_mori_linux}/tools/check_chromium_version.py" \
+    --base "${_main_repo}" --source "${_src_dir}"
 
 JOBS=${JOBS:-12}
 _tools="${_root}/build/host-tools"
@@ -51,7 +53,9 @@ setup_toolchain_mori() {
         npm install --prefix "${_tools}/esbuild-${esbuild_version}" --no-save --no-audit --no-fund "esbuild@${esbuild_version}"
     fi
     if [ -n "${esbuild_version}" ]; then
-        rm -rf "${devtools}/node_modules/esbuild"
+        if [ -e "${devtools}/node_modules/esbuild" ] || [ -L "${devtools}/node_modules/esbuild" ]; then
+            gio trash "${devtools}/node_modules/esbuild"
+        fi
         ln -s "${_tools}/esbuild-${esbuild_version}/node_modules/esbuild" "${devtools}/node_modules/esbuild"
         # The portable patch (chromium-155-use-system-esbuild) expects
         # Debian's /usr/bin/esbuild; use the matching local binary instead.

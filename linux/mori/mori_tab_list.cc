@@ -63,14 +63,14 @@ constexpr int kButtonSize = 28;
 // The bar's inset from the sidebar's edges.
 constexpr int kBarInset = 7;
 
-// Mori 3's sidebar metrics (crates/mori/src/theme.rs, ui/sidebar.rs).
+// Mori's sidebar metrics.
 constexpr int kRowHeight = 36;
 constexpr int kRowRadius = 8;
 constexpr int kRowContentInset = 7;
 
 constexpr base::TimeDelta kArchiveCheckInterval = base::Minutes(10);
 
-// Mori 3's muted sidebar text ("Add Tab").
+// Mori's muted sidebar text ("Add Tab").
 SkColor MutedColor(const views::View* view) {
   const SkColor frame =
       view->GetColorProvider()->GetColor(ui::kColorFrameActive);
@@ -78,7 +78,7 @@ SkColor MutedColor(const views::View* view) {
                                     : SkColorSetRGB(0x5A, 0x5C, 0x5E);
 }
 
-// The hairline under the favorites (Mori 3), across the header.
+// The hairline under the favorites (Mori), across the header.
 class FavoritesSeparator : public views::View {
   METADATA_HEADER(FavoritesSeparator, views::View)
 
@@ -217,7 +217,7 @@ class SidebarBar : public views::View,
         gfx::Insets::VH(6, kBarInset), 2))
         ->set_cross_axis_alignment(
             views::BoxLayout::CrossAxisAlignment::kCenter);
-    // Mori 3: the library (history and bookmarks) at the start.
+    // Mori: the library (history and bookmarks) at the start.
     auto library = views::CreateVectorImageButtonWithNativeTheme(
         base::BindRepeating(
             [](BrowserWindowInterface* browser) {
@@ -232,7 +232,7 @@ class SidebarBar : public views::View,
 #endif
     library->SetPreferredSize(gfx::Size(kButtonSize, kButtonSize));
     AddChildView(std::move(library));
-    // Mori 3: the assistant beside the library.
+    // Mori: the assistant beside the library.
     auto assistant = views::CreateVectorImageButtonWithNativeTheme(
         base::BindRepeating(&ToggleAssistant, browser_.get()),
         LucideIcon("sparkles"), 16);
@@ -290,7 +290,7 @@ class SidebarBar : public views::View,
 
   void AddedToWidget() override {
     views::View::AddedToWidget();
-    // Mori 3's new tab page, in this window (once the window is set up:
+    // Mori's new tab page, in this window (once the window is set up:
     // the sidebar joins it while the BrowserView is still being built).
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE,
@@ -357,7 +357,7 @@ class SidebarBar : public views::View,
     SetSpacesUngrouped(profile);
   }
 
-  // Arc's auto-archive (Mori 3's default of 24 hours): tabs nobody looked
+  // Arc's auto-archive (Mori's default of 24 hours): tabs nobody looked
   // at for a day close. Favorites, folder tabs, sound and the active tab stay; closed
   // tabs stay in History and Reopen Closed Tab.
   void ArchiveIdleTabs() {

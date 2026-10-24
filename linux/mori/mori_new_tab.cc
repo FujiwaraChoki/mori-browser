@@ -1,6 +1,8 @@
 #include "chrome/browser/ui/views/mori/mori_new_tab.h"
+#include "chrome/browser/ui/views/mori/mori_typography.h"
 
 #include "build/build_config.h"
+#include <algorithm>
 #include <memory>
 #include <string>
 
@@ -45,11 +47,6 @@ constexpr int kLogoSize = 56;
 constexpr int kFieldMaxWidth = 420;
 constexpr int kFieldHeight = 44;
 constexpr int kGap = 16;
-
-gfx::FontList Font(int size) {
-  const gfx::FontList base;
-  return base.DeriveWithSizeDelta(size - base.GetFontSize());
-}
 
 // The page: the logo (two trees on the ground, logo.svg) and the field.
 class NewTabView : public views::View {
@@ -97,7 +94,8 @@ class NewTabView : public views::View {
     canvas->DrawImageInt(search, field.x() + 16,
                          field.y() + (field.height() - search.height()) / 2);
     // The shortcut, as key caps.
-    const gfx::FontList caps_font = Font(11);
+    const gfx::FontList caps_font = UiFont();
+    const int cap_height = std::max(20, caps_font.GetHeight() + 4);
     int right = field.right() - 14;
 #if BUILDFLAG(IS_MAC)
     const std::u16string modifier = u"⌘";
@@ -106,8 +104,8 @@ class NewTabView : public views::View {
 #endif
     for (const std::u16string& key : {std::u16string(u"L"), modifier}) {
       const int width = std::max(20, gfx::GetStringWidth(key, caps_font) + 10);
-      const gfx::Rect cap(right - width, field.y() + (field.height() - 20) / 2,
-                          width, 20);
+      const gfx::Rect cap(right - width, field.y() + (field.height() - cap_height) / 2,
+                          width, cap_height);
       cc::PaintFlags cap_flags;
       cap_flags.setAntiAlias(true);
       cap_flags.setColor(SkColorSetA(foreground, 0x14));
@@ -117,7 +115,7 @@ class NewTabView : public views::View {
       right = cap.x() - 4;
     }
     const int text_x = field.x() + 16 + 16 + 12;
-    canvas->DrawStringRect(u"Search or enter address", Font(14), muted,
+    canvas->DrawStringRect(u"Search or enter address", UiFont(), muted,
                            gfx::Rect(text_x, field.y(), right - 8 - text_x,
                                      field.height()));
   }

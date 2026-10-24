@@ -73,7 +73,7 @@ bool IsRunnable(const base::FilePath& path) {
 #endif
 }
 
-// Where to look for `codex`, as Mori 3 does: $CODEX_BIN, $PATH, then the
+// Where to look for `codex`, as Mori does: $CODEX_BIN, $PATH, then the
 // per-user install places a desktop-launched browser may not have on its
 // PATH (npm, bun, mise; Homebrew; on Windows npm, Scoop and WinGet).
 std::optional<base::FilePath> FindCodex() {

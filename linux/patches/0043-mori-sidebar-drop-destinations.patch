@@ -1,0 +1,91 @@
+--- a/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc
++++ b/chrome/browser/ui/views/tabs/dragging/tab_drag_controller.cc
+@@ -3,6 +3,7 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/ui/views/tabs/dragging/tab_drag_controller.h"
++#include "chrome/browser/ui/views/mori/mori_folders.h"
+ 
+ #include <algorithm>
+ #include <memory>
+@@ -2536,6 +2537,22 @@
+       absl::StrFormat("TabStrip.%s.TabDragPinnedness", GetTabStripMode()),
+       pinnedness);
+ 
++  // Mori resolves sidebar destinations before cleanup changes row geometry,
++  // then commits pin/folder membership after native dragged views are released.
++  if (!drag_data_.group_header_drag_data_) {
++    if (auto* browser_view = BrowserView::GetBrowserViewForNativeWindow(
++            attached_context_->GetWidget()->GetNativeWindow())) {
++      std::vector<tabs::TabHandle> dragged;
++      for (const auto& data : drag_data_.tab_drag_data_) {
++        if (data.contents) {
++          dragged.push_back(
++              tabs::TabInterface::GetFromContents(data.contents)->GetHandle());
++        }
++      }
++      mori::QueueSidebarTabDrop(browser_view->browser(), std::move(dragged),
++                               last_point_in_screen_);
++    }
++  }
+   if (current_drag_target_ && current_drag_target_->CanDropTab()) {
+     current_drag_target_->HandleTabDrop(*this);
+     OnContextStoppedDragging();
+--- a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h
++++ b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h
+@@ -80,6 +80,7 @@
+   void ResetCollectionNode();
+   void OnCollapseStateChanged(tabs::VerticalTabStripCollapseState state);
+ 
++  raw_ptr<views::View> empty_favorites_hint_ = nullptr;
+   raw_ptr<TabCollectionNode> collection_node_;
+   const raw_ref<TabCollectionAnimatingLayoutManager> layout_manager_;
+ 
+--- a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
++++ b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
+@@ -22,6 +22,7 @@
+ #include "ui/base/metadata/metadata_impl_macros.h"
+ #include "ui/gfx/geometry/rect.h"
+ #include "ui/views/controls/scroll_view.h"
++#include "ui/views/controls/label.h"
+ #include "ui/views/layout/delegating_layout_manager.h"
+ #include "ui/views/layout/layout_types.h"
+ #include "ui/views/layout/proposed_layout.h"
+@@ -69,6 +70,9 @@
+                      base::Unretained(this)));
+ 
+   if (collection_node_->orientation() == TabStripOrientation::kVertical) {
++    auto hint = std::make_unique<views::Label>(u"Drop here to favorite");
++    hint->SetCanProcessEventsWithinSubtree(false);
++    empty_favorites_hint_ = AddChildView(std::move(hint));
+     if (auto* state_controller =
+             collection_node_->GetController()->GetStateController()) {
+       OnCollapseStateChanged(state_controller->GetCollapseState());
+@@ -93,7 +97,7 @@
+ 
+ gfx::Size PinnedTabContainerView::GetMinimumSize() const {
+   if (!collection_node_ || collection_node_->GetDirectChildren().empty()) {
+-    return gfx::Size();
++    return empty_favorites_hint_ ? gfx::Size(0, 36) : gfx::Size();
+   }
+ 
+   if (collection_node_->orientation() == TabStripOrientation::kHorizontal) {
+@@ -388,8 +392,17 @@
+   int y = 0;
+   int children_on_row = children.size();
+ 
++  if (empty_favorites_hint_) {
++    const int width = size_bounds.width().is_bounded()
++                          ? size_bounds.width().value() : 186;
++    layouts.child_layouts.emplace_back(empty_favorites_hint_, children_on_row == 0,
++                                       gfx::Rect(0, 0, width, 36));
++  }
+   if (children_on_row == 0) {
+-    layouts.host_size = gfx::Size(0, 0);
++    layouts.host_size = empty_favorites_hint_
++        ? gfx::Size(size_bounds.width().is_bounded()
++                        ? size_bounds.width().value() : 186, 36)
++        : gfx::Size();
+     return layouts;
+   }
+ 

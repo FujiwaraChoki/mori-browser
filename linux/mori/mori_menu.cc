@@ -71,7 +71,7 @@ void CopyText(BrowserWindowInterface* browser,
   ShowToast(browser, toast);
 }
 
-// Mori 3's bookmark toggle: no dialog, a toast says what happened.
+// Mori's bookmark toggle: no dialog, a toast says what happened.
 void ToggleBookmark(BrowserWindowInterface* browser,
                     const GURL& url,
                     const std::u16string& title) {
@@ -259,7 +259,7 @@ void SplitWithActive(BrowserWindowInterface* browser, tabs::TabInterface* tab) {
   }
 }
 
-// Mori 3's capitalisation of Chromium's sentence-case labels.
+// Mori's capitalisation of Chromium's sentence-case labels.
 std::u16string TitleCase(const std::u16string& label) {
   static constexpr auto kSmall = std::to_array<std::u16string_view>(
       {u"a", u"an", u"and", u"as", u"at", u"by", u"for", u"from", u"in",
@@ -282,7 +282,7 @@ struct PageItem {
   std::string_view icon;
 };
 
-// Mori 3's labels and icons for Chromium's page menu items.
+// Mori's labels and icons for Chromium's page menu items.
 const PageItem* PageItemFor(int command_id) {
   static constexpr auto kItems = base::MakeFixedFlatMap<int, PageItem>({
       {IDC_BACK, {u"Back", "arrow-left"}},
@@ -440,7 +440,7 @@ void ShowTabMenu(BrowserWindowInterface* browser,
   const bool selected = model->GetActiveTab() == tab;
   auto* host = new MenuHost(browser);
 
-  // Mori 3's tab menu (tab_entries in menus.rs), in its order.
+  // Mori's tab menu (tab_entries in menus.rs), in its order.
   host->Item(u"New Tab Below", "plus",
              OnTab(tab, base::BindRepeating(
                             [](BrowserWindowInterface* b,
@@ -526,7 +526,7 @@ void ShowTabMenu(BrowserWindowInterface* browser,
                               },
                               browser)));
   }
-  // Mori 3's folder items (Zen's folders, mori_folders.h).
+  // Mori's folder items (Zen's folders, mori_folders.h).
   if (!favorite) {
     const std::optional<FolderInfo> in_folder = GetTabFolder(tab);
     for (const FolderInfo& folder : ListFolders(browser)) {
@@ -622,7 +622,13 @@ bool ShowSidebarMenu(BrowserWindowInterface* browser,
     return false;
   }
   auto* host = new MenuHost(browser);
-  BuildAppMenu(host->model(), browser);
+  host->Command(IDC_NEW_TAB, u"New Tab", "plus");
+  host->Item(u"New Folder", "folder-plus",
+             base::BindRepeating(&NewFolder, browser));
+  host->Command(IDC_RESTORE_TAB, u"Reopen Closed Tab", "rotate-ccw");
+  host->Separator();
+  host->Command(IDC_TOGGLE_VERTICAL_TABS, u"Hide Sidebar", "panel-left-close");
+  host->Command(kCommandEditTheme, u"Edit Theme…", "palette");
   host->Run(parent, point, source_type);
   return true;
 }
@@ -637,7 +643,7 @@ void ShowFolderMenu(BrowserWindowInterface* browser,
     return;
   }
   auto* host = new MenuHost(browser);
-  // Mori 3's folder menu (folder_entries in menus.rs), Zen's Delete Folder.
+  // Mori's folder menu (folder_entries in menus.rs), Zen's Delete Folder.
   host->Item(u"New Tab in Folder", "plus",
              base::BindRepeating(&NewTabInFolder, browser, folder_id));
   host->Item(u"New Subfolder", "folder-plus",
@@ -665,7 +671,7 @@ void ShowFolderMenu(BrowserWindowInterface* browser,
              base::BindRepeating(&RenameFolder, browser, folder_id));
   host->Item(folder->open ? u"Collapse Folder" : u"Expand Folder", "folder",
              base::BindRepeating(&ToggleFolder, browser, folder_id));
-  // Mori 3's folder symbols (FOLDER_SYMBOLS in sidebar.rs) that Mori's
+  // Mori's folder symbols (FOLDER_SYMBOLS in sidebar.rs) that Mori's
   // Lucide set has.
   ui::SimpleMenuModel* icons = host->SubMenu(u"Folder Icon", "palette");
   host->SubItem(icons, u"None", "folder",
@@ -736,7 +742,7 @@ void RestylePageMenu(ui::SimpleMenuModel* model,
   }
 
   // The page: bookmark and copy its address after Reload, capture after
-  // Reader View (Mori 3's page group).
+  // Reader View (Mori's page group).
   if (std::optional<size_t> reload = model->GetIndexOfCommandId(IDC_RELOAD)) {
     const GURL page = params.page_url;
     size_t at = *reload + 1;

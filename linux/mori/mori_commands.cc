@@ -44,7 +44,7 @@ bool EveryWordStartsOneOf(const std::vector<std::u16string>& query,
   });
 }
 
-// Mori 3's command list (crates/mori/src/commands.rs), in its order.
+// Mori's command list, in its order.
 std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
   std::vector<Candidate> out;
   BrowserView* view = BrowserView::GetBrowserViewForBrowser(browser);
@@ -94,7 +94,7 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
           IDC_SHARING_HUB_SCREENSHOT);
   command(u"Toggle Sidebar", u"hide show compact mode zen", "panel-left",
           IDC_TOGGLE_VERTICAL_TABS);
-  // Mori 3's setting for links from other apps.
+  // Mori's setting for links from other apps.
   if (LinksOpenInLittle(browser->GetProfile())) {
     action(u"Open Links from Other Apps in a New Tab",
            u"little mori external default setting", "app-window",
@@ -112,7 +112,7 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
                },
                browser));
   }
-  // Mori 3's import (Arc's onboarding does the same).
+  // Mori's import (Arc's onboarding does the same).
   for (auto [title, source] :
        {std::pair{u"Import Tabs from Zen", ImportSource::kZen},
         std::pair{u"Import Tabs from Firefox", ImportSource::kFirefox},
@@ -132,7 +132,7 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
           IDC_MANAGE_EXTENSIONS);
   command(u"Edit Theme", u"color colour gradient wash appearance", "palette",
           kCommandEditTheme);
-  // Mori 3's Clear (Zen's, Arc's archive of Today).
+  // Mori's Clear (Zen's, Arc's archive of Today).
   command(u"Archive Unpinned Tabs", u"clear today close tabs", "archive",
           kCommandArchiveUnpinnedTabs);
   command(u"Developer Tools", u"inspect console devtools", "code",
@@ -156,6 +156,8 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
             IDC_BOOKMARK_THIS_TAB);
     command(u"Split View", u"side by side split screen", "columns-2",
             IDC_NEW_SPLIT_TAB);
+    command(u"Picture in Picture", u"pip video youtube floating player",
+            "picture-in-picture-2", kCommandPictureInPicture);
     command(u"Close Tab", u"", "x", IDC_CLOSE_TAB);
     command(u"Move Tab to New Window", u"window split off", "app-window",
             IDC_MOVE_TAB_TO_NEW_WINDOW);

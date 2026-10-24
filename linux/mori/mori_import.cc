@@ -137,13 +137,13 @@ std::optional<base::FilePath> ProfileFromIni(const base::FilePath& root) {
     }
     auto relative = profile.find("IsRelative");
     return relative != profile.end() && relative->second == "0"
-               ? base::FilePath(path->second)
-               : root.Append(path->second);
+               ? base::FilePath::FromUTF8Unsafe(path->second)
+               : root.Append(base::FilePath::FromUTF8Unsafe(path->second));
   };
   for (const auto& [name, values] : sections) {
     if (name.starts_with("Install")) {
       if (auto it = values.find("Default"); it != values.end()) {
-        return root.Append(it->second);
+        return root.Append(base::FilePath::FromUTF8Unsafe(it->second));
       }
     }
   }

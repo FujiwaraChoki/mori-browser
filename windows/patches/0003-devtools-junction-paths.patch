@@ -1,0 +1,14 @@
+--- a/third_party/devtools-frontend/src/scripts/build/devtools_plugin.js
++++ b/third_party/devtools-frontend/src/scripts/build/devtools_plugin.js
+@@ -122,6 +122,8 @@
+-  const normGenRoot = path.resolve(genRoot);
+-  const root = path.resolve(rootDir);
+-  const normOutdir = path.resolve(outdir);
++  // esbuild resolves source files through Windows directory junctions. Use
++  // the same real paths for generated files and external module URLs.
++  const normGenRoot = fs.realpathSync(path.resolve(genRoot));
++  const root = fs.realpathSync(path.resolve(rootDir));
++  const normOutdir = fs.realpathSync(path.resolve(outdir));
+ 
+   return args => {
+     // args.importer is absolute path in esbuild.

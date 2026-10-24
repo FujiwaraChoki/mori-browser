@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Turns Lucide SVG icons into path operations for mori_icons.cc.
 
-Mori 3 draws Lucide icons (through gpui-kit-assets). Chromium's Skia is
+Mori draws Lucide icons using generated paths. Chromium's Skia is
 built without SVG path parsing, so this converts each icon once into
 absolute move/line/cubic/quad/arc/close/circle/ellipse operations.
 

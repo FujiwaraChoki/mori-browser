@@ -1,4 +1,4 @@
-// Actions offered by name in the command bar (Arc and Mori 3's commands):
+// Actions offered by name in the command bar (Arc and Mori's commands):
 // typing "settings", "new space" or "move tab" lists them.
 
 #ifndef CHROME_BROWSER_UI_VIEWS_MORI_MORI_COMMANDS_H_

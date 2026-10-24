@@ -8,7 +8,7 @@
  #include <utility>
  
  #include "base/functional/bind.h"
-@@ -37,6 +38,10 @@
+@@ -38,6 +39,10 @@
  #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
  #include "chrome/browser/ui/views/frame/vertical_tab_strip_background_blur_backdrop.h"
  #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
@@ -19,7 +19,7 @@
  #include "chrome/browser/ui/views/infobars/infobar_container_view.h"
  #include "chrome/browser/ui/views/side_panel/side_panel.h"
  #include "chrome/browser/ui/views/side_panel/side_panel_animation_content_view.h"
-@@ -204,6 +209,12 @@
+@@ -214,6 +219,12 @@
    VerticalTabStripAnimation vertical_tab_strip_animation;
    SeparatorInfo separator_info;
    SidePanelContentAnimation side_panel_content_animation;
@@ -32,7 +32,7 @@
  };
  
  BrowserViewTabbedLayoutImpl::BrowserViewTabbedLayoutImpl(
-@@ -392,7 +403,11 @@
+@@ -402,7 +413,11 @@
    layout.min_content_width = kContentsContainerMinimumWidth;
  
    // Get information about the vertical tabstrip, if present.
@@ -45,7 +45,7 @@
    int min_vertical_tab_strip_width = 0;
    int preferred_vertical_tab_strip_width = 0;
    if (layout_data_->tab_strip_type == TabStripType::kVertical) {
-@@ -764,6 +779,16 @@
+@@ -817,6 +832,16 @@
    bool clip_content_for_animation = false;
    gfx::Rect unclipped_contents_region = params.visual_client_area;
  
@@ -62,9 +62,9 @@
    // Lay out vertical tab strip if visible.
    int collapsed_vertical_tab_strip_adjustment = 0;
    const VerticalTabStripAnimation& vertical_tab_strip_animation =
-@@ -818,9 +843,44 @@
-             gfx::Insets::TLBR(views::Separator::kThickness, 0, 0, 0));
-       }
+@@ -877,9 +902,44 @@
+               ? layout_data_->organizer_panel_animation.reveal_amount
+               : 0.0);
  
 +      // Mori: a hidden sidebar takes no room; peeking, it floats over the
 +      // page, inset from the window edges.
@@ -108,7 +108,7 @@
  
        // Let the vertical tab strip animate out over the content.
        if (vertical_tab_strip_animation.current_motion) {
-@@ -838,7 +898,8 @@
+@@ -897,7 +957,8 @@
      }
      layout.AddChild(views().vertical_tab_strip_region_view,
                      vertical_tab_strip_bounds,
@@ -118,7 +118,7 @@
    }
  
    if (IsParentedTo(views().vertical_tab_strip_background_blur_backdrop,
-@@ -855,9 +916,10 @@
+@@ -914,9 +975,10 @@
    if (IsParentedTo(views().vertical_tab_strip_top_corner,
                     views().browser_view)) {
      gfx::Rect corner_bounds;
@@ -130,7 +130,7 @@
  
      // The top corner is drawn when the tabstrip goes all the way to the top.
      if (top_corner_visible) {
-@@ -934,7 +996,16 @@
+@@ -958,7 +1020,16 @@
  
    // When the tabstrip isn't at the top or in constrained widths, the top
    // container is laid out before all side panels.
@@ -148,7 +148,7 @@
        IsParentedTo(views().top_container, views().browser_view)) {
      auto& top_container_layout =
          layout.AddChild(views().top_container, gfx::Rect());
-@@ -979,7 +1050,9 @@
+@@ -1003,7 +1074,9 @@
      } else {
        main_background_bounds = params.visual_client_area;
      }
@@ -159,7 +159,7 @@
      main_background_layout =
          &layout.AddChild(views().main_background_region, main_background_bounds,
                           main_background_visibility);
-@@ -1070,7 +1143,8 @@
+@@ -1094,7 +1167,8 @@
    // Lay out top container. The top container is laid out after the
    // toolbar-height side panel with a horizontal tabstrip if the browser is wide
    // enough.
@@ -169,7 +169,7 @@
        IsParentedTo(views().top_container, views().browser_view)) {
      auto& top_container_layout =
          layout.AddChild(views().top_container, gfx::Rect());
-@@ -1167,11 +1241,38 @@
+@@ -1195,11 +1269,38 @@
      content_right =
          std::min(content_right, browser_params.visual_client_area.right());
    }
@@ -212,7 +212,7 @@
  
    // Maybe expand and clip the web contents to avoid issues during animation.
    if (features::UseSidePanelFlyoverAnimation()) {
-@@ -1231,6 +1332,10 @@
+@@ -1259,6 +1360,10 @@
        }
      }
      views().multi_contents_view->SetBackgroundRadii(content_corners);
@@ -223,20 +223,20 @@
    }
  
    // Make final visual adjustments required for child views to paint.
-@@ -1259,6 +1364,12 @@
+@@ -1285,6 +1390,12 @@
+       caption_button_width =
+           base::ClampCeil(browser_params.leading_exclusion.content.width()) -
            tabstrip_bounds->x();
-     }
- 
++    }
++
 +    // Mori: the sidebar toolbar already makes room for the window buttons.
 +    if (mori_sidebar_toolbar) {
 +      toolbar_height = 0;
 +      caption_button_width = 0;
-+    }
-+
+     }
+ 
      views().vertical_tab_strip_region_view->SetToolbarHeightForLayout(
-         std::max(0, toolbar_height));
-     views().vertical_tab_strip_region_view->SetCaptionButtonWidthForLayout(
-@@ -1374,7 +1485,9 @@
+@@ -1402,7 +1513,9 @@
    }
  
    // Lay out the bookmarks bar if one is present.
@@ -247,7 +247,7 @@
    if (IsParentedTo(views().bookmark_bar, views().top_container)) {
      const gfx::Rect bookmarks_bounds(
          params.visual_client_area.x(), params.visual_client_area.y(),
-@@ -1473,6 +1586,47 @@
+@@ -1501,6 +1614,47 @@
    layout_data_ = std::make_unique<TransientLayoutData>(params);
    layout_data_->window_state = delegate().GetBrowserWindowState();
    layout_data_->tab_strip_type = delegate().GetTabStripType();
@@ -294,7 +294,7 @@
 +
    layout_data_->horizontal_layout =
        CalculateHorizontalLayout(layout_data_->revised_params);
-   layout_data_->vertical_tab_strip_animation =
+   layout_data_->organizer_panel_animation = CalculateOrganizerPanelAnimation();
 @@ -1600,7 +1754,12 @@
      // Apply shadow for expand-on-hover.
      auto* const shadow_frame =
@@ -311,16 +311,16 @@
        shadow_frame->SetShadowVisible(true);
 --- a/chrome/browser/ui/views/toolbar/toolbar_view.cc
 +++ b/chrome/browser/ui/views/toolbar/toolbar_view.cc
-@@ -4,6 +4,8 @@
+@@ -3,6 +3,8 @@
+ // found in the LICENSE file.
  
  #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
- 
-+#include "chrome/browser/ui/views/mori/mori_little.h"
 +
++#include "chrome/browser/ui/views/mori/mori_little.h"
+ 
  #include <algorithm>
  #include <memory>
- #include <utility>
-@@ -86,6 +88,7 @@
+@@ -88,6 +90,7 @@
  #include "chrome/browser/ui/views/global_media_controls/media_toolbar_button_view.h"
  #include "chrome/browser/ui/views/intent_picker_bubble_view.h"
  #include "chrome/browser/ui/views/location_bar/webui_location_bar.h"
@@ -328,7 +328,7 @@
  #include "chrome/browser/ui/views/page_action/page_action_container_view.h"
  #include "chrome/browser/ui/views/page_action/page_action_view.h"
  #include "chrome/browser/ui/views/page_action/page_action_view_interface.h"
-@@ -390,6 +393,8 @@
+@@ -395,6 +398,8 @@
                                     views::MinimumFlexSizeRule::kScaleToZero,
                                     views::MaximumFlexSizeRule::kUnbounded));
      }
@@ -337,7 +337,7 @@
      initialized_ = true;
      return;
    }
-@@ -631,6 +636,11 @@
+@@ -646,6 +651,11 @@
          l10n_util::GetStringUTF16(IDS_APPMENU_TOOLTIP));
      app_menu_button->SetID(VIEW_ID_APP_MENU);
      app_menu_button_ = AddChildView(std::move(app_menu_button));
@@ -349,7 +349,7 @@
    }
  
    if (base::FeatureList::IsEnabled(contextual_tasks::kContextualTasks) &&
-@@ -1395,7 +1405,9 @@
+@@ -1428,7 +1438,9 @@
        // back button) plus margins.
        // TODO(crbug.com/40663413): Figure out why the height reports incorrectly
        // on some installations.
@@ -360,7 +360,7 @@
          const int max_height = std::max(location_bar_->PreferredSize().height(),
                                          GetBackForwardButtonSize().height()) +
                                 layout_manager_->interior_margin().height();
-@@ -1423,7 +1435,9 @@
+@@ -1456,7 +1468,9 @@
        // back button) plus margins.
        // TODO(crbug.com/40663413): Figure out why the height reports incorrectly
        // on some installations.
@@ -371,7 +371,7 @@
          const int max_height =
              std::max(location_bar_->MinimumSize().height(),
                       GetBackForwardButtonSize(/*minimum_size=*/true).height()) +
-@@ -1561,7 +1575,8 @@
+@@ -1594,7 +1608,8 @@
                                 views::MaximumFlexSizeRule::kUnbounded)
            .WithOrder(location_bar_flex_order);
  
@@ -461,15 +461,15 @@
  BrowserFrameViewLinux::BoundsAndMargins
 --- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
 +++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
-@@ -49,6 +49,7 @@
- #include "chrome/browser/ui/views/tabs/common/unpinned_tab_container_view.h"
+@@ -53,6 +53,7 @@
+ #include "chrome/browser/ui/views/tabs/organizer/organizer_panel_utils.h"
  #include "chrome/browser/ui/views/tabs/shared/drop_arrow.h"
  #include "chrome/browser/ui/views/tabs/vertical/top_container_button.h"
 +#include "chrome/browser/ui/views/mori/mori_tab_list.h"
  #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.h"
  #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.h"
  #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h"
-@@ -147,10 +148,13 @@
+@@ -160,16 +161,22 @@
            base::BindRepeating(
                &VerticalTabStripRegionView::RecordNewTabButtonPressed,
                base::Unretained(this))));
@@ -484,23 +484,22 @@
    bottom_button_container_->SetProperty(
        views::kMarginsKey,
        gfx::Insets::TLBR(
-@@ -158,6 +162,9 @@
+           GetLayoutConstant(
                LayoutConstant::kVerticalTabStripCollapsedVerticalPadding),
            region_horizontal_padding, 0, region_horizontal_padding));
- 
-+  // Mori: the bar at the bottom of the sidebar (library, assistant).
-+  AddChildView(mori::CreateSidebarBar(browser_view->browser()));
 +
-   gemini_button_ = AddChildView(std::make_unique<views::View>());
++  // Mori: the persistent library and assistant bar belongs below the tab list.
++  content_area_view_->AddChildView(mori::CreateSidebarBar(browser_view->browser()));
  
-   resize_area_ = AddChildView(std::make_unique<views::ResizeArea>(this));
-@@ -713,7 +720,7 @@
-   tab_strip_view()->SetProperty(
+   gemini_button_ =
+       content_area_view_->AddChildView(std::make_unique<views::View>());
+@@ -842,7 +849,7 @@
+   view->SetProperty(
        views::kFlexBehaviorKey,
        views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToMinimum,
 -                               views::MaximumFlexSizeRule::kPreferred));
 +                               views::MaximumFlexSizeRule::kUnbounded));
-   tab_strip_view()->SetProperty(
+   view->SetProperty(
        views::kMarginsKey,
        gfx::Insets::VH(
 --- a/chrome/browser/ui/views/location_bar/location_bar_view.cc
@@ -523,7 +522,7 @@
  #include "components/omnibox/common/input_state.h"
  #include "components/omnibox/common/omnibox_feature_configs.h"
  #include "components/omnibox/common/omnibox_features.h"
-@@ -239,7 +243,8 @@
+@@ -256,7 +260,8 @@
                   !v->GetOmniboxController()->IsPopupOpen();
          }));
      views::FocusRing::Get(this)->SetOutsetFocusRingDisabled(true);
@@ -533,7 +532,7 @@
  
  #if BUILDFLAG(OS_LEVEL_GEOLOCATION_PERMISSION_SUPPORTED)
      if (features::IsOsLevelGeolocationPermissionSupportEnabled()) {
-@@ -524,8 +529,8 @@
+@@ -530,8 +535,8 @@
  
  // static
  int LocationBarView::ComputeBorderRadius(gfx::Size size) {
@@ -544,22 +543,21 @@
  }
  
  // static
-@@ -591,6 +596,14 @@
+@@ -597,6 +602,13 @@
  
  void LocationBarView::FocusLocation(bool is_user_initiated,
                                      bool clear_focus_if_failed) {
-+  // Mori: in Mori's windows the field never takes focus, so it keeps one
-+  // look; the command bar edits the address instead (Mori 3's launcher).
++  // Mori edits addresses in its command bar, keeping the sidebar field stable.
 +  if (mori::OpensCommandBarFromAddressField(browser_)) {
 +    if (is_user_initiated) {
 +      mori::ShowCommandBar(browser_, mori::CommandBarMode::kCurrentTab);
 +    }
 +    return;
 +  }
-   if (base::FeatureList::IsEnabled(omnibox::kWebUIOmniboxFullPopup)) {
+   if (is_full_webui_omnibox_) {
      if (IsFullWebUiOmniboxReady()) {
        // In Full WebUI mode, `LocationBarView` is the focusable Views proxy for
-@@ -1427,8 +1440,11 @@
+@@ -1442,8 +1454,11 @@
    }
  
    // Keep the views::Textfield in sync. It needs an opaque background to
@@ -573,7 +571,7 @@
  
    // The divider between indicators and request chips should have the same color
    // as the omnibox.
-@@ -1696,7 +1712,14 @@
+@@ -1711,7 +1726,14 @@
  
  void LocationBarView::OnPaintBorder(gfx::Canvas* canvas) {
    if (!is_popup_mode_) {
@@ -589,7 +587,7 @@
    }
  
    gfx::Rect bounds(GetContentsBounds());
-@@ -2247,7 +2270,8 @@
+@@ -2271,7 +2293,8 @@
  
  SkColor LocationBarView::GetSecurityChipColor(
      security_state::SecurityLevel security_level) const {
@@ -599,7 +597,7 @@
    if (security_level == security_state::DANGEROUS) {
      id = kColorOmniboxSecurityChipDangerous;
    }
-@@ -2304,6 +2328,14 @@
+@@ -2328,6 +2351,14 @@
      return GetOmniboxController()->edit_model()->GetAddContextIcon(dip_size);
    }
  
@@ -660,7 +658,7 @@
      case LayoutConstant::kToolbarDividerCornerRadius:
        return 1;
      case LayoutConstant::kToolbarDividerHeight:
-@@ -147,14 +149,16 @@
+@@ -149,14 +151,16 @@
      case LayoutConstant::kToolbarCornerRadius:
      case LayoutConstant::kVerticalTabCornerRadius:
        return 8;

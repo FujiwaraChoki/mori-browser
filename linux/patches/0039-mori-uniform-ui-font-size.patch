@@ -1,0 +1,59 @@
+--- a/chrome/browser/ui/views/chrome_typography_provider.cc
++++ b/chrome/browser/ui/views/chrome_typography_provider.cc
+@@ -7,6 +7,7 @@
+ #include "build/build_config.h"
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/views/chrome_typography.h"
++#include "chrome/browser/ui/views/mori/mori_typography.h"
+ #include "ui/base/default_style.h"
+ #include "ui/base/resource/resource_bundle.h"
+ #include "ui/base/theme_provider.h"
+@@ -58,7 +59,11 @@
+     int style) const {
+   if (style > views::style::STYLE_OVERRIDE_TYPOGRAPHY_START &&
+       style < views::style::STYLE_OVERRIDE_TYPOGRAPHY_END) {
+-    return TypographyProvider::GetFontDetailsImpl(context, style);
++    auto details = TypographyProvider::GetFontDetailsImpl(context, style);
++    details.size_delta =
++        gfx::PlatformFont::GetFontSizeDeltaIgnoringUserOrLocaleSettings(
++            mori::kUiFontSize);
++    return details;
+   }
+ 
+   // "Target" font size constants.
+@@ -141,6 +146,10 @@
+     details.size_delta -= 2;
+   }
+ 
++  // Match the URL field throughout browser chrome, retaining weight/typeface.
++  details.size_delta =
++      gfx::PlatformFont::GetFontSizeDeltaIgnoringUserOrLocaleSettings(
++          mori::kUiFontSize);
+   return details;
+ }
+ 
+--- a/ui/views/controls/menu/menu_config.cc
++++ b/ui/views/controls/menu/menu_config.cc
+@@ -96,11 +96,8 @@
+   separator_spacing_height = 4;
+   use_outer_border = false;
+ 
+-  // Mori: Mori 3's (Zen's) menus: 14px text, 28px rows inset 4px with 5px
++  // Mori: Mori 3's (Zen's) menus: URL-sized text, 28px rows inset 4px with 5px
+   // corners, 10px between icon and label, 9px separators, 8px corners.
+-  const gfx::FontList base;
+-  context_menu_font_list = font_list =
+-      base.DeriveWithSizeDelta(14 - base.GetFontSize());
+   item_vertical_margin = 4;
+   minimum_text_item_height = 28;
+   minimum_container_item_height = 28;
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -2776,6 +2776,7 @@
+       "views/mori/mori_themes.h",
+       "views/mori/mori_toast.cc",
+       "views/mori/mori_toast.h",
++      "views/mori/mori_typography.h",
+       "views/mori/mori_toolbar_layout.cc",
+       "views/mori/mori_toolbar_layout.h",
+       "views/mori/mori_web_store.cc",

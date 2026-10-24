@@ -1,0 +1,13 @@
+--- a/chrome/browser/ui/browser_commands.cc
++++ b/chrome/browser/ui/browser_commands.cc
+@@ -1448,8 +1448,8 @@
+ }
+ 
+ void CloseTab(BrowserWindowInterface* browser) {
+-  // Mori: close the page of a pin, keeping its permanent sidebar entry.
+-  if (mori::HandlePinnedTabClose(browser)) {
++  // Mori: unload favorites and folder tabs, keeping their sidebar entries.
++  if (mori::HandlePersistentTabClose(browser)) {
+     return;
+   }
+   base::RecordAction(UserMetricsAction("CloseTab_Accelerator"));

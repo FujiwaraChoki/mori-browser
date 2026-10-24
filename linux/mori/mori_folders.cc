@@ -32,6 +32,10 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
+#include "chrome/browser/ui/views/tabs/common/tab_strip_view.h"
+#include "chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h"
+#include "ui/views/controls/scroll_view.h"
 #include "chrome/browser/ui/views/mori/mori_icons.h"
 #include "chrome/browser/ui/views/mori/mori_folder_tree.h"
 #include "chrome/browser/ui/views/mori/mori_folder_session.h"
@@ -505,7 +509,7 @@ class RenameField : public views::Textfield, public views::TextfieldController {
     views::Textfield::OnThemeChanged();
     const bool dark = color_utils::IsDark(
         GetColorProvider()->GetColor(ui::kColorFrameActive));
-    // Mori 3's field colour, as the tab name field.
+    // Mori's field colour, as the tab name field.
     SetBackground(views::CreateRoundedRectBackground(
         dark ? SkColorSetRGB(0x2F, 0x2F, 0x2F)
              : SkColorSetRGB(0xFF, 0xFF, 0xFF),
@@ -828,21 +832,12 @@ class FolderHeaders : public views::View, public TabStripModelObserver {
       TabStripModel* tab_strip_model,
       const TabStripModelChange& change,
       const TabStripSelectionChange& selection) override {
-    if (!reordering_ && change.type() == TabStripModelChange::kMoved &&
-        parent() && views::AsViewClass<UnpinnedTabContainerView>(parent()) &&
-        views::AsViewClass<UnpinnedTabContainerView>(parent())->IsHandlingDrag()) {
-      const auto* move = change.GetMove();
-      const int index = move->to_index;
-      const auto folder = FolderIdOf(move->tab.get());
-      const auto before = index > 0 ? FolderIdOf(model_->GetTabAtIndex(index - 1))
-                                    : std::nullopt;
-      const auto after = index + 1 < model_->count()
-                             ? FolderIdOf(model_->GetTabAtIndex(index + 1))
-                             : std::nullopt;
-      if (folder && !InFolder(before, *folder) && !InFolder(after, *folder)) {
-        SetTabFolderId(move->contents.get(), before == after ? before : std::nullopt);
-      } else if (!folder && before && before == after) {
-        SetTabFolderId(move->contents.get(), before);
+    if (change.type() == TabStripModelChange::kReplaced) {
+      // Discarding swaps WebContents, while folder membership belongs to the
+      // persistent sidebar entry. Transfer it before normalization sees the tab.
+      const auto* replacement = change.GetReplace();
+      if (const auto id = FolderIdOf(replacement->old_contents)) {
+        SetTabFolderId(replacement->new_contents, id);
       }
     }
     if (!reordering_) {
@@ -1215,6 +1210,167 @@ void RemoveTabFromFolder(BrowserWindowInterface* browser,
   }
   EnsureEmptyFolder(browser, *id);
   NotifyFoldersChanged();
+}
+
+void QueueSidebarTabDrop(BrowserWindowInterface* browser,
+                         std::vector<tabs::TabHandle> dragged,
+                         const gfx::Point& point) {
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser);
+  auto* region = view ? views::AsViewClass<VerticalTabStripRegionView>(
+                            view->tab_strip_view()) : nullptr;
+  if (!region || !region->IsDrawn() ||
+      !region->GetBoundsInScreen().Contains(point) || dragged.empty()) {
+    return;
+  }
+    // Use the region's tab-strip accessor rather than its child hierarchy.
+    auto* strip = views::AsViewClass<TabStripView>(region->GetTabStripView());
+    if (!strip || !strip->IsDrawn()) {
+    return;
+  }
+  const auto is_dragged = [&](const tabs::TabInterface* tab) {
+    return std::ranges::find(dragged, tab->GetHandle()) != dragged.end();
+  };
+  auto pinned_bounds = strip->pinned_tabs_scroll_view()->GetBoundsInScreen();
+  pinned_bounds.set_x(region->GetBoundsInScreen().x());
+  pinned_bounds.set_width(region->width());
+  const bool favorite = pinned_bounds.Contains(point);
+  std::optional<std::string> folder;
+  std::optional<tabs::TabHandle> anchor;
+  bool after_anchor = false;
+  bool header_hit = false;
+  auto* container = strip->GetUnpinnedTabsContainer();
+  if (favorite) {
+    for (views::View* row : strip->GetPinnedTabsContainer()->children()) {
+      const auto tabs = TabsOfRow(row);
+      if (tabs.empty() || is_dragged(tabs.front()) || !row->IsDrawn()) {
+        continue;
+      }
+      if (row->GetBoundsInScreen().Contains(point)) {
+        anchor = tabs.front()->GetHandle();
+        after_anchor = point.x() >= row->GetBoundsInScreen().CenterPoint().x();
+        break;
+      }
+    }
+  } else if (container && container->collection_node()) {
+    const auto viewport = strip->unpinned_tabs_scroll_view()->GetBoundsInScreen();
+    if (viewport.Contains(point)) {
+      // Headers remain targets even when every tab in the folder is collapsed.
+      for (auto* header : HeadersOf(container)) {
+        if (header->IsDrawn() && header->GetBoundsInScreen().Contains(point)) {
+          folder = header->id();
+          header_hit = true;
+          break;
+        }
+      }
+      if (!header_hit) {
+        // Gaps and dragged-row placeholders belong to the preceding visible
+        // folder section, until the Add Tab divider starts ordinary tabs.
+        int previous_y = viewport.y() - 1;
+        for (const auto& row : GetFolderRows(container, container->collection_node())) {
+          if (row.hidden || !row.view->IsDrawn()) {
+            continue;
+          }
+          const auto tabs = TabsOfRow(row.view);
+          if (!tabs.empty() && is_dragged(tabs.front())) {
+            continue;
+          }
+          const int y = row.view->GetBoundsInScreen().y();
+          if (y > point.y() || y < previous_y) {
+            continue;
+          }
+          if (auto* header = views::AsViewClass<FolderHeader>(row.view)) {
+            folder = header->id();
+          } else if (!tabs.empty()) {
+            folder = FolderOfRow(row.view);
+          } else if (std::string_view(row.view->GetClassName()) == "MoriTabListHeader") {
+            folder.reset();
+          } else {
+            continue;
+          }
+          previous_y = y;
+        }
+        for (const auto& row : GetFolderRows(container, container->collection_node())) {
+          const auto tabs = TabsOfRow(row.view);
+          if (row.hidden || tabs.empty() || is_dragged(tabs.front()) ||
+              !row.view->IsDrawn()) {
+            continue;
+          }
+          auto bounds = row.view->GetBoundsInScreen();
+          bounds.set_x(viewport.x());
+          bounds.set_width(viewport.width());
+          if (bounds.Contains(point)) {
+            folder = FolderOfRow(row.view);
+            anchor = tabs.front()->GetHandle();
+            after_anchor = point.y() >= bounds.CenterPoint().y();
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(
+          [](base::WeakPtr<BrowserWindowInterface> browser,
+             std::vector<tabs::TabHandle> dragged, bool favorite,
+             std::optional<std::string> folder,
+             std::optional<tabs::TabHandle> anchor, bool after_anchor,
+             bool header_hit) {
+            if (!browser || (folder && !Folders().contains(*folder))) {
+              return;
+            }
+            auto* model = browser->GetTabStripModel();
+            std::set<std::string> previous_folders;
+            bool same_destination = true;
+            for (const auto& handle : dragged) {
+              auto* tab = handle.Get();
+              if (!tab || model->GetIndexOfTab(tab) == TabStripModel::kNoTab) {
+                continue;
+              }
+              same_destination &= tab->IsPinned() == favorite &&
+                  FolderIdOf(tab) == (favorite ? std::nullopt : folder);
+              if (const auto old = FolderIdOf(tab)) {
+                previous_folders.insert(*old);
+              }
+              // Pinning moves a tab between native collections. Do this only
+              // after the native drag controller has released its view pointers.
+              SetTabFolderId(tab->GetContents(), favorite ? std::nullopt : folder);
+              model->SetTabPinned(model->GetIndexOfTab(tab), favorite);
+            }
+            int insertion = favorite ? model->IndexOfFirstNonPinnedTab()
+                                     : model->count();
+            if (folder) {
+              if (const auto range = FolderRange(model, *folder, nullptr)) {
+                insertion = range->second + 1;
+              }
+            }
+            if (anchor && anchor->Get() &&
+                model->GetIndexOfTab(anchor->Get()) != TabStripModel::kNoTab) {
+              insertion = model->GetIndexOfTab(anchor->Get()) + (after_anchor ? 1 : 0);
+            }
+            for (const auto& handle : dragged) {
+              if (same_destination && !anchor && !header_hit) {
+                break;  // Keep native reordering within the same section.
+              }
+              auto* tab = handle.Get();
+              if (!tab) {
+                continue;
+              }
+              const int from = model->GetIndexOfTab(tab);
+              if (from == TabStripModel::kNoTab) {
+                continue;
+              }
+              const int to = std::clamp(insertion - (from < insertion ? 1 : 0),
+                                         0, model->count() - 1);
+              model->MoveWebContentsAt(from, to, false);
+              insertion = model->GetIndexOfTab(tab) + 1;
+            }
+            for (const auto& old : previous_folders) {
+              EnsureEmptyFolder(browser.get(), old);
+            }
+            NotifyFoldersChanged();
+          }, browser->GetWeakPtr(), std::move(dragged), favorite, folder,
+          anchor, after_anchor, header_hit));
 }
 
 void NewTabInFolder(BrowserWindowInterface* browser,

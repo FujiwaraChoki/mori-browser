@@ -1,4 +1,5 @@
 #include "chrome/browser/ui/views/mori/mori_settings.h"
+#include "chrome/browser/ui/views/mori/mori_typography.h"
 
 #include "build/build_config.h"
 #include "base/callback_list.h"
@@ -46,6 +47,7 @@
 #include "chrome/browser/ui/views/mori/mori_import.h"
 #include "chrome/browser/ui/views/mori/mori_layout.h"
 #include "chrome/browser/ui/views/mori/mori_little.h"
+#include "chrome/browser/ui/views/mori/mori_picture_in_picture.h"
 #include "chrome/browser/ui/views/mori/mori_overlay.h"
 #include "chrome/browser/ui/views/mori/mori_tab_list.h"
 #include "chrome/browser/ui/views/mori/mori_themes.h"
@@ -91,7 +93,7 @@
 namespace mori {
 namespace {
 
-// Mori 3's sizes (settings.rs).
+// Mori's sizes (settings.rs).
 constexpr int kHeaderHeight = 56;
 constexpr int kRailWidth = 200;
 constexpr int kContentMaxWidth = 620;
@@ -131,7 +133,7 @@ constexpr CategoryInfo kCategories[] = {
     {Category::kAbout, u"About Mori", "info"},
 };
 
-// Mori 3's ARCHIVE_OPTIONS (hours).
+// Mori's ARCHIVE_OPTIONS (hours).
 constexpr std::pair<int, const char16_t*> kArchiveOptions[] = {
     {0, u"Never"},  {12, u"12 hr"},   {24, u"1 day"},
     {72, u"3 days"}, {168, u"1 week"}, {720, u"30 days"},
@@ -154,23 +156,16 @@ SkColor Muted(const views::View* view) {
                       : SkColorSetRGB(0x5A, 0x5C, 0x5E);
 }
 
-gfx::FontList Font(int size, gfx::Font::Weight weight = gfx::Font::Weight::NORMAL) {
-  const gfx::FontList base;
-  return base.DeriveWithSizeDelta(size - base.GetFontSize())
-      .DeriveWithWeight(weight);
-}
-
 // A label whose colour follows the theme: foreground or muted.
 class ThemedLabel : public views::Label {
   METADATA_HEADER(ThemedLabel, views::Label)
 
  public:
   ThemedLabel(const std::u16string& text,
-              int size,
               bool muted,
               gfx::Font::Weight weight = gfx::Font::Weight::NORMAL)
       : views::Label(text), muted_(muted) {
-    SetFontList(Font(size, weight));
+    SetFontList(UiFont(weight));
     SetHorizontalAlignment(gfx::ALIGN_LEFT);
     SetAutoColorReadabilityEnabled(false);
   }
@@ -216,8 +211,8 @@ class PaintedButton : public views::Button {
 BEGIN_METADATA(PaintedButton)
 END_METADATA
 
-int TextWidth(const std::u16string& text, int size) {
-  return gfx::GetStringWidth(text, Font(size));
+int TextWidth(const std::u16string& text) {
+  return gfx::GetStringWidth(text, UiFont());
 }
 
 // Lays its children out in rows, wrapping (the choice pills).
@@ -273,7 +268,7 @@ class FlowView : public views::View {
 BEGIN_METADATA(FlowView)
 END_METADATA
 
-// Centres one child at up to kContentMaxWidth, with Mori 3's padding.
+// Centres one child at up to kContentMaxWidth, with Mori's padding.
 class CenterColumn : public views::View {
   METADATA_HEADER(CenterColumn, views::View)
 
@@ -311,7 +306,7 @@ class CenterColumn : public views::View {
 BEGIN_METADATA(CenterColumn)
 END_METADATA
 
-// A settings card: Mori 3's rounded, bordered group of fields.
+// A settings card: Mori's rounded, bordered group of fields.
 class Card : public views::View {
   METADATA_HEADER(Card, views::View)
 
@@ -367,7 +362,7 @@ class SettingsSheet : public views::View {
         }),
         u"Back"));
     auto* title = header_->AddChildView(std::make_unique<ThemedLabel>(
-        u"Settings", 15, false, gfx::Font::Weight::SEMIBOLD));
+        u"Settings", false, gfx::Font::Weight::SEMIBOLD));
     header_->SetFlexForView(title, 1);
     header_->AddChildView(TextButton(u"Done", true, close_));
 
@@ -466,7 +461,7 @@ class SettingsSheet : public views::View {
     for (const CategoryInfo& info : kCategories) {
       if (info.category == category_) {
         column->AddChildView(std::make_unique<ThemedLabel>(
-            info.label, 20, false, gfx::Font::Weight::SEMIBOLD));
+            info.label, false, gfx::Font::Weight::SEMIBOLD));
       }
     }
     switch (category_) {
@@ -535,7 +530,7 @@ class SettingsSheet : public views::View {
                                      (b->height() - image.height()) / 2);
                 canvas->DrawStringRect(
                     label,
-                    Font(13, active ? gfx::Font::Weight::MEDIUM
+                    UiFont(active ? gfx::Font::Weight::MEDIUM
                                     : gfx::Font::Weight::NORMAL),
                     active ? Foreground(b) : Foreground(b, 0xBF),
                     gfx::Rect(35, 0, b->width() - 35, b->height()));
@@ -551,7 +546,7 @@ class SettingsSheet : public views::View {
     scroll_->ScrollToOffset(gfx::PointF());
   }
 
-  // ---- Building blocks (Mori 3's section, card, field, hint, choice,
+  // ---- Building blocks (Mori's section, card, field, hint, choice,
   // toggle, text_button).
 
   Card* Section(views::View* column, const std::u16string& title) {
@@ -561,7 +556,7 @@ class SettingsSheet : public views::View {
     section->SetCrossAxisAlignment(views::BoxLayout::CrossAxisAlignment::kStretch);
     if (!title.empty()) {
       auto* label = section->AddChildView(std::make_unique<ThemedLabel>(
-          base::i18n::ToUpper(title), 11, true, gfx::Font::Weight::SEMIBOLD));
+          base::i18n::ToUpper(title), true, gfx::Font::Weight::SEMIBOLD));
       label->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(0, 4)));
     }
     return section->AddChildView(std::make_unique<Card>());
@@ -574,7 +569,7 @@ class SettingsSheet : public views::View {
     row->SetBetweenChildSpacing(12);
     row->SetCrossAxisAlignment(views::BoxLayout::CrossAxisAlignment::kCenter);
     row->SetMinimumCrossAxisSize(30);
-    auto* name = row->AddChildView(std::make_unique<ThemedLabel>(label, 13, false));
+    auto* name = row->AddChildView(std::make_unique<ThemedLabel>(label, false));
     name->SetPreferredSize(gfx::Size(kLabelWidth, 20));
     name->SetElideBehavior(gfx::ELIDE_TAIL);
     auto* holder = row->AddChildView(std::make_unique<views::BoxLayoutView>());
@@ -588,7 +583,7 @@ class SettingsSheet : public views::View {
   }
 
   void Hint(views::View* card, const std::u16string& text) {
-    auto* hint = card->AddChildView(std::make_unique<ThemedLabel>(text, 11, true));
+    auto* hint = card->AddChildView(std::make_unique<ThemedLabel>(text, true));
     hint->SetMultiLine(true);
   }
 
@@ -609,7 +604,7 @@ class SettingsSheet : public views::View {
       const std::u16string label = options[i].first;
       container->AddChildView(std::make_unique<PaintedButton>(
           Then(options[i].second),
-          gfx::Size(TextWidth(label, 12) + 24, 26),
+          gfx::Size(TextWidth(label) + 24, 26),
           base::BindRepeating(
               [](bool active, bool segmented, std::u16string label,
                  views::Button* b, gfx::Canvas* canvas, bool hovered) {
@@ -633,7 +628,7 @@ class SettingsSheet : public views::View {
                 }
                 canvas->DrawStringRectWithFlags(
                     label,
-                    Font(12, active ? gfx::Font::Weight::MEDIUM
+                    UiFont(active ? gfx::Font::Weight::MEDIUM
                                     : gfx::Font::Weight::NORMAL),
                     active ? Foreground(b) : Foreground(b, 0xBF),
                     b->GetLocalBounds(), gfx::Canvas::TEXT_ALIGN_CENTER);
@@ -681,7 +676,7 @@ class SettingsSheet : public views::View {
                                           bool primary,
                                           base::RepeatingClosure run) {
     return std::make_unique<PaintedButton>(
-        std::move(run), gfx::Size(TextWidth(label, 12) + 28, 28),
+        std::move(run), gfx::Size(TextWidth(label) + 28, 28),
         base::BindRepeating(
             [](bool primary, std::u16string label, views::Button* b,
                gfx::Canvas* canvas, bool hovered) {
@@ -691,7 +686,7 @@ class SettingsSheet : public views::View {
                                      : Foreground(b, hovered ? 0x1F : 0x14));
               canvas->DrawRoundRect(gfx::RectF(b->GetLocalBounds()), 6, flags);
               canvas->DrawStringRectWithFlags(
-                  label, Font(12, gfx::Font::Weight::MEDIUM),
+                  label, UiFont(gfx::Font::Weight::MEDIUM),
                   primary ? SK_ColorWHITE : Foreground(b), b->GetLocalBounds(),
                   gfx::Canvas::TEXT_ALIGN_CENTER);
             },
@@ -715,7 +710,7 @@ class SettingsSheet : public views::View {
                base::RepeatingClosure remove) {
     auto* row = card->AddChildView(std::make_unique<views::BoxLayoutView>());
     row->SetCrossAxisAlignment(views::BoxLayout::CrossAxisAlignment::kCenter);
-    auto* label = row->AddChildView(std::make_unique<ThemedLabel>(text, 13, false));
+    auto* label = row->AddChildView(std::make_unique<ThemedLabel>(text, false));
     label->SetElideBehavior(gfx::ELIDE_MIDDLE);
     row->SetFlexForView(label, 1);
     row->AddChildView(TextButton(u"Remove", false, Then(std::move(remove))));
@@ -841,8 +836,7 @@ class SettingsSheet : public views::View {
             : default_browser_ == shell_integration::NOT_DEFAULT ||
                       default_browser_ == shell_integration::OTHER_MODE_IS_DEFAULT
                   ? u"Another browser opens links from other apps."
-                  : u"Your desktop doesn't say which browser is the default.",
-        13, false));
+                  : u"Your desktop doesn't say which browser is the default.", false));
     status->SetFlexForView(status_label, 1);
     if (default_browser_ != shell_integration::IS_DEFAULT &&
         CanMakeDefault()) {
@@ -1012,6 +1006,19 @@ class SettingsSheet : public views::View {
   }
 
   void BuildTabs(views::View* column) {
+    Card* pip = Section(column, u"Picture in Picture");
+    Field(pip, u"Enable PiP", Toggle(prefs()->GetBoolean(kPictureInPictureEnabled),
+                                    BoolPref(kPictureInPictureEnabled)));
+    Field(pip, u"Video hover button",
+          Toggle(prefs()->GetBoolean(kPictureInPictureHover),
+                 BoolPref(kPictureInPictureHover)));
+    Field(pip, u"On tab switch", Toggle(prefs()->GetBoolean(kPictureInPictureAuto),
+                                       BoolPref(kPictureInPictureAuto)));
+    Hint(pip, u"Open a floating player when you leave a tab with a playing video.");
+    Field(pip, u"Return to tab", Toggle(prefs()->GetBoolean(kPictureInPictureReturn),
+                                       BoolPref(kPictureInPictureReturn)));
+    Hint(pip, u"Close an automatically opened player when you return to its tab. "
+               u"Use the video hover button or Ctrl+Shift+] to open PiP manually.");
     Card* idle = Section(column, u"Idle tabs");
     namespace tuning = performance_manager::user_tuning::prefs;
     // Memory Saver is a setting of the whole browser (local state).
@@ -1241,11 +1248,10 @@ class SettingsSheet : public views::View {
     text->SetOrientation(views::BoxLayout::Orientation::kVertical);
     text->SetCrossAxisAlignment(views::BoxLayout::CrossAxisAlignment::kStart);
     text->AddChildView(std::make_unique<ThemedLabel>(
-        u"Mori", 13, false, gfx::Font::Weight::SEMIBOLD));
+        u"Mori", false, gfx::Font::Weight::SEMIBOLD));
     text->AddChildView(std::make_unique<ThemedLabel>(
         u"Built on Chromium " +
-            base::UTF8ToUTF16(std::string(version_info::GetVersionNumber())),
-        11, true));
+            base::UTF8ToUTF16(std::string(version_info::GetVersionNumber())), true));
 
     Card* more = Section(column, u"More settings");
     Hint(more, u"Everything Mori doesn't show here: languages, downloads, "
@@ -1345,7 +1351,7 @@ class Settings : public ui::EventObserver, public views::ViewObserver {
   }
 
  private:
-  // Exactly over the page card (Mori 3 shows settings in the card).
+  // Exactly over the page card (Mori shows settings in the card).
   void Place() {
     views::View* card = browser_view_->contents_container();
     if (!open_ || !card) {

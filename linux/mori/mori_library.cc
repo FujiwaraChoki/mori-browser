@@ -1,4 +1,5 @@
 #include "chrome/browser/ui/views/mori/mori_library.h"
+#include "chrome/browser/ui/views/mori/mori_typography.h"
 
 #include <algorithm>
 #include <memory>
@@ -79,7 +80,7 @@ constexpr auto kShadowInsets = gfx::Insets::TLBR(24, 40, 56, 40);
 constexpr int kPadding = 8;
 constexpr int kRowHeight = 30;
 constexpr int kMaxRows = 200;
-// Mori 3's primary (the selected segment) and destructive colours.
+// Mori's primary (the selected segment) and destructive colours.
 constexpr SkColor kPrimary = SkColorSetRGB(0x29, 0x8E, 0xCD);
 constexpr SkColor kDestructive = SkColorSetRGB(0xE5, 0x48, 0x4D);
 // A click on the library button while the library is open closes it, and
@@ -108,12 +109,7 @@ SkColor Ghost(const views::View* view, SkAlpha alpha) {
   return SkColorSetA(IsDark(view) ? SK_ColorWHITE : SK_ColorBLACK, alpha);
 }
 
-gfx::FontList Font(int size) {
-  const gfx::FontList base;
-  return base.DeriveWithSizeDelta(size - base.GetFontSize());
-}
-
-// Mori 3's relative_time: "just now", "5m ago", "3h ago", "2d ago".
+// Mori's relative_time: "just now", "5m ago", "3h ago", "2d ago".
 std::u16string RelativeTime(base::Time time) {
   const base::TimeDelta age = base::Time::Now() - time;
   if (time.is_null()) {
@@ -172,7 +168,7 @@ class Segment : public views::Button {
       canvas->DrawRoundRect(bounds, 4.4f, flags);
     }
     canvas->DrawStringRectWithFlags(
-        label_, Font(12), selected_ ? SK_ColorWHITE : Foreground(this),
+        label_, UiFont(), selected_ ? SK_ColorWHITE : Foreground(this),
         GetLocalBounds(), gfx::Canvas::TEXT_ALIGN_CENTER);
   }
 
@@ -186,7 +182,7 @@ class Segment : public views::Button {
 BEGIN_METADATA(Segment)
 END_METADATA
 
-// A 15px favicon, or Mori 3's grey placeholder square.
+// A 15px favicon, or Mori's grey placeholder square.
 class Favicon : public views::View {
   METADATA_HEADER(Favicon, views::View)
 
@@ -258,12 +254,12 @@ class Row : public views::Button {
     title_ = AddChildView(std::make_unique<views::Label>(
         entry.title.empty() ? base::UTF8ToUTF16(entry.url.spec())
                             : entry.title));
-    title_->SetFontList(Font(13));
+    title_->SetFontList(UiFont());
     title_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     title_->SetElideBehavior(gfx::ELIDE_TAIL);
     layout->SetFlexForView(title_, 1);
     meta_ = AddChildView(std::make_unique<views::Label>(entry.meta));
-    meta_->SetFontList(Font(11));
+    meta_->SetFontList(UiFont());
     meta_->SetVisible(!entry.meta.empty());
     if (entry.remove) {
       remove_ = AddChildView(std::make_unique<RemoveButton>(
@@ -319,7 +315,7 @@ class SearchField : public views::Textfield {
  public:
   SearchField() {
     SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(5, 10)));
-    SetFontList(Font(13));
+    SetFontList(UiFont());
     SetPlaceholderText(u"Search");
     GetViewAccessibility().SetName(u"Search the library");
   }
@@ -346,7 +342,7 @@ class TextLink : public views::Button {
   void PaintButtonContents(gfx::Canvas* canvas) override {
     gfx::Rect bounds = GetLocalBounds();
     bounds.Inset(gfx::Insets::VH(0, 8));
-    canvas->DrawStringRectWithFlags(text_, Font(12), kDestructive, bounds,
+    canvas->DrawStringRectWithFlags(text_, UiFont(), kDestructive, bounds,
                                     gfx::Canvas::TEXT_ALIGN_LEFT);
   }
 
@@ -592,7 +588,7 @@ class LibraryView : public views::View, public views::TextfieldController {
     if (entries_.empty()) {
       auto* empty = list_->AddChildView(
           std::make_unique<views::Label>(u"Nothing here yet"));
-      empty->SetFontList(Font(13));
+      empty->SetFontList(UiFont());
       empty->SetBorder(views::CreateEmptyBorder(gfx::Insets(16)));
       empty->SetHorizontalAlignment(gfx::ALIGN_LEFT);
       empty->SetEnabledColor(Muted(this));
@@ -765,7 +761,7 @@ class Library : public ui::EventObserver {
         base::BindOnce(&Library::Close, weak_factory_.GetWeakPtr()));
   }
 
-  // Beside the sidebar, near its top (Mori 3: 44px down, 4px out).
+  // Beside the sidebar, near its top (Mori: 44px down, 4px out).
   void Resize() {
     if (!open_ || !browser_view_->browser()) {
       return;

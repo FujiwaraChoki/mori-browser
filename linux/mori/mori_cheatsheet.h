@@ -1,4 +1,4 @@
-// Ctrl+/: every shortcut, grouped and searchable (Mori 3's cheatsheet). The
+// Ctrl+/: every shortcut, grouped and searchable (Mori's cheatsheet). The
 // keys come from the window's live bindings, so they never drift.
 
 #ifndef CHROME_BROWSER_UI_VIEWS_MORI_MORI_CHEATSHEET_H_

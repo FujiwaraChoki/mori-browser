@@ -1,0 +1,14 @@
+--- a/chrome/browser/safe_browsing/BUILD.gn
++++ b/chrome/browser/safe_browsing/BUILD.gn
+@@ -7,6 +7,7 @@
+ import("//extensions/buildflags/buildflags.gni")
+ 
+ static_library("safe_browsing") {
++  sources = [ "safe_browsing_dummy.cc" ]
+   if (false) {
+   public = [
+     "chrome_controller_client.h",
+--- /dev/null
++++ b/chrome/browser/safe_browsing/safe_browsing_dummy.cc
+@@ -0,0 +1 @@
++// Placeholder for the disabled Safe Browsing library on Windows.

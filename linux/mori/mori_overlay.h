@@ -61,7 +61,7 @@ class Overlay : public views::WidgetObserver {
       this};
 };
 
-// Mori 3's popover surface in `bounds` (leave room around it for the
+// Mori's popover surface in `bounds` (leave room around it for the
 // shadow): #181818 (white in light mode) with a 1px edge, 12px corners and
 // a soft shadow.
 void PaintPopover(const views::View* view,

@@ -27,7 +27,7 @@
 namespace mori {
 namespace {
 
-// The opacity Mori 3 paints the wash at over the window background.
+// The opacity Mori paints the wash at over the window background.
 constexpr float kWashOpacity = 0.5f;
 
 // Theme pixels are recorded in each view's local paint coordinates. Compositor
@@ -149,7 +149,7 @@ class ThemeStore {
   JsonFile file_;
 };
 
-// Mori 3's wash (theme.rs render_wash): the first colour, blooming into
+// Mori's wash (theme.rs render_wash): the first colour, blooming into
 // the second towards the bottom right. Small; it's stretched over the
 // window.
 const SkBitmap& WashBitmap(std::pair<SkColor, SkColor> colors) {

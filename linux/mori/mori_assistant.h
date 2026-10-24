@@ -1,4 +1,4 @@
-// Mori's assistant (Mori 3's): a panel docked beside the page (Ctrl+Shift+K
+// Mori's assistant (Mori's): a panel docked beside the page (Ctrl+Shift+K
 // or the sparkles button) holding a conversation with the local Codex app
 // server, which can see and drive the browser through Mori's tools. Every
 // read of page data or change to the browser waits for the user's Allow.
@@ -16,7 +16,7 @@ class View;
 
 namespace mori {
 
-// Width of the docked panel, as Mori 3's.
+// Width of the docked panel, as Mori's.
 inline constexpr int kAssistantPanelWidth = 360;
 
 void ToggleAssistant(BrowserWindowInterface* browser);

@@ -18,7 +18,7 @@ namespace mori {
 // New ordinary tabs go immediately after the saved folder section.
 int IndexForNewTab(BrowserWindowInterface* browser);
 
-// Arc's "Archive Today" (Mori 3's Clear): closes every tab that isn't a
+// Arc's "Archive Today" (Mori's Clear): closes every tab that isn't a
 // favorite or in a folder, leaving a new tab. They stay in History and Reopen Closed Tab.
 void ArchiveUnpinnedTabs(BrowserWindowInterface* browser);
 

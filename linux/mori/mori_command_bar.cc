@@ -4,6 +4,7 @@
 // suggestions and open tabs.
 
 #include "chrome/browser/ui/views/mori/mori_command_bar.h"
+#include "chrome/browser/ui/views/mori/mori_typography.h"
 #include "chrome/browser/ui/views/mori/mori_little.h"
 
 #include <algorithm>
@@ -44,6 +45,7 @@
 #include "components/omnibox/browser/autocomplete_controller.h"
 #include "components/omnibox/browser/autocomplete_input.h"
 #include "components/omnibox/browser/autocomplete_match.h"
+#include "components/omnibox/browser/autocomplete_match_type.h"
 #include "components/omnibox/browser/autocomplete_result.h"
 #include "components/omnibox/browser/favicon_cache.h"
 #include "base/task/cancelable_task_tracker.h"
@@ -103,20 +105,18 @@ GURL InternalAddress(std::u16string_view text) {
   return url.is_valid() && url.has_host() ? url : GURL();
 }
 
-// Mori 3's launcher (crates/mori/src/ui/launcher.rs), itself measured from
+// Mori's launcher, itself measured from
 // Zen's.
 constexpr size_t kMaxResults = 10;
 constexpr size_t kMaxCommands = 3;
-// Before anything is typed (Mori 3): the other tabs, most recent
+// Before anything is typed (Mori): the other tabs, most recent
 // first, then pages from history.
 constexpr size_t kIdleRows = 8;
 constexpr size_t kIdleTabs = 5;
 constexpr int kPanelRadius = 10;
 constexpr int kInputRowHeight = 62;
-constexpr int kInputTextSize = 17;
 constexpr int kRowHeight = 45;
 constexpr int kRowGap = 4;
-constexpr int kRowTextSize = 14;
 constexpr int kIconSize = 16;
 // Room around the panel for its shadow.
 constexpr auto kShadowInsets = gfx::Insets::TLBR(32, 56, 88, 56);
@@ -161,14 +161,8 @@ BarColors ColorsFor(const views::View* view) {
   return c;
 }
 
-gfx::FontList SizedFont(int size, gfx::Font::Weight weight) {
-  const gfx::FontList& base = views::Label::GetDefaultFontList();
-  return base.DeriveWithSizeDelta(size - base.GetFontSize())
-      .DeriveWithWeight(weight);
-}
-
 bool IsTabMatch(const AutocompleteMatch& match) {
-  return match.type == AutocompleteMatchType::OPEN_TAB ||
+  return match.type == omnibox::AutocompleteMatchType::kOpenTab ||
          match.has_tab_match.value_or(false);
 }
 
@@ -194,16 +188,16 @@ class ResultRow : public views::Button {
         .SetDefault(views::kMarginsKey, gfx::Insets::TLBR(0, 0, 0, 6));
     layout->SetFlexForView(text, 1);
     title_ = text->AddChildView(std::make_unique<views::Label>());
-    title_->SetFontList(SizedFont(kRowTextSize, gfx::Font::Weight::SEMIBOLD));
+    title_->SetFontList(UiFont(gfx::Font::Weight::SEMIBOLD));
     title_->SetElideBehavior(gfx::ELIDE_TAIL);
     title_->SetProperty(
         views::kFlexBehaviorKey,
         views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToZero,
                                  views::MaximumFlexSizeRule::kPreferred));
     dash_ = text->AddChildView(std::make_unique<views::Label>(u"\u2014"));
-    dash_->SetFontList(SizedFont(kRowTextSize, gfx::Font::Weight::NORMAL));
+    dash_->SetFontList(UiFont(gfx::Font::Weight::NORMAL));
     source_ = text->AddChildView(std::make_unique<views::Label>());
-    source_->SetFontList(SizedFont(kRowTextSize, gfx::Font::Weight::NORMAL));
+    source_->SetFontList(UiFont(gfx::Font::Weight::NORMAL));
     source_->SetElideBehavior(gfx::ELIDE_TAIL);
     source_->SetMaximumWidthSingleLine(320);
 
@@ -213,13 +207,13 @@ class ResultRow : public views::Button {
     tab_layout->set_cross_axis_alignment(
         views::BoxLayout::CrossAxisAlignment::kCenter);
     tab_label_ = tab_->AddChildView(std::make_unique<views::Label>(u"Switch to Tab"));
-    tab_label_->SetFontList(SizedFont(12, gfx::Font::Weight::SEMIBOLD));
+    tab_label_->SetFontList(UiFont(gfx::Font::Weight::SEMIBOLD));
     tab_arrow_ = tab_->AddChildView(std::make_unique<views::ImageView>());
     tab_arrow_->SetPreferredSize(gfx::Size(20, 20));
 
-    // A command's shortcut, as Mori 3's rows show it.
+    // A command's shortcut, as Mori's rows show it.
     shortcut_ = AddChildView(std::make_unique<views::Label>());
-    shortcut_->SetFontList(SizedFont(12, gfx::Font::Weight::NORMAL));
+    shortcut_->SetFontList(UiFont(gfx::Font::Weight::NORMAL));
 
     SetPreferredSize(gfx::Size(0, kRowHeight));
     SetFocusBehavior(FocusBehavior::NEVER);
@@ -298,7 +292,7 @@ class ResultRow : public views::Button {
                              : c.chip;
     tab_arrow_->SetBackground(views::CreateRoundedRectBackground(chip, 4));
     if (icon_model_.IsVectorIcon()) {
-      // Ask Assistant's sparkles are in Mori's blue, as in Mori 3.
+      // Ask Assistant's sparkles are in Mori's blue, as in Mori.
       const SkColor accent = c.dark ? SkColorSetRGB(0x48, 0x95, 0xCA)
                                     : SkColorSetRGB(0x29, 0x8E, 0xCD);
       icon_->SetImage(ui::ImageModel::FromVectorIcon(
@@ -390,12 +384,12 @@ class CommandBar : public views::View,
     field_->SetBackgroundEnabled(false);
     field_->SetBorder(nullptr);
     field_->SetPlaceholderText(u"Search or enter address");
-    field_->SetFontList(SizedFont(kInputTextSize, gfx::Font::Weight::NORMAL));
+    field_->SetFontList(UiFont(gfx::Font::Weight::NORMAL));
     field_->SetTextColorId(kColorOmniboxText);
     field_->SetPlaceholderTextColorId(kColorOmniboxResultsTextDimmed);
     field_->GetViewAccessibility().SetName(u"Command bar");
 
-    // Once something is typed: "Tab  Ask Assistant", as in Mori 3.
+    // Once something is typed: "Tab  Ask Assistant", as in Mori.
     ask_hint_ = input_row->AddChildView(std::make_unique<views::View>());
     auto* hint_layout =
         ask_hint_->SetLayoutManager(std::make_unique<views::BoxLayout>(
@@ -403,11 +397,11 @@ class CommandBar : public views::View,
     hint_layout->set_cross_axis_alignment(
         views::BoxLayout::CrossAxisAlignment::kCenter);
     tab_key_ = ask_hint_->AddChildView(std::make_unique<views::Label>(u"Tab"));
-    tab_key_->SetFontList(SizedFont(12, gfx::Font::Weight::NORMAL));
+    tab_key_->SetFontList(UiFont(gfx::Font::Weight::NORMAL));
     tab_key_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(1, 4)));
     ask_label_ =
         ask_hint_->AddChildView(std::make_unique<views::Label>(u"Ask Assistant"));
-    ask_label_->SetFontList(SizedFont(12, gfx::Font::Weight::NORMAL));
+    ask_label_->SetFontList(UiFont(gfx::Font::Weight::NORMAL));
     ask_hint_->SetVisible(false);
 
     // A hairline, then the results.
@@ -440,7 +434,7 @@ class CommandBar : public views::View,
     ask_label_->SetEnabledColor(c.muted);
   }
 
-  // The panel: #181818 (white in light mode) with a 1px edge and Mori 3's
+  // The panel: #181818 (white in light mode) with a 1px edge and Mori's
   // two shadows, a wide soft one and a close one.
   void OnPaintBackground(gfx::Canvas* canvas) override {
     const BarColors c = ColorsFor(this);
@@ -522,7 +516,7 @@ class CommandBar : public views::View,
       case ui::VKEY_UP:
         MoveSelection(-1);
         return true;
-      // Tab asks the assistant about what's typed (Mori 3).
+      // Tab asks the assistant about what's typed (Mori).
       case ui::VKEY_TAB:
         if (!key_event.IsShiftDown() && !field_->GetText().empty()) {
           Ask();
@@ -614,7 +608,7 @@ class CommandBar : public views::View,
         break;
       }
       content::WebContents* contents = tab->GetContents();
-      AddIdleMatch(AutocompleteMatchType::OPEN_TAB,
+      AddIdleMatch(omnibox::AutocompleteMatchType::kOpenTab,
                    contents->GetLastCommittedURL(), contents->GetTitle());
     }
     UpdateResults();
@@ -631,7 +625,7 @@ class CommandBar : public views::View,
     }
   }
 
-  void AddIdleMatch(AutocompleteMatchType::Type type,
+  void AddIdleMatch(omnibox::AutocompleteMatchType type,
                     const GURL& url,
                     const std::u16string& title) {
     AutocompleteMatch match(nullptr, 0, false, type);
@@ -661,7 +655,7 @@ class CommandBar : public views::View,
           (contents && contents->GetLastCommittedURL() == url)) {
         continue;
       }
-      AddIdleMatch(AutocompleteMatchType::HISTORY_URL, url, result.title());
+      AddIdleMatch(omnibox::AutocompleteMatchType::kHistoryUrl, url, result.title());
     }
     UpdateResults();
     UpdateBounds();
@@ -685,7 +679,7 @@ class CommandBar : public views::View,
     const GURL internal_url = InternalAddress(field_->GetText());
     if (internal_url.is_valid()) {
       AutocompleteMatch match(nullptr, 0, true,
-                              AutocompleteMatchType::URL_WHAT_YOU_TYPED);
+                              omnibox::AutocompleteMatchType::kUrlWhatYouTyped);
       match.destination_url = internal_url;
       match.contents = std::u16string(field_->GetText());
       match.description = internal_url.host() == "settings"
@@ -695,7 +689,7 @@ class CommandBar : public views::View,
       matches_.push_back(std::move(match));
       return;
     }
-    // Mori 3 offers to ask the assistant about anything but an address.
+    // Mori offers to ask the assistant about anything but an address.
     ask_ = !input_is_url_;
     const size_t max_results = kMaxResults - (ask_ ? 1 : 0);
     if (!input_is_url_) {
@@ -710,14 +704,14 @@ class CommandBar : public views::View,
         matches_.push_back(match);
       }
     }
-    // Otherwise Mori 3's order: the search for what was typed, the search
+    // Otherwise Mori's order: the search for what was typed, the search
     // suggestions, then tabs, history and bookmarks.
     if (!input_is_url_) {
       std::ranges::stable_partition(matches_, [](const AutocompleteMatch& m) {
-        return m.type == AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED;
+        return m.type == omnibox::AutocompleteMatchType::kSearchWhatYouTyped;
       });
       auto rest = std::ranges::find_if(matches_, [](const AutocompleteMatch& m) {
-        return m.type != AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED;
+        return m.type != omnibox::AutocompleteMatchType::kSearchWhatYouTyped;
       });
       std::stable_partition(rest, matches_.end(),
                             [](const AutocompleteMatch& m) {
@@ -726,7 +720,7 @@ class CommandBar : public views::View,
     }
     if (input_is_url_ && !matches_.empty()) {
       auto address = std::ranges::find_if(matches_, [](const auto& m) {
-        return m.type == AutocompleteMatchType::URL_WHAT_YOU_TYPED;
+        return m.type == omnibox::AutocompleteMatchType::kUrlWhatYouTyped;
       });
       if (address == matches_.end()) {
         address = std::ranges::find_if(matches_, [](const auto& m) {
@@ -779,13 +773,13 @@ class CommandBar : public views::View,
           icon = ui::ImageModel::FromImage(favicon);
         }
       }
-      // As Mori 3: a search shows the query (and, for what was typed, the
+      // As Mori: a search shows the query (and, for what was typed, the
       // engine); a page shows its title and host.
       std::u16string title;
       std::u16string source;
       if (search) {
         title = match.contents;
-        if (match.type == AutocompleteMatchType::SEARCH_WHAT_YOU_TYPED &&
+        if (match.type == omnibox::AutocompleteMatchType::kSearchWhatYouTyped &&
             !engine_name_.empty()) {
           source = u"Search with " + engine_name_;
         }
@@ -903,7 +897,7 @@ class CommandBar : public views::View,
     }
   }
 
-  // As Mori 3: 63% of the window's width (560 to 910px), centred, its top
+  // As Mori: 63% of the window's width (560 to 910px), centred, its top
   // 31.6% down the window (at most 296px).
   void UpdateBounds() {
     if (!GetWidget()) {

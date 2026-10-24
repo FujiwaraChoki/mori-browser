@@ -1,0 +1,68 @@
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -2766,6 +2766,9 @@
+       "views/mori/mori_overlay.h",
+       "views/mori/mori_peek.cc",
+       "views/mori/mori_peek.h",
++      "views/mori/mori_picture_in_picture.cc",
++      "views/mori/mori_picture_in_picture.h",
++      "views/mori/mori_picture_in_picture_script.h",
+       "views/mori/mori_tab_switcher.cc",
+       "views/mori/mori_tab_switcher.h",
+       "views/mori/mori_tab_names.cc",
+--- a/chrome/browser/ui/tab_helpers.cc
++++ b/chrome/browser/ui/tab_helpers.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "chrome/browser/ui/views/mori/mori_boosts.h"
+ #include "chrome/browser/ui/views/mori/mori_web_store.h"
++#include "chrome/browser/ui/views/mori/mori_picture_in_picture.h"
+ 
+ #include <cstdint>
+ #include <memory>
+@@ -330,6 +331,7 @@
+   mori::AttachBoosts(web_contents);
+   // Mori: "Add to Mori" in the web store.
+   mori::AttachWebStore(web_contents);
++  mori::AttachPictureInPicture(web_contents);
+ 
+   // Create all the tab helpers.
+ 
+--- a/chrome/browser/prefs/browser_prefs.cc
++++ b/chrome/browser/prefs/browser_prefs.cc
+@@ -3,6 +3,7 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/prefs/browser_prefs.h"
++#include "chrome/browser/ui/views/mori/mori_picture_in_picture.h"
+ 
+ #include <array>
+ #include <optional>
+@@ -1740,6 +1741,7 @@
+ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
+                           const std::string& locale) {
+   TRACE_EVENT0("browser", "chrome::RegisterProfilePrefs");
++  mori::RegisterPictureInPicturePrefs(registry);
+   // User prefs. Please keep this list alphabetized.
+   AccessibilityLabelsService::RegisterProfilePrefs(registry);
+   registry->RegisterBooleanPref(prefs::kRendererAccessibilityEnabled, true);
+--- a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
++++ b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
+@@ -25,6 +25,7 @@
+ #include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
+ #include "chrome/browser/preloading/preloading_prefs.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/views/mori/mori_picture_in_picture.h"
+ #include "chrome/browser/repost_form_warning_controller.h"
+ #include "chrome/browser/search/search.h"
+ #include "chrome/browser/sessions/session_tab_helper_factory.h"
+@@ -304,6 +305,9 @@
+ content::PictureInPictureResult
+ BrowserWebContentsDelegate::EnterPictureInPicture(
+     content::WebContents* web_contents) {
++  if (!mori::IsPictureInPictureEnabled(web_contents)) {
++    return content::PictureInPictureResult::kNotSupported;
++  }
+   return PictureInPictureWindowManager::GetInstance()
+       ->EnterVideoPictureInPicture(web_contents);
+ }

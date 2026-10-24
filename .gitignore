@@ -7,23 +7,21 @@ binshims/
 depot_tools/
 ungoogled-chromium/
 
-# Keep the full Chromium checkout and build output local, but track Mori's
-# browser UI overlay inside the checkout path.
-ungoogled-chromium-macos/**
-!ungoogled-chromium-macos/
-!ungoogled-chromium-macos/build/
-!ungoogled-chromium-macos/build/src/
-!ungoogled-chromium-macos/build/src/chrome/
-!ungoogled-chromium-macos/build/src/chrome/browser/
-!ungoogled-chromium-macos/build/src/chrome/browser/ui/
-!ungoogled-chromium-macos/build/src/chrome/browser/ui/mori/
-!ungoogled-chromium-macos/build/src/chrome/browser/ui/mori/**
+# Local upstream macOS checkouts; the desktop SwiftUI overlay is retired.
+ungoogled-chromium-mac/
+ungoogled-chromium-macos/
 
-# Rust / CEF
+# Local Python and Node tooling.
+.venv-build/
+__pycache__/
+*.py[cod]
+node_modules/
+
+# Rust harness output and retired browser caches
 target/
 .cef/
 
-# Linux bundles
+# Generated packages and test results
 dist/
 
 # Linux Chromium build (ungoogled-chromium portable Linux checkout, sources and build output)

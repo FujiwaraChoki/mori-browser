@@ -1,4 +1,4 @@
-// Mori 3's library (crates/mori/src/ui/panels.rs): a popover beside the
+// Mori's library: a popover beside the
 // sidebar with History, Bookmarks and Archive (recently closed tabs), a
 // search field, and rows that open in the space on screen.
 

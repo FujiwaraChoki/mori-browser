@@ -1,4 +1,5 @@
 #include "chrome/browser/ui/views/mori/mori_toast.h"
+#include "chrome/browser/ui/views/mori/mori_typography.h"
 
 #include <memory>
 #include <utility>
@@ -36,12 +37,6 @@ constexpr int kInset = 8;
 // Room around the pill for its shadow.
 constexpr int kShadow = 12;
 
-gfx::FontList ToastFont() {
-  const gfx::FontList base;
-  return base.DeriveWithSizeDelta(14 - base.GetFontSize())
-      .DeriveWithWeight(gfx::Font::Weight::BOLD);
-}
-
 class ToastView : public views::View {
   METADATA_HEADER(ToastView, views::View)
 
@@ -55,7 +50,7 @@ class ToastView : public views::View {
   }
 
   gfx::Size PillSize() const {
-    return gfx::Size(gfx::GetStringWidth(text_, ToastFont()) + 2 * kPadding,
+    return gfx::Size(gfx::GetStringWidth(text_, UiFont(gfx::Font::Weight::BOLD)) + 2 * kPadding,
                      kHeight);
   }
 
@@ -93,7 +88,7 @@ class ToastView : public views::View {
     gfx::RectF edge = pill;
     edge.Inset(0.5f);
     canvas->DrawRoundRect(edge, kRadius - 0.5f, outline);
-    canvas->DrawStringRectWithFlags(text_, ToastFont(), SK_ColorWHITE,
+    canvas->DrawStringRectWithFlags(text_, UiFont(gfx::Font::Weight::BOLD), SK_ColorWHITE,
                                     gfx::ToEnclosingRect(pill),
                                     gfx::Canvas::TEXT_ALIGN_CENTER);
   }

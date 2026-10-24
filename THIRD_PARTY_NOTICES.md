@@ -16,7 +16,8 @@ Chromium/ungoogled-chromium notices required by the build being shipped.
 
 ## Mori Assets
 
-Mori includes first-party app icons, UI assets, and glyphs under the Mori overlay
-path. Third-party brand names or marks shown in the UI remain the property of
+Mori includes first-party app icons and UI assets in `mac/assets/`,
+and the iOS asset catalog. The shared desktop interface
+and generated icon paths live in `linux/mori/`. Third-party brand names or marks shown in the UI remain the property of
 their respective owners; the source license does not grant trademark rights or
 endorsement rights.

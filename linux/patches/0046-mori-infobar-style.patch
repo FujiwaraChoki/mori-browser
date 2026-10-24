@@ -1,0 +1,77 @@
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -179,6 +179,7 @@
+ #include "chrome/browser/ui/views/frame/shadow_overlay_view.h"
+ #include "chrome/browser/ui/views/frame/tab_modal_dialog_host.h"
+ #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
++#include "chrome/browser/ui/views/frame/themed_background.h"
+ #include "chrome/browser/ui/views/frame/top_container_view.h"
+ #include "chrome/browser/ui/views/frame/top_controls_slide_controller.h"
+ #include "chrome/browser/ui/views/frame/vertical_tab_strip_background_blur_backdrop.h"
+@@ -965,6 +966,13 @@
+   // needs to come after toolbar in focus order (see EnsureFocusOrder()).
+   infobar_container_ =
+       AddChildView(std::make_unique<InfoBarContainerView>(this));
++  // Mori: infobars sit on the window's own surface (wash included) above the
++  // page card. On a layer, it also covers chrome left under the strip, such
++  // as the toolbar's layers while the sidebar is hidden.
++  infobar_container_->SetBackground(std::make_unique<ThemedBackground>(
++      this, ThemedBackground::kFrameTheme));
++  infobar_container_->SetPaintToLayer();
++  infobar_container_->layer()->SetFillsBoundsOpaquely(false);
+ 
+   // This frames some/all of the top container plus infobars, contents, and
+   // contents-height side panel when the toolbar-height side panel is visible.
+--- a/chrome/browser/ui/views/infobars/infobar_view.cc
++++ b/chrome/browser/ui/views/infobars/infobar_view.cc
+@@ -101,6 +101,8 @@
+   // animation.
+   SetPaintToLayer();
+   layer()->SetMasksToBounds(true);
++  // Mori: the bar's background is clear so the window's wash shows through.
++  layer()->SetFillsBoundsOpaquely(false);
+ 
+   SetBackground(views::CreateSolidBackground(kColorInfoBarBackground));
+ 
+@@ -281,8 +283,12 @@
+ 
+   // Set dark mode status so that it can be used to set a different icon image
+   // that is more suitable for a dark background.
+-  delegate()->set_dark_mode(color_utils::IsDark(
+-      GetColorProvider()->GetColor(kColorInfoBarBackground)));
++  // Mori: a clear bar sits on the toolbar colour.
++  SkColor background = GetColorProvider()->GetColor(kColorInfoBarBackground);
++  if (SkColorGetA(background) != SK_AlphaOPAQUE) {
++    background = GetColorProvider()->GetColor(kColorToolbar);
++  }
++  delegate()->set_dark_mode(color_utils::IsDark(background));
+   if (icon_) {
+     icon_->SetImage(delegate()->GetIcon());
+   }
+--- a/chrome/browser/ui/views/infobars/infobar_container_view.cc
++++ b/chrome/browser/ui/views/infobars/infobar_container_view.cc
+@@ -89,6 +89,9 @@
+   SetID(VIEW_ID_INFO_BAR_CONTAINER);
+   SetProperty(views::kElementIdentifierKey, kInfoBarContainerElementId);
+   content_shadow_ = AddChildView(std::make_unique<ContentShadow>());
++  // Mori: infobars sit on the window above the page card, which has its own
++  // edge; no shadow.
++  content_shadow_->SetVisible(false);
+   views::SetCascadingColorProviderColor(this, views::kCascadingBackgroundColor,
+                                         kColorToolbar);
+   SetBackground(
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -1178,6 +1178,12 @@
+           gfx::Rect(params.visual_client_area.x(),
+                     params.visual_client_area.y() + additional_offset,
+                     params.visual_client_area.width(), infobar_height);
++      // Mori: line the bar up with the page card below it.
++      if (mori_content_card) {
++        infobar_bounds.Inset(gfx::Insets::TLBR(
++            0, mori_sidebar_hidden ? mori::kContentCardMargin : 0, 0,
++            mori::kContentCardMargin));
++      }
+       params.SetTop(params.visual_client_area.y() + infobar_height);
+     }
+     layout.AddChild(views().infobar_container, infobar_bounds, infobar_visible);

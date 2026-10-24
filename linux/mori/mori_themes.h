@@ -1,4 +1,4 @@
-// Mori's theme (Arc's and Mori 3's gradient themes): a two-colour gradient
+// Mori's theme (Arc's and Mori's gradient themes): a two-colour gradient
 // that washes over the window's chrome. One per profile, chosen in
 // Settings, kept in "Mori Theme.json".
 
@@ -28,7 +28,7 @@ namespace mori {
 // The theme's gradient; none is the plain chrome.
 using ThemeColors = std::optional<std::pair<SkColor, SkColor>>;
 
-// Mori 3's colour pairs (workspace.rs NEW_SPACE_COLORS).
+// Mori's colour pairs (workspace.rs NEW_SPACE_COLORS).
 inline constexpr std::array<std::pair<SkColor, SkColor>, 8> kThemeGradients = {{
     {SkColorSetRGB(0x6E, 0x5B, 0xD8), SkColorSetRGB(0x9B, 0x5B, 0xD8)},
     {SkColorSetRGB(0x35, 0x77, 0xD4), SkColorSetRGB(0x5B, 0x5B, 0xD8)},

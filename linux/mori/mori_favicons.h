@@ -1,4 +1,4 @@
-// Icons for tabs that haven't loaded (imported or saved ones), as Mori 3
+// Icons for tabs that haven't loaded (imported or saved ones), as Mori
 // fetches them: the favicon database first, then the site's /favicon.ico,
 // kept as an on-demand favicon until the page itself is visited.
 

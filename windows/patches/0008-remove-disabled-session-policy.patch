@@ -1,0 +1,12 @@
+--- a/chrome/browser/policy/configuration_policy_handler_list_factory.cc
++++ b/chrome/browser/policy/configuration_policy_handler_list_factory.cc
+@@ -1911,9 +1911,6 @@
+   { key::kRendererAppContainerEnabled,
+     prefs::kRendererAppContainerEnabled,
+     base::Value::Type::BOOLEAN },
+-  { key::kBoundSessionCredentialsEnabled,
+-    prefs::kBoundSessionCredentialsEnabled,
+-    base::Value::Type::BOOLEAN },
+   { key::kBrowserLegacyExtensionPointsBlocked,
+     prefs::kBlockBrowserLegacyExtensionPoints,
+     base::Value::Type::BOOLEAN },

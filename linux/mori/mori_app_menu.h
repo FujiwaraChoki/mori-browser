@@ -1,4 +1,4 @@
-// Mori's "..." menu (Mori 3's sidebar menu) in place of Chromium's app menu.
+// Mori's "..." menu (Mori's sidebar menu) in place of Chromium's app menu.
 
 #ifndef CHROME_BROWSER_UI_VIEWS_MORI_MORI_APP_MENU_H_
 #define CHROME_BROWSER_UI_VIEWS_MORI_MORI_APP_MENU_H_

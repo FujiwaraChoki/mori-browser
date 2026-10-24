@@ -68,7 +68,7 @@ class PreviewTab {
 namespace mori {
 namespace {
 
-// Mori 3's Peek (crates/mori/src/ui/peek.rs).
+// Mori's Peek.
 constexpr float kCardWidthRatio = 0.8f;
 constexpr int kCardMaxWidth = 1200;
 // Room kept beside the card for the buttons.
@@ -333,7 +333,7 @@ class PeekView : public views::View,
   }
 
  private:
-  // Mori 3's card: 80% of the page's width (at most 1200), centered, as
+  // Mori's card: 80% of the page's width (at most 1200), centered, as
   // tall as the page.
   gfx::Rect CardBounds() const {
     const gfx::Rect area = GetLocalBounds();

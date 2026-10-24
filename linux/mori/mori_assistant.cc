@@ -1,4 +1,5 @@
 #include "chrome/browser/ui/views/mori/mori_assistant.h"
+#include "chrome/browser/ui/views/mori/mori_typography.h"
 
 #include <algorithm>
 #include <map>
@@ -354,7 +355,7 @@ class AssistantSession : public CodexServer::Delegate {
     }
     base::DictValue params =
         base::DictValue()
-            .Set("cwd", WorkingDir().value())
+            .Set("cwd", WorkingDir().AsUTF8Unsafe())
             .Set("approvalPolicy", kApprovalPolicy)
             .Set("sandbox", kSandbox)
             .Set("personality", "friendly")
@@ -705,12 +706,6 @@ bool IsDark(const views::View* view) {
              view->GetColorProvider()->GetColor(ui::kColorFrameActive));
 }
 
-gfx::FontList Font(int size, gfx::Font::Weight weight) {
-  const gfx::FontList base;
-  return base.DeriveWithSizeDelta(size - base.GetFontSize())
-      .DeriveWithWeight(weight);
-}
-
 SkColor Foreground(const views::View* v) {
   return IsDark(v) ? SkColorSetRGB(0xEE, 0xEE, 0xEF)
                    : SkColorSetRGB(0x1D, 0x1F, 0x22);
@@ -719,13 +714,13 @@ SkColor Muted(const views::View* v) {
   return IsDark(v) ? SkColorSetRGB(0xA0, 0xA1, 0xA2)
                    : SkColorSetRGB(0x5A, 0x5C, 0x5E);
 }
-// Mori 3's primary (oklch 0.645 0.11 241 / 0.62 0.13 241.5).
+// Mori's primary (oklch 0.645 0.11 241 / 0.62 0.13 241.5).
 SkColor Primary(const views::View* v) {
   return IsDark(v) ? SkColorSetRGB(0x48, 0x95, 0xCA)
                    : SkColorSetRGB(0x29, 0x8E, 0xCD);
 }
 
-// Mori 3's text button: 30px high, 6px corners, 13px medium text; the
+// Mori's text button: 30px high, 6px corners, 13px medium text; the
 // primary one in Mori's blue, the others a faint wash of the text colour.
 class TextButton : public views::Button {
   METADATA_HEADER(TextButton, views::Button)
@@ -742,7 +737,7 @@ class TextButton : public views::Button {
   gfx::Size CalculatePreferredSize(
       const views::SizeBounds& available_size) const override {
     return gfx::Size(
-        gfx::GetStringWidth(label_, Font(13, gfx::Font::Weight::MEDIUM)) + 24,
+        gfx::GetStringWidth(label_, UiFont(gfx::Font::Weight::MEDIUM)) + 24,
         30);
   }
 
@@ -756,7 +751,7 @@ class TextButton : public views::Button {
                             : SkColorSetA(foreground, hovered ? 0x1F : 0x12));
     canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), 6, flags);
     canvas->DrawStringRectWithFlags(
-        label_, Font(13, gfx::Font::Weight::MEDIUM),
+        label_, UiFont(gfx::Font::Weight::MEDIUM),
         primary_ ? SK_ColorWHITE : foreground, GetLocalBounds(),
         gfx::Canvas::TEXT_ALIGN_CENTER);
   }
@@ -775,7 +770,7 @@ class InputField : public views::Textfield {
  public:
   InputField() {
     SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(7, 10)));
-    SetFontList(Font(13, gfx::Font::Weight::NORMAL));
+    SetFontList(UiFont(gfx::Font::Weight::NORMAL));
     SetPlaceholderText(u"Ask anything…");
     GetViewAccessibility().SetName(u"Ask the assistant");
   }
@@ -843,7 +838,7 @@ class AssistantPanel : public views::View, public views::TextfieldController {
     header->SetPreferredSize(gfx::Size(0, 48));
     sparkles_ = header->AddChildView(std::make_unique<views::ImageView>());
     title_ = header->AddChildView(std::make_unique<views::Label>(u"Assistant"));
-    title_->SetFontList(Font(14, gfx::Font::Weight::SEMIBOLD));
+    title_->SetFontList(UiFont(gfx::Font::Weight::SEMIBOLD));
     title_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     header->SetFlexForView(title_, 1);
     new_chat_ = header->AddChildView(views::CreateVectorImageButton(
@@ -920,7 +915,7 @@ class AssistantPanel : public views::View, public views::TextfieldController {
     Rebuild();
   }
 
-  // Mori 3's card: the card colour with a soft edge and shadow.
+  // Mori's card: the card colour with a soft edge and shadow.
   void OnPaintBackground(gfx::Canvas* canvas) override {
     const bool dark = IsDark(this);
     const gfx::RectF bounds(GetLocalBounds());
@@ -956,15 +951,14 @@ class AssistantPanel : public views::View, public views::TextfieldController {
 
   views::Label* AddText(views::View* parent,
                         const std::string& text,
-                        int size,
                         SkColor color) {
     auto* label = parent->AddChildView(
         std::make_unique<views::Label>(base::UTF8ToUTF16(text)));
     label->SetMultiLine(true);
     label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-    label->SetFontList(Font(size, gfx::Font::Weight::NORMAL));
-    // Mori 3's line height (the font list's own is far looser).
-    label->SetLineHeight(size * 3 / 2);
+    label->SetFontList(UiFont(gfx::Font::Weight::NORMAL));
+    // Mori's line height (the font list's own is far looser).
+    label->SetLineHeight(kUiFontSize * 3 / 2);
     label->SetEnabledColor(color);
     label->SetSelectable(true);
     label->SetMaximumWidth(kAssistantPanelWidth - 24 - 24);
@@ -985,10 +979,8 @@ class AssistantPanel : public views::View, public views::TextfieldController {
       }
       if (block.kind == markdown::Block::kCode) {
         const std::string code = block.spans.empty() ? "" : block.spans[0].text;
-        auto* label = AddText(message, code, 12, Foreground(this));
-        label->SetFontList(gfx::FontList(
-            {"Menlo", "Consolas", "monospace"}, gfx::Font::NORMAL, 12,
-            gfx::Font::Weight::NORMAL));
+        auto* label = AddText(message, code, Foreground(this));
+        label->SetFontList(UiMonospaceFont());
         const SkColor background = IsDark(this)
                                        ? SkColorSetRGB(0x25, 0x25, 0x27)
                                        : SkColorSetRGB(0xEF, 0xEF, 0xF1);
@@ -1007,10 +999,7 @@ class AssistantPanel : public views::View, public views::TextfieldController {
       }
       auto* label = message->AddChildView(std::make_unique<AssistantMarkdownLabel>());
       label->SetText(std::move(text));
-      const int size = block.kind == markdown::Block::kHeading
-                           ? (block.level == 1 ? 18 : block.level == 2 ? 16 : 14)
-                           : 13;
-      label->SetLineHeight(size * 3 / 2);
+      label->SetLineHeight(kUiFontSize * 3 / 2);
       label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
       label->SetDisplayedOnBackgroundColor(
           IsDark(this) ? SkColorSetRGB(0x16, 0x16, 0x17)
@@ -1046,9 +1035,8 @@ class AssistantPanel : public views::View, public views::TextfieldController {
                                      ? Muted(this) : Foreground(this);
         }
         gfx::FontList font = span.code
-            ? gfx::FontList({"Menlo", "Consolas", "monospace"},
-                            gfx::Font::NORMAL, size, gfx::Font::Weight::NORMAL)
-            : Font(size, gfx::Font::Weight::NORMAL);
+            ? UiMonospaceFont()
+            : UiFont(gfx::Font::Weight::NORMAL);
         if (span.bold || block.kind == markdown::Block::kHeading) {
           font = font.DeriveWithWeight(gfx::Font::Weight::SEMIBOLD);
         }
@@ -1072,7 +1060,7 @@ class AssistantPanel : public views::View, public views::TextfieldController {
     content_->RemoveAllChildViews();
     const std::vector<Message>& messages = session_->messages();
     if (messages.empty()) {
-      // Mori 3's empty state: a title and three starters.
+      // Mori's empty state: a title and three starters.
       auto* empty = content_->AddChildView(std::make_unique<views::BoxLayoutView>());
       empty->SetOrientation(views::BoxLayout::Orientation::kVertical);
       empty->SetCrossAxisAlignment(
@@ -1081,7 +1069,7 @@ class AssistantPanel : public views::View, public views::TextfieldController {
       empty->SetInsideBorderInsets(gfx::Insets::TLBR(32, 0, 0, 0));
       auto* title = empty->AddChildView(
           std::make_unique<views::Label>(u"Ask about this page"));
-      title->SetFontList(Font(15, gfx::Font::Weight::NORMAL));
+      title->SetFontList(UiFont(gfx::Font::Weight::NORMAL));
       title->SetEnabledColor(Muted(this));
       auto* chips = empty->AddChildView(std::make_unique<views::BoxLayoutView>());
       chips->SetBetweenChildSpacing(6);
@@ -1112,7 +1100,7 @@ class AssistantPanel : public views::View, public views::TextfieldController {
               gfx::Insets::VH(7, 10)));
           bubble->SetBackground(views::CreateRoundedRectBackground(
               SkColorSetA(Primary(this), 0x29), 10));
-          AddText(bubble, message.text, 13, Foreground(this))
+          AddText(bubble, message.text, Foreground(this))
               ->SetMaximumWidth(kAssistantPanelWidth - 24 - 60);
           break;
         }
@@ -1120,7 +1108,7 @@ class AssistantPanel : public views::View, public views::TextfieldController {
           AddMarkdown(message.text);
           break;
         case Role::kTool:
-          AddText(content_, message.text, 12, Muted(this));
+          AddText(content_, message.text, Muted(this));
           break;
         case Role::kError: {
           auto* box = content_->AddChildView(std::make_unique<views::View>());
@@ -1129,7 +1117,7 @@ class AssistantPanel : public views::View, public views::TextfieldController {
               gfx::Insets::VH(7, 10)));
           box->SetBackground(views::CreateRoundedRectBackground(
               SkColorSetA(SkColorSetRGB(0xE5, 0x48, 0x4D), 0x1F), 8));
-          AddText(box, message.text, 12,
+          AddText(box, message.text,
                   dark ? SkColorSetRGB(0xFF, 0x9E, 0x9E)
                        : SkColorSetRGB(0xB4, 0x23, 0x18));
           break;
@@ -1137,7 +1125,7 @@ class AssistantPanel : public views::View, public views::TextfieldController {
       }
     }
     if (!session_->status().empty()) {
-      AddText(content_, session_->status(), 12, Muted(this));
+      AddText(content_, session_->status(), Muted(this));
     }
     // The approval card.
     approval_->RemoveAllChildViews();
@@ -1150,10 +1138,10 @@ class AssistantPanel : public views::View, public views::TextfieldController {
           1, 10, SkColorSetA(warning, 0x99)));
       auto* heading = approval_->AddChildView(
           std::make_unique<views::Label>(u"Allow this action?"));
-      heading->SetFontList(Font(13, gfx::Font::Weight::MEDIUM));
+      heading->SetFontList(UiFont(gfx::Font::Weight::MEDIUM));
       heading->SetHorizontalAlignment(gfx::ALIGN_LEFT);
       heading->SetEnabledColor(Foreground(this));
-      AddText(approval_, *session_->approval(), 12, Foreground(this))
+      AddText(approval_, *session_->approval(), Foreground(this))
           ->SetMaximumWidth(kAssistantPanelWidth - 24 - 24 - 2);
       auto* buttons = approval_->AddChildView(std::make_unique<views::BoxLayoutView>());
       buttons->SetMainAxisAlignment(views::BoxLayout::MainAxisAlignment::kEnd);

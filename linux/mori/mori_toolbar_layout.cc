@@ -20,6 +20,7 @@
 #include "chrome/browser/ui/views/extensions/extensions_toolbar_desktop.h"
 #include "chrome/browser/ui/views/mori/mori_window_events.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_button.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_action_view.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "ui/compositor/layer.h"
 #include "ui/display/screen.h"
@@ -55,7 +56,7 @@ const ui::ClassProperty<int>* const kLocationBarTrailingInsetKey =
 
 namespace {
 
-// Mori 3's sidebar inset.
+// Mori's sidebar inset.
 constexpr int kHorizontalPadding = 7;
 constexpr int kTopPadding = 4;
 constexpr int kRowGap = 2;
@@ -66,7 +67,7 @@ constexpr int kDefaultWidth = 240;
 
 enum class Slot {
   // The menu, downloads and other pinned browser actions: first row,
-  // from the start (Mori 3 has its "..." menu there).
+  // from the start (Mori has its "..." menu there).
   kLeading,
   // Back, forward and reload: first row, at the end.
   kNavigation,
@@ -192,7 +193,7 @@ class SidebarToolbarLayout : public views::FlexLayout {
 
     // The menu and friends from the start, as long as they fit.
     int x = kHorizontalPadding + leading_inset;
-    // Mori 3's order: the menu, the sidebar toggle, then the rest.
+    // Mori's order: the menu, the sidebar toggle, then the rest.
     std::ranges::stable_sort(leading, {}, [](const views::View* v) {
       const std::string_view name = v->GetClassName();
       return name == "BrowserAppMenuButton" ? 0
@@ -244,7 +245,7 @@ class MoriSidebarToggle : public ToolbarButton {
   explicit MoriSidebarToggle(BrowserWindowInterface* browser)
       : ToolbarButton(base::BindRepeating(
             [](BrowserWindowInterface* browser) {
-              // Hides the sidebar (Ctrl+S), as in Mori 3 and Arc.
+              // Hides the sidebar (Ctrl+S), as in Mori and Arc.
               chrome::ExecuteCommand(browser, IDC_TOGGLE_VERTICAL_TABS);
             },
             browser)) {
@@ -383,17 +384,16 @@ class MoriToolbarController : public views::View,
     const bool keyboard_focus = toolbar_->GetWidget()->IsActive() && focused &&
         (address->Contains(focused) || extensions->Contains(focused));
     bool over_address = false;
-    if (pointer_in_widget_) {
+    if (display::Screen::Get()) {
+      over_address = address->GetBoundsInScreen().Contains(
+          display::Screen::Get()->GetCursorScreenPoint());
+    } else if (pointer_in_widget_ && !pointer_exited_) {
       gfx::Point point = *pointer_in_widget_;
       views::View::ConvertPointFromWidget(address, &point);
       over_address = address->GetLocalBounds().Contains(point);
-    } else if (display::Screen::Get()) {
-      // Before the first input event, preserve hover when a window relayouts.
-      over_address = address->GetBoundsInScreen().Contains(
-          display::Screen::Get()->GetCursorScreenPoint());
     }
     const bool hover = toolbar_->GetWidget()->IsActive() && toolbar_->IsDrawn() &&
-                       !pointer_exited_ && over_address;
+                       over_address;
     const bool reveal = !sidebar || hover || keyboard_focus || popup;
     // Reverse from the current value when the pointer crosses the edge again.
     // Native menus keep their anchor fully visible, and reduced motion skips
@@ -407,12 +407,12 @@ class MoriToolbarController : public views::View,
       action_animation_.Hide();
     }
     ApplyAddressActions();
-    // An open native popup may stop delivering events to the browser window.
-    // Check only while it is open, so it hides again immediately on dismissal.
-    if (popup && !popup_timer_.IsRunning()) {
+    // Native popups and window edges can stop delivering pointer events.
+    // Recheck while revealed so stale hover cannot leave controls visible.
+    if (sidebar && reveal && !popup_timer_.IsRunning()) {
       popup_timer_.Start(FROM_HERE, base::Milliseconds(100), this,
                          &MoriToolbarController::UpdateAddressActions);
-    } else if (!popup) {
+    } else if (!sidebar || !reveal) {
       popup_timer_.Stop();
     }
   }
@@ -431,9 +431,23 @@ class MoriToolbarController : public views::View,
       extensions->layer()->SetFillsBoundsOpaquely(false);
     }
     const double progress = action_animation_.GetCurrentValue();
-    extensions->layer()->SetOpacity(static_cast<float>(progress));
-    // Fading controls must not intercept clicks after the pointer leaves.
-    extensions->SetCanProcessEventsWithinSubtree(revealed_);
+    extensions->layer()->SetOpacity(1.0f);
+    extensions->SetCanProcessEventsWithinSubtree(true);
+    bool has_visible_action = false;
+    for (views::View* child : extensions->children()) {
+      // Native action visibility already reflects pinning and popup ownership.
+      // Keep these icons available even when the address field is not hovered.
+      if (views::IsViewClass<ToolbarActionView>(child)) {
+        has_visible_action |= child->GetVisible();
+        continue;
+      }
+      if (!child->layer()) {
+        child->SetPaintToLayer();
+        child->layer()->SetFillsBoundsOpaquely(false);
+      }
+      child->layer()->SetOpacity(static_cast<float>(progress));
+      child->SetCanProcessEventsWithinSubtree(revealed_);
+    }
     const bool sidebar =
         toolbar_->GetProperty(kSidebarToolbarLeadingInsetKey) >= 0;
     const int full_inset = sidebar && extensions->GetVisible()
@@ -441,7 +455,10 @@ class MoriToolbarController : public views::View,
                                      toolbar_->width(),
                                      extensions->GetPreferredSize().width()) + 8
                                : 0;
-    const int inset = static_cast<int>(std::lround(full_inset * progress));
+    // Native layout places actions before the menu; reserve their full span
+    // even while the trailing menu is transparent to prevent URL overlap.
+    const int inset = static_cast<int>(
+        std::lround(full_inset * (has_visible_action ? 1.0 : progress)));
     if (address->GetProperty(kLocationBarTrailingInsetKey) != inset) {
       address->SetProperty(kLocationBarTrailingInsetKey, inset);
       address->InvalidateLayout();

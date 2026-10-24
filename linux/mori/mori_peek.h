@@ -1,4 +1,4 @@
-// Peek (Arc's Peek, Zen's Glance, Mori 3's Peek): Alt+click on a link shows
+// Peek (Arc's Peek, Zen's Glance, Mori's Peek): Alt+click on a link shows
 // it in a large card over the page. The page behind dims, and round buttons
 // beside the card close it, open it as a tab, or open it in a split.
 

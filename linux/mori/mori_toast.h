@@ -1,4 +1,4 @@
-// Mori 3's toasts (Zen's): a short note in a pill at the top right of the
+// Mori's toasts (Zen's): a short note in a pill at the top right of the
 // page, such as "Opened in Work" or "Imported 3 spaces from Zen". It goes
 // away after a few seconds or when clicked.
 

@@ -1,181 +1,67 @@
-# Mori Architecture
+# Mori architecture
 
-Mori exists in two implementations that share one product design:
+## Desktop: Chromium Views
 
-- **Mori 3** - Rust. A GPUI chrome around Chromium embedded through CEF's
-  offscreen rendering. Cross-platform; Linux is the first target.
-- **Mori 2** - macOS. A SwiftUI/AppKit chrome compiled into the Chromium
-  `chrome` target (described in the second half of this document).
-
-## Mori 3: GPUI + CEF
-
-### Layers
+The main desktop implementation compiles Mori's C++ interface into
+ungoogled-chromium's browser. `linux/mori/` is shared by Windows, Linux, and
+macOS despite its directory name.
 
 ```text
-crates/mori         GPUI chrome: window, sidebar, launcher, panels, overlays,
-                    commands, engine hub, web surfaces          (Rust, GPUI)
-crates/mori-core    Product model: workspace (spaces/folders/tabs), stores,
-                    omnibox, launcher ranking, routes, boosts,
-                    theme engine, page scripts                  (pure Rust)
-crates/mori-engine  Chromium engine: CEF init, offscreen browsers, input,
-                    downloads, dialogs, permissions, DevTools  (Rust over C++ CEF)
-Chromium (CEF 154)  renderer, network, storage, media, GPU     (C++)
+linux/mori/               Mori sidebar, commands, folders, settings, themes,
+                          library, imports, PiP integration, and assistant
+linux/patches/            Chromium build hooks and shared browser adaptations
+windows/patches/          Windows-specific compatibility and window integration
+Chromium + ungoogled      tabs/WebContents, renderer, network, extensions,
+                          profiles, permissions, downloads, media, and DevTools
 ```
 
-`mori-core` knows nothing about GPUI or CEF, so every product rule (tab
-placement, Air Traffic Control matching, launcher scoring, URL-vs-search
-heuristics, theme maths) is unit-tested without a window.
+### Ownership and state
 
-### Rendering a page
+Chromium owns browser windows, `TabStripModel`, tab interfaces, WebContents,
+sessions, and browser services. Mori uses those objects through Views and
+browser observers rather than embedding a second web engine.
 
-Every tab is a CEF browser created with windowless (offscreen) rendering:
+- `mori_toolbar_layout`, `mori_sidebar`, and `mori_tab_list` lay out the sidebar,
+  toolbar, and page surfaces. The region's public tab-strip accessor avoids
+  depending on Chromium's internal child-view hierarchy.
+- `mori_command_bar`, `mori_commands`, and `mori_command_ids` route shortcuts,
+  navigation, autocomplete, and named actions.
+- `mori_folders` and the folder session/tree helpers persist folder membership
+  and integrate tab close, unload, restore, and drag-and-drop behavior. An
+  explicit removal is distinct from unloading a persistent tab's page.
+- `mori_settings`, `mori_themes`, and the colour mixer own Mori preferences and
+  interface styling. Native browser services continue to enforce permissions.
+- `mori_picture_in_picture` observes pages and tabs, installs the video controls,
+  and uses Chromium's native video PiP API. Preferences control hover controls,
+  automatic entry, and returning automatic players to their source tab.
+- The assistant uses a local `codex app-server` over stdio. The assistant client
+  and browser tools are in `mori_codex` and `mori_assistant*`.
 
-1. `mori-engine` reports the view size and device scale to Chromium
-   (`RenderHandler::view_rect` / `screen_info`).
-2. Chromium paints BGRA frames into `on_paint`; the engine keeps the latest
-   frame and bumps a generation counter.
-3. `EngineHub` runs on GPUI's foreground executor. It calls CEF's
-   `do_message_loop_work` (CEF is initialised with `external_message_pump`,
-   so all CEF callbacks happen inside that call on the UI thread), then routes
-   each dirty view to its `WebSurface`.
-4. `WebSurface` turns the frame into a GPUI `RenderImage` and paints it with
-   the web card's rounded corners. `<select>` dropdowns arrive as a separate
-   popup paint and are drawn on top.
+### Build boundary
 
-Input flows the other way: `WebSurface` registers window-level mouse
-listeners and translates GPUI mouse, wheel and key events into CEF events.
-Key bindings resolve first, so Mori's shortcuts win; everything else goes to
-the page. Typed text arrives through GPUI's input handler (IME-aware) and is
-sent as `KEYEVENT_CHAR`s or IME composition calls, never twice.
+First-party source stays in this repository. Host scripts link `linux/mori`
+into a separate Chromium checkout and apply the numbered patches. Chromium
+sources, downloaded tools, profiles, and build outputs remain local.
 
-### Events and state
+`windows/chromium.json` pins the shared patch baseline and Windows source/base
+revisions. Windows setup records patch hashes and rejects changed applied
+patches. Its build/package scripts lock the checkout, wait for older Ninja
+processes, and serialize writers through compilation and installer creation.
+Packaging verifies engine version, product names, and the original Mori icon.
 
-CEF handlers (`client.rs`) hold weak references to their view and push
-`ViewEvent`s (address, title, favicon, loading, popups, downloads, dialogs,
-permissions, find results, context menus, fullscreen). `Browser::on_view_events`
-applies them to the workspace and the per-tab `LiveTab` runtime state.
+Windows uses `windows/`; the Linux/macOS wrappers use matching upstream
+platform packaging checkouts. Host verification status is in `BUILDING.md`.
+macOS uses the shared Views interface plus a small Objective-C++ event adapter.
+The retired desktop SwiftUI bridge and store are no longer part of the runtime.
 
-- Popups (`target=_blank`, `window.open`) are allowed to be created by
-  Chromium so `window.opener` keeps working, but they render through a Mori
-  client and arrive as `ViewEvent::NewView`; the chrome turns them into tabs.
-- Script results (`WebView::evaluate`) travel over the DevTools protocol, so
-  page script cannot forge them. Reader mode, Boost zapping, and the assistant
-  tools use this.
-- Context menus are suppressed in Chromium and drawn by Mori from
-  `ContextMenuInfo`.
+## iOS
 
-### Ownership rules
+`ios/MoriBrowser` is a separate SwiftUI application around WKWebView. Its store,
+workspace/session model, and interface are implemented inside the iOS project.
+It does not link the desktop Views implementation.
 
-- Chromium owns pages, networking, storage, permissions enforcement, media,
-  and downloads I/O.
-- `mori-engine` stays a thin, safe Rust surface over CEF. It holds no product
-  rules.
-- `mori-core` owns product rules and persisted state.
-- `crates/mori` owns presentation and wires the other two together.
+## Historical design
 
-### Processes
-
-Chromium re-executes the `mori` binary for renderer, GPU, and utility
-processes; `main` calls `mori_engine::run_subprocess_if_needed()` before
-anything else. A second `mori` launch with the same profile is forwarded to
-the running instance by Chromium's process singleton
-(`on_already_running_app_relaunch`): its URLs open in Little Mori (or the
-current space), and `--new-window` / `--private-window` open windows.
-
-### Windows and profiles
-
-`crates/mori/src/windows.rs` opens and tracks the windows. Each window's
-root `Browser` holds its own copy of the stores; when one notifies, what it
-shares with each other window is compared and copied (normal windows share
-everything, Little Mori shares all but its one-page workspace, private
-windows only preferences). `mori_core::windows::adopt_workspace` keeps each
-window's own selection over the shared tabs, and one window writes the
-stores. A tab's running page lives in one window and moves when another
-window shows it; a window whose page went away (its window closed, or the
-page slept) loads it again. A run that starts with Little Mori or a private
-window restores the saved windows when Mori proper first opens.
-
-Pages run in a `mori_engine::BrowsingContext`: CEF's global context, a
-persistent context per profile (`<profile root>/Profile-<id>`, assigned to
-spaces in `mori_core::profiles`), or an in-memory context shared by the open
-private windows. Little Mori opens its page in the profile of the space
-"Open in …" would take it to.
-
-Privacy choices that Chromium keeps per context follow the same split: a
-normal window's permission decisions, third-party cookie choice, cookie and
-cache clearing go to the default context and every profile's (a profile
-gets the remembered permissions when its context first opens, and the
-cookie choice once Chromium has set it up); a private window's go to its
-own context. The page bridge records a permission answer in the asking
-page's own context. The content blocker is process-wide, so its site
-exceptions are one store every window shares.
-
-## Mori 2: SwiftUI on Chromium (macOS)
-
-Mori 2 is a native macOS browser chrome embedded in the Chromium `chrome` target.
-The boundary is intentionally simple: Chromium owns browser primitives, while
-Mori owns the native chrome and the bridge layer that asks Chromium to act.
-
-### Runtime Layers
-
-```text
-SwiftUI chrome
-  RootView, Sidebar, Toolbar, LauncherOverlay, panels, themes, stores
-
-Objective-C++ bridge
-  mori_chrome_bridge.mm, mori_browser_window.mm, extension and permission glue
-
-Chromium browser stack
-  Browser, WebContents, tabs, navigation, renderers, extensions, downloads
-```
-
-### Ownership Rules
-
-- Swift files under `chrome/browser/ui/mori` own visible Mori UI, local app
-  state, shortcut routing, settings, and feature models.
-- Objective-C++ files under the same directory translate Mori actions into
-  Chromium browser commands and forward Chromium state back into Swift.
-- Chromium continues to own page loading, renderer lifecycle, permissions,
-  downloads, extensions, session primitives, and web text input.
-- The bridge should stay thin. If logic is UI state or product behavior, keep it
-  in Swift. If logic requires Chromium browser objects, keep it in Objective-C++.
-
-### Main Data Flow
-
-1. `mori_browser_window.mm` installs Mori into the Chromium browser window.
-2. `MoriRoot.swift` creates the SwiftUI root view and the shared `BrowserStore`.
-3. SwiftUI views mutate `BrowserStore` in response to user actions.
-4. `mori_chrome_bridge.mm` converts those actions into Chromium operations.
-5. Bridge callbacks update Swift stores so the chrome reflects Chromium state.
-
-### Keyboard Flow
-
-Keyboard handling is shared between AppKit and Chromium web-view pre-handling:
-
-- `ShortcutRegistry.swift` defines the single command routing table.
-- `MoriRoot.swift` exposes Objective-C entry points for shortcut handling.
-- `mori_browser_window.mm` forwards web-focused key events before Chromium
-  consumes them.
-- Accepted shortcuts force a SwiftUI redraw pulse so state changes become
-  visible immediately under Chromium's macOS message pump.
-
-### Feature Boundaries
-
-- Tabs, contexts, folders, sleep, and archive state: `BrowserStore.swift`,
-  `BrowserTab.swift`, `Contexts.swift`, `TabFolder.swift`,
-  `TabMaintenance.swift`, and `ArchiveStore.swift`.
-- Command palette and shortcuts: `LauncherOverlay.swift` and
-  `ShortcutRegistry.swift`.
-- AI panel and page automation: `AIPanel.swift`, `CodexAppServerClient.swift`,
-  and `BrowserAutomation.swift`.
-- Per-site customization: `Boosts.swift`, `BoostStore.swift`, `Reader.swift`,
-  `Peek.swift`, `AirTrafficControl.swift`, and `RouteStore.swift`.
-- Chromium integration: `mori_chrome_bridge.mm`, `mori_browser_window.mm`,
-  `mori_chrome_extensions.mm`, `mori_permission_prompt.mm`, and bridge headers.
-
-### Structural Notes
-
-The Mori source directory is currently flat because Chromium's GN target lists
-Swift sources explicitly in `chrome/browser/ui/BUILD.gn`. Moving files into
-subdirectories is possible, but should be done as a separate build-verified
-change that updates the GN source list at the same time.
+The earlier migration rationale is retained in
+[the archived decision record](archive/DECISIONS-linux-chromium.md). References
+there to the previous desktop SwiftUI bridge describe historical work.

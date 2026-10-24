@@ -21,7 +21,7 @@ enum class CommandBarMode {
 bool ShowCommandBar(BrowserWindowInterface* browser, CommandBarMode mode);
 
 // Whether `browser`'s address field opens the command bar instead of taking
-// focus: Mori's windows, as in Mori 3, where the field is only a display.
+// focus: Mori's windows, as in Mori, where the field is only a display.
 bool OpensCommandBarFromAddressField(BrowserWindowInterface* browser);
 
 }  // namespace mori

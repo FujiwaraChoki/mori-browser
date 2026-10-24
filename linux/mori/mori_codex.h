@@ -1,5 +1,5 @@
 // The local Codex app server (`codex app-server`) that Mori's assistant
-// talks to, as Mori 3 does: JSON-RPC lines over the server's stdin and
+// talks to, as Mori does: JSON-RPC lines over the server's stdin and
 // stdout. Requests (`{id, method, params}`), responses, notifications and
 // the server's own requests (tool calls, approvals).
 //

@@ -1,0 +1,18 @@
+--- a/tools/typescript/validate_tsconfig.py
++++ b/tools/typescript/validate_tsconfig.py
+@@ -312,9 +312,13 @@
+   missing_inputs = []
+   for f in definitions_files:
+     # File path relative to the current working directory.
+-    f_from_cwd = os.path.relpath(f, _CWD).replace('\\', '/')
++    f_from_cwd = os.path.relpath(
++      os.path.realpath(f), os.path.realpath(_CWD)
++    ).replace('\\', '/')
+     is_gen_file = f_from_cwd.startswith(gen_dir_from_build)
+-    f_from_gen = os.path.relpath(f, gen_dir).replace('\\', '/')
++    f_from_gen = os.path.relpath(
++      os.path.realpath(f), os.path.realpath(gen_dir)
++    ).replace('\\', '/')
+     if (
+       not is_gen_file
+       and f_from_gen not in definitions_normalized

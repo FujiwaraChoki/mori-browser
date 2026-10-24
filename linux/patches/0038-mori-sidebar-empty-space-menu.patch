@@ -1,0 +1,66 @@
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
+@@ -30,6 +30,7 @@
+ #include "ui/events/event_handler.h"
+ #include "ui/gfx/geometry/point.h"
+ #include "ui/views/accessible_pane_view.h"
++#include "ui/views/context_menu_controller.h"
+ #include "ui/views/controls/resize_area_delegate.h"
+ #include "ui/views/focus/focus_manager.h"
+ #include "ui/views/layout/delegating_layout_manager.h"
+@@ -55,6 +56,7 @@
+ class VerticalTabStripRegionView final
+     : public BaseTabStripRegionView,
+       public views::ResizeAreaDelegate,
++      public views::ContextMenuController,
+       public OmniboxTabHelper::Observer,
+       public tabs::VerticalTabStripStateController::Delegate,
+       public OrganizerPanelHost,
+@@ -104,6 +106,12 @@
+   void SetIsExitingExpandOnHoverForLayout(bool is_exiting_expand_on_hover);
+   void SetTransitionButtonOpacity(float opacity);
+   bool WillWrapDueToOverflow(int available_width) const;
++
++  // views::ContextMenuController:
++  void ShowContextMenuForViewImpl(
++      views::View* source,
++      const gfx::Point& point,
++      ui::mojom::MenuSourceType source_type) override;
+ 
+   // views::LayoutDelegate:
+   views::ProposedLayout CalculateProposedLayout(
+--- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
++++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
+@@ -54,6 +54,7 @@
+ #include "chrome/browser/ui/views/tabs/shared/drop_arrow.h"
+ #include "chrome/browser/ui/views/tabs/vertical/top_container_button.h"
+ #include "chrome/browser/ui/views/mori/mori_tab_list.h"
++#include "chrome/browser/ui/views/mori/mori_menu.h"
+ #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.h"
+ #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.h"
+ #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h"
+@@ -112,6 +113,7 @@
+                              TabStripOrientation::kVertical),
+       resize_area_width_(kResizeAreaWidth),
+       state_controller_(state_controller) {
++  set_context_menu_controller(this);
+   // For z-ordering purposes this needs to be on a layer.
+   SetPaintToLayer();
+   // Because corners may be transparent, this must be set to false.
+@@ -844,8 +846,16 @@
+   }
+ }
+ 
++void VerticalTabStripRegionView::ShowContextMenuForViewImpl(
++    views::View* source,
++    const gfx::Point& point,
++    ui::mojom::MenuSourceType source_type) {
++  mori::ShowSidebarMenu(browser_view()->browser(), point, source_type, GetWidget());
++}
++
+ void VerticalTabStripRegionView::AddTabStripView(
+     std::unique_ptr<views::View> view) {
++  view->set_context_menu_controller(this);
+   view->SetProperty(
+       views::kFlexBehaviorKey,
+       views::FlexSpecification(views::MinimumFlexSizeRule::kScaleToMinimum,

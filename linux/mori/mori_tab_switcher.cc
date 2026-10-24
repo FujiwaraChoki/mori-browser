@@ -38,7 +38,7 @@
 namespace mori {
 namespace {
 
-// Mori 3's switcher (crates/mori/src/ui/tab_switcher.rs).
+// Mori's switcher.
 constexpr base::TimeDelta kRevealDelay = base::Milliseconds(110);
 constexpr int kCardWidth = 168;
 constexpr int kThumbHeight = 104;
@@ -104,7 +104,7 @@ class Card : public views::View {
                                  dark ? 0x26 : 0x14));
       canvas->DrawRoundRect(gfx::RectF(GetLocalBounds()), 10, flags);
     }
-    // The preview's frame: Mori 3's card colour behind the page.
+    // The preview's frame: Mori's card colour behind the page.
     flags.setColor(dark ? SkColorSetRGB(0x2B, 0x2B, 0x2B)
                         : SkColorSetRGB(0xF2, 0xF2, 0xF2));
     canvas->DrawRoundRect(gfx::RectF(preview_->bounds()), 6, flags);

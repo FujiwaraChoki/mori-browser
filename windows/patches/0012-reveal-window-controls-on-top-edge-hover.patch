@@ -1,0 +1,209 @@
+--- a/chrome/browser/ui/views/frame/browser_frame_view_win.h
++++ b/chrome/browser/ui/views/frame/browser_frame_view_win.h
+@@ -8,6 +8,7 @@
+ #include <array>
+ 
+ #include "base/memory/raw_ptr.h"
++#include "base/timer/timer.h"
+ #include "base/win/scoped_gdi_object.h"
+ #include "chrome/browser/ui/views/frame/browser_frame_view.h"
+ #include "chrome/browser/ui/views/frame/windows_caption_button.h"
+@@ -22,6 +23,10 @@
+ 
+ namespace views {
+ class Label;
++}
++
++namespace mori {
++class Overlay;
+ }
+ 
+ class BrowserFrameViewWin : public BrowserFrameView, public TabIconViewModel {
+@@ -147,6 +152,9 @@
+   void LayoutTitleBar();
+   void LayoutCaptionButtons();
+   void LayoutClientView();
++
++  bool UsesMoriHoverControls() const;
++  void UpdateMoriHoverControls();
+   void LayoutWebAppWindowTitle(const gfx::Rect& available_space,
+                                views::Label& window_title_label) const;
+ 
+@@ -176,6 +184,13 @@
+   // The container holding the caption buttons (minimize, maximize, close, etc.)
+   raw_ptr<BrowserCaptionButtonContainer> caption_button_container_;
+ 
++  // Separate child widget: hidden caption controls must never intercept clicks
++  // on the page or an infobar. The timer also sees non-client edge hovering.
++  std::unique_ptr<mori::Overlay> mori_hover_controls_;
++  gfx::Rect mori_hover_controls_bounds_;
++  base::TimeTicks mori_controls_last_hover_;
++  base::RepeatingTimer mori_controls_timer_;
++
+   // Whether or not the window throbber is currently animating.
+   bool throbber_running_ = false;
+ 
+--- a/chrome/browser/ui/views/frame/browser_frame_view_win.cc
++++ b/chrome/browser/ui/views/frame/browser_frame_view_win.cc
+@@ -12,6 +12,7 @@
+ 
+ #include "base/command_line.h"
+ #include "base/memory/raw_ref.h"
++#include "base/functional/bind.h"
+ #include "base/scoped_observation.h"
+ #include "base/trace_event/common/trace_event_common.h"
+ #include "base/trace_event/trace_event.h"
+@@ -25,6 +26,7 @@
+ #include "chrome/browser/ui/view_ids.h"
+ #include "chrome/browser/ui/views/frame/browser_caption_button_container_win.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/mori/mori_overlay.h"
+ #include "chrome/browser/ui/views/frame/minimize_button_metrics_win.h"
+ #include "chrome/browser/ui/views/frame/safe_invoke/safe_invoke.h"
+ #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+@@ -46,6 +48,7 @@
+ #include "ui/base/ui_base_features.h"
+ #include "ui/base/win/hwnd_metrics.h"
+ #include "ui/color/color_provider_key.h"
++#include "ui/display/screen.h"
+ #include "ui/display/win/dpi.h"
+ #include "ui/display/win/screen_win.h"
+ #include "ui/gfx/canvas.h"
+@@ -56,6 +59,7 @@
+ #include "ui/gfx/scoped_canvas.h"
+ #include "ui/gfx/win/icon_util.h"
+ #include "ui/strings/grit/ui_strings.h"
++#include "ui/views/background.h"
+ #include "ui/views/metadata/view_factory.h"
+ #include "ui/views/widget/widget.h"
+ #include "ui/views/widget/widget_observer.h"
+@@ -127,6 +131,8 @@
+ 
+   caption_button_container_ =
+       AddChildView(std::make_unique<BrowserCaptionButtonContainer>(this));
++  mori_controls_timer_.Start(FROM_HERE, base::Milliseconds(50), this,
++                             &BrowserFrameViewWin::UpdateMoriHoverControls);
+ }
+ 
+ BrowserFrameViewWin::~BrowserFrameViewWin() = default;
+@@ -142,7 +148,7 @@
+   // In some cases, the top of the client area is moved down, but slightly
+   // overlaps the bottom of the caption container. In that case, don't count
+   // the caption buttons in the exclusion area.
+-  if (top < caption.bottom() - 2) {
++  if (!UsesMoriHoverControls() && top < caption.bottom() - 2) {
+     if (CaptionButtonsOnLeadingEdge()) {
+       params.leading_exclusion.content =
+           gfx::SizeF(caption.right(), caption.bottom() - top);
+@@ -305,6 +311,11 @@
+ 
+   const int frame_component =
+       browser_widget()->client_view()->NonClientHitTest(point);
++  if (UsesMoriHoverControls() && !browser_widget()->IsFullscreen() &&
++      point.x() > 16 && point.x() < width() - 16 &&
++      point.y() >= WindowTopY() + 3 && point.y() < WindowTopY() + 8) {
++    return HTCAPTION;
++  }
+ 
+   // In fullscreen there is no draggable or resizable frame, so window
+   // controls overlay hits outside the caption buttons must stay HTCLIENT;
+@@ -338,6 +349,12 @@
+       return window_component;
+     }
+     return frame_component;
++  }
++
++  // Mori's native caption buttons are hidden. Never hit-test their old
++  // bounds (or DWM's invisible buttons) against an infobar or the page.
++  if (UsesMoriHoverControls()) {
++    return window_component == HTNOWHERE ? HTCAPTION : window_component;
+   }
+ 
+   // Then see if the point is within any of the window controls.
+@@ -731,7 +748,7 @@
+   const bool hide_window_buttons =
+       base::CommandLine::ForCurrentProcess()->HasSwitch("hide-window-buttons");
+   caption_button_container_->SetVisible(
+-      !hide_window_buttons &&
++      !hide_window_buttons && !UsesMoriHoverControls() &&
+       (!browser_widget()->IsFullscreen() ||
+        GetBrowserView()->IsWindowControlsOverlayEnabled()));
+ 
+@@ -756,15 +773,70 @@
+       !GetBrowserView()->GetWebAppFrameToolbarPreferredSize().IsEmpty()) {
+     top_inset = browser_widget()->IsFullscreen() ? 0 : WindowTopY();
+   }
+-  // Mori's toolbar lives in the sidebar, so it cannot reserve space for
+-  // Windows caption buttons. Keep a real titlebar above the entire client
+-  // area, including infobars: otherwise an alert's dismiss button can overlap
+-  // the window close button and empty toolbar space cannot drag the window.
+-  if (GetBrowserView()->ShouldDrawVerticalTabStrip() &&
+-      !browser_widget()->IsFullscreen()) {
+-    top_inset = std::max(top_inset, caption_button_container_->bounds().bottom());
++  // Mori keeps the page at the top; window buttons appear in an overlay.
++  if (UsesMoriHoverControls()) {
++    top_inset = browser_widget()->IsFullscreen() ? 0 : WindowTopY();
+   }
+   client_view_bounds_.Inset(gfx::Insets::TLBR(top_inset, 0, 0, 0));
++}
++
++bool BrowserFrameViewWin::UsesMoriHoverControls() const {
++  return !base::CommandLine::ForCurrentProcess()->HasSwitch("hide-window-buttons") &&
++         GetBrowserView()->ShouldDrawVerticalTabStrip() &&
++         !GetBrowserView()->IsWindowControlsOverlayEnabled();
++}
++
++void BrowserFrameViewWin::UpdateMoriHoverControls() {
++  if (!UsesMoriHoverControls() || !browser_widget()->IsVisible() ||
++      !browser_widget()->IsActive() || browser_widget()->IsFullscreen()) {
++    if (mori_hover_controls_) {
++      mori_hover_controls_->Hide();
++    }
++    return;
++  }
++
++  const gfx::Rect window_bounds = browser_widget()->GetWindowBoundsInScreen();
++  const gfx::Point cursor = display::Screen::Get()->GetCursorScreenPoint();
++  gfx::Rect reveal_edge = window_bounds;
++  reveal_edge.set_height(WindowTopY() + 8);
++  const bool over_edge = reveal_edge.Contains(cursor);
++  gfx::Rect controls_screen = mori_hover_controls_bounds_;
++  views::View::ConvertRectToScreen(GetBrowserView(), &controls_screen);
++  controls_screen.Outset(3);
++  const bool over_controls = mori_hover_controls_ &&
++      mori_hover_controls_->IsVisible() && controls_screen.Contains(cursor);
++  if (over_edge || over_controls) {
++    mori_controls_last_hover_ = base::TimeTicks::Now();
++  } else if (base::TimeTicks::Now() - mori_controls_last_hover_ >
++             base::Milliseconds(180)) {
++    if (mori_hover_controls_) {
++      mori_hover_controls_->Hide();
++    }
++    return;
++  } else if (!mori_hover_controls_ || !mori_hover_controls_->IsVisible()) {
++    return;
++  }
++
++  if (!mori_hover_controls_) {
++    mori_hover_controls_ = std::make_unique<mori::Overlay>(
++        GetBrowserView(), std::make_unique<BrowserCaptionButtonContainer>(this),
++        "MoriHoverWindowControls");
++  }
++  auto* controls = static_cast<BrowserCaptionButtonContainer*>(
++      mori_hover_controls_->contents());
++  if (!controls) {
++    return;
++  }
++  controls->UpdateButtons();
++  controls->SetBackground(views::CreateRoundedRectBackground(GetTitlebarColor(), 6));
++  const int controls_width = controls->GetPreferredSize().width();
++  gfx::Rect bounds(width() - controls_width - 4, WindowTopY() + 2,
++                   controls_width, 32);
++  bounds = views::View::ConvertRectToTarget(this, GetBrowserView(), bounds);
++  if (!mori_hover_controls_->IsVisible() || bounds != mori_hover_controls_bounds_) {
++    mori_hover_controls_->Show(bounds);
++    mori_hover_controls_bounds_ = bounds;
++  }
+ }
+ 
+ void BrowserFrameViewWin::StartThrobber() {

@@ -1,5 +1,5 @@
-// The palette matches Mori 3's (mori-core/src/theme.rs), which was sampled
-// from Zen Browser: neutral greys, a #131313 window in dark mode and #E9E9E9
+// Mori's palette was sampled from Zen Browser: neutral greys,
+// a #131313 window in dark mode and #E9E9E9
 // in light mode.
 
 #include "chrome/browser/ui/views/mori/mori_color_mixer.h"
@@ -14,7 +14,7 @@
 namespace mori {
 namespace {
 
-// The sidebar's surfaces are translucent, as in Mori 3, so the theme's
+// The sidebar's surfaces are translucent, as in Mori, so the theme's
 // gradient wash shows through them; over the plain window they come out as
 // the greys Zen uses.
 struct Palette {
@@ -39,7 +39,7 @@ struct Palette {
 
 constexpr Palette kDark = {
     .window = SkColorSetRGB(0x13, 0x13, 0x13),
-    // Mori 3: white at 17% (selected), 7% (hover), 12% (pill and tiles).
+    // Mori: white at 17% (selected), 7% (hover), 12% (pill and tiles).
     .selected = SkColorSetA(SK_ColorWHITE, 0x2B),
     .hover = SkColorSetA(SK_ColorWHITE, 0x12),
     .tile = SkColorSetA(SK_ColorWHITE, 0x1F),
@@ -60,7 +60,7 @@ constexpr Palette kDark = {
 
 constexpr Palette kLight = {
     .window = SkColorSetRGB(0xE9, 0xE9, 0xE9),
-    // Mori 3: white at 72% (selected), black at 5% (hover), 7% (pill and
+    // Mori: white at 72% (selected), black at 5% (hover), 7% (pill and
     // tiles).
     .selected = SkColorSetA(SK_ColorWHITE, 0xB8),
     .hover = SkColorSetA(SK_ColorBLACK, 0x0D),
@@ -149,7 +149,7 @@ void AddMoriColorMixer(ui::ColorProvider* provider,
   mixer[kColorNewTabPageBackground] = {p.card};
 
   // Chromium's bubbles and dialogs (permission prompts, "Restore pages?")
-  // on Mori's menu surface, with Mori 3's blue for the main button, links
+  // on Mori's menu surface, with Mori's blue for the main button, links
   // and focus.
   const SkColor primary = SkColorSetRGB(0x29, 0x8E, 0xCD);
   mixer[ui::kColorAccent] = {primary};
@@ -164,6 +164,14 @@ void AddMoriColorMixer(ui::ColorProvider* provider,
   mixer[ui::kColorButtonBorder] = {p.menu_border};
   mixer[ui::kColorFocusableBorderFocused] = {primary};
   mixer[ui::kColorLinkForeground] = {primary};
+
+  // Infobars ("Klein started debugging this browser") are part of the
+  // window above the page card, not a white band across it.
+  mixer[kColorInfoBarBackground] = {SK_ColorTRANSPARENT};
+  mixer[kColorInfoBarForeground] = {p.foreground};
+  mixer[kColorInfoBarButtonIcon] = {p.menu_icon};
+  mixer[kColorInfoBarButtonIconHovered] = {p.foreground};
+  mixer[kColorInfoBarButtonIconDisabled] = {p.toolbar_icon_disabled};
 
   // Address field and suggestions.
   // The site icon sits in the pill without Chromium's round chip.

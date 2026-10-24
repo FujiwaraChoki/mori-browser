@@ -1,4 +1,4 @@
-// Mori 3's new tab page (root.rs render_new_tab_page): the faint Mori logo
+// Mori's new tab page (root.rs render_new_tab_page): the faint Mori logo
 // and a "Search or enter address" field that opens the command bar, drawn
 // over Chromium's new tab page.
 

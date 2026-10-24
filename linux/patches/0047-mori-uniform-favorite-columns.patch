@@ -1,0 +1,73 @@
+--- a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
++++ b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
+@@ -415,8 +415,6 @@
+   }
+   int child_width = GetLayoutConstant(LayoutConstant::kVerticalTabMinWidth) *
+                     (contains_split ? 2 : 1);
+-  std::vector<int> mori_row_counts;
+-  int mori_row_width = 0;
+ 
+   // If the width is bounded, calculate how many children can fit on a row.
+   // Since all children are allocated the same width this will be the same for
+@@ -443,18 +441,11 @@
+                                               (child_width + kTabPadding)) +
+                                    1));
+ 
+-    // Mori: Arc's and Mori 3's favorites: rows of up to four tiles,
+-    // balanced so no row has a hole (five make three and two), each row
+-    // filling the sidebar's width.
++    // Mori: use one grid of up to four equal-width columns. The final
++    // row leaves unused slots empty instead of stretching its tiles.
+     if (!contains_split && collapse_state ==
+                                tabs::VerticalTabStripCollapseState::kExpanded) {
+-      const int count = static_cast<int>(children.size());
+-      const int columns = std::max(1, std::min({4, children_on_row, count}));
+-      const int rows = (count + columns - 1) / columns;
+-      for (int i = 0; i < rows; ++i) {
+-        mori_row_counts.push_back(count / rows + (i < count % rows ? 1 : 0));
+-      }
+-      mori_row_width = available_width;
++      children_on_row = std::max(1, std::min(4, children_on_row));
+     }
+ 
+     // Allocate extra space to the tabs.
+@@ -462,20 +453,12 @@
+         (children_on_row * child_width) + (kTabPadding * (children_on_row - 1));
+     child_width += std::floor(available_width / children_on_row);
+   }
+-  size_t mori_row = 0;
+-  // The width of each tile in the row being laid out.
+-  auto mori_tile_width = [&]() {
+-    const int in_row = mori_row_counts[std::min(mori_row,
+-                                                mori_row_counts.size() - 1)];
+-    return (mori_row_width - kTabPadding * (in_row - 1)) / in_row;
+-  };
+ 
+   int row_index = 0;
+   for (auto* child : children) {
+     gfx::Rect bounds =
+         gfx::Rect(child->GetPreferredSize(views::SizeBounds(child_width, {})));
+-    bounds.set_width(mori_row_counts.empty() ? child_width
+-                                             : mori_tile_width());
++    bounds.set_width(child_width);
+ 
+     auto drag_data = GetVisualDataForDraggedView(*child);
+     const bool should_show_child = !(drag_data && drag_data->should_hide);
+@@ -500,16 +483,10 @@
+       total_height = std::max(total_height, (y + bounds.height()));
+ 
+       row_index++;
+-      const int row_size =
+-          mori_row_counts.empty()
+-              ? children_on_row
+-              : mori_row_counts[std::min(mori_row,
+-                                         mori_row_counts.size() - 1)];
+-      if (row_index >= row_size) {
++      if (row_index >= children_on_row) {
+         y = total_height + kTabPadding;
+         row_index = 0;
+         x = 0;
+-        ++mori_row;
+       }
+     }
+ 

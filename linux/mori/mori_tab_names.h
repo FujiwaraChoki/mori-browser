@@ -1,4 +1,4 @@
-// Tab names (Arc's and Mori 3's Rename Tab): a name of the user's that
+// Tab names (Arc's and Mori's Rename Tab): a name of the user's that
 // replaces the page title in the sidebar, kept across restarts.
 
 #ifndef CHROME_BROWSER_UI_VIEWS_MORI_MORI_TAB_NAMES_H_

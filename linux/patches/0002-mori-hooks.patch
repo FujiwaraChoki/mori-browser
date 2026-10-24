@@ -1,6 +1,6 @@
 --- a/chrome/browser/ui/browser_command_controller.cc
 +++ b/chrome/browser/ui/browser_command_controller.cc
-@@ -57,6 +57,12 @@
+@@ -59,6 +59,12 @@
  #include "chrome/browser/ui/actions/command_action_updater.h"
  #include "chrome/browser/ui/browser_actions.h"
  #include "chrome/browser/ui/browser_commands.h"
@@ -13,7 +13,7 @@
  #include "chrome/browser/ui/browser_element_identifiers.h"
  #include "chrome/browser/ui/browser_select_file_dialog_controller.h"
  #include "chrome/browser/ui/browser_window.h"
-@@ -531,6 +537,15 @@
+@@ -528,6 +534,15 @@
    }
  #endif
  
@@ -51,7 +51,7 @@
        NewTab(browser_, NewTabTypes::kNewTabCommand);
        break;
      }
-@@ -934,7 +955,8 @@
+@@ -933,7 +954,8 @@
        SavePage(browser_);
        break;
      case IDC_BOOKMARK_THIS_TAB:
@@ -61,7 +61,7 @@
        break;
      case IDC_BOOKMARK_ALL_TABS:
        BookmarkAllTabs(browser_);
-@@ -1104,6 +1126,10 @@
+@@ -1105,6 +1127,10 @@
          break;
        }
        base::RecordAction(base::UserMetricsAction("Accel_Focus_Location"));
@@ -72,7 +72,7 @@
        FocusLocationBar(browser_);
        break;
      case IDC_FOCUS_SEARCH:
-@@ -1255,6 +1281,11 @@
+@@ -1267,6 +1293,11 @@
        ShowAvatarMenu(browser_);
        break;
      case IDC_SHOW_HISTORY:
@@ -84,7 +84,7 @@
        ShowHistory(webui::GetBrowserForOpeningWebUi(browser_));
        break;
      case IDC_SHOW_HISTORY_CLUSTERS_SIDE_PANEL:
-@@ -1288,6 +1319,10 @@
+@@ -1300,6 +1331,10 @@
                            chrome::kPerformanceSubPage);
        break;
      case IDC_OPTIONS:
@@ -95,7 +95,7 @@
        ShowSettings(webui::GetBrowserForOpeningWebUi(browser_));
        break;
      case IDC_EDIT_SEARCH_ENGINES:
-@@ -1595,6 +1630,11 @@
+@@ -1607,6 +1642,11 @@
        break;
      }
      default:
@@ -107,29 +107,29 @@
        LOG(WARNING) << "Received Unimplemented Command: " << id;
        break;
    }
-@@ -1716,6 +1756,11 @@
-     return;
-   }
+@@ -1726,6 +1766,11 @@
  
+   if (IsInLockedFullscreenMode(/*allow_ontask=*/false)) {
+     return;
++  }
++
 +  // Mori: its own commands.
 +  for (int id = mori::kCommandFirst; id <= mori::kCommandLast; ++id) {
 +    command_updater_->UpdateCommandEnabled(id, true);
-+  }
-+
+   }
+ 
    // Navigation commands
-   const bool can_reload = CanReload(browser_);
-   command_updater_->UpdateCommandEnabled(IDC_RELOAD, can_reload);
 --- a/chrome/browser/ui/accelerator_table.cc
 +++ b/chrome/browser/ui/accelerator_table.cc
-@@ -4,6 +4,8 @@
+@@ -3,6 +3,8 @@
+ // found in the LICENSE file.
  
  #include "chrome/browser/ui/accelerator_table.h"
- 
-+#include "chrome/browser/ui/views/mori/mori_command_ids.h"
 +
++#include "chrome/browser/ui/views/mori/mori_command_ids.h"
+ 
  #include <stddef.h>
  
- #include <algorithm>
 @@ -358,6 +360,9 @@
                           std::begin(kTabGroupAcceleratorMap),
                           std::end(kTabGroupAcceleratorMap));
@@ -142,18 +142,18 @@
    return *accelerators;
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -2545,6 +2545,7 @@
+@@ -3341,6 +3341,7 @@
+   }
  
    if (is_mac) {
-     sources += [
-+      "views/mori/mori_window_events_mac.mm",
-       "views/frame/browser_frame_view_factory_mac.mm",
-       "views/frame/browser_frame_view_mac.h",
-       "views/frame/browser_frame_view_mac.mm",
-@@ -2721,6 +2722,66 @@
-       "views/frame/browser_root_view.cc",
++    sources += [ "views/mori/mori_window_events_mac.mm" ]
+     deps += [
+       ":browser_commands_mac",
+       ":browser_commands_mac_impl",
+@@ -3531,6 +3532,66 @@
+       "views/frame/base_tab_strip_region_view.cc",
+       "views/frame/base_tab_strip_region_view.h",
        "views/frame/browser_view.cc",
-       "views/frame/browser_view.h",
 +      "views/mori/mori_command_bar.cc",
 +      "views/mori/mori_command_bar.h",
 +      "views/mori/mori_command_ids.cc",
@@ -214,9 +214,9 @@
 +      "views/mori/mori_web_store.h",
 +      "views/mori/mori_window_events.cc",
 +      "views/mori/mori_window_events.h",
-       "views/frame/browser_widget.cc",
-       "views/frame/browser_widget.h",
-       "views/frame/browser_window_factory.cc",
+       "views/frame/horizontal_tab_strip_region_view.cc",
+       "views/frame/horizontal_tab_strip_region_view.h",
+       "views/frame/vertical_tab_strip_region_view.cc",
 --- a/chrome/browser/ui/color/BUILD.gn
 +++ b/chrome/browser/ui/color/BUILD.gn
 @@ -22,6 +22,8 @@

@@ -1,4 +1,5 @@
 #include "chrome/browser/ui/views/mori/mori_boosts.h"
+#include "chrome/browser/ui/views/mori/mori_typography.h"
 
 #include <algorithm>
 #include <map>
@@ -407,19 +408,8 @@ WEB_CONTENTS_USER_DATA_KEY_IMPL(BoostTabHelper);
 constexpr int kEditorWidth = 560;
 constexpr auto kShadowInsets = gfx::Insets::TLBR(24, 40, 56, 40);
 
-gfx::FontList Font(int size, gfx::Font::Weight weight) {
-  const gfx::FontList base;
-  return base.DeriveWithSizeDelta(size - base.GetFontSize())
-      .DeriveWithWeight(weight);
-}
-
-gfx::FontList Monospace(int size) {
-  return gfx::FontList({"monospace"}, gfx::Font::NORMAL, size,
-                       gfx::Font::Weight::NORMAL);
-}
-
 // The editor: the site's CSS and JavaScript, its zapped elements, and Zap,
-// Remove and Save, in Mori 3's popover.
+// Remove and Save, in Mori's popover.
 class BoostEditorView : public views::View, public views::TextfieldController {
   METADATA_HEADER(BoostEditorView, views::View)
 
@@ -437,7 +427,7 @@ class BoostEditorView : public views::View, public views::TextfieldController {
         views::BoxLayout::Orientation::kVertical,
         kShadowInsets + gfx::Insets::VH(16, 20), 8));
     title_ = AddChildView(std::make_unique<views::Label>());
-    title_->SetFontList(Font(15, gfx::Font::Weight::SEMIBOLD));
+    title_->SetFontList(UiFont(gfx::Font::Weight::SEMIBOLD));
     title_->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     css_label_ = AddHeading(u"CSS");
     css_ = AddEditor(u"CSS for this site");
@@ -532,7 +522,7 @@ class BoostEditorView : public views::View, public views::TextfieldController {
 
   views::Label* AddHeading(const std::u16string& text) {
     auto* label = AddChildView(std::make_unique<views::Label>(text));
-    label->SetFontList(Font(12, gfx::Font::Weight::BOLD));
+    label->SetFontList(UiFont(gfx::Font::Weight::BOLD));
     label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     label->SetProperty(views::kMarginsKey, gfx::Insets::TLBR(6, 0, 0, 0));
     return label;
@@ -540,7 +530,7 @@ class BoostEditorView : public views::View, public views::TextfieldController {
 
   views::Textarea* AddEditor(const std::u16string& name) {
     auto* editor = AddChildView(std::make_unique<views::Textarea>());
-    editor->SetFontList(Monospace(12));
+    editor->SetFontList(UiMonospaceFont());
     editor->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(6, 8)));
     editor->SetPreferredSize(gfx::Size(0, 104));
     editor->set_controller(this);
@@ -559,7 +549,7 @@ class BoostEditorView : public views::View, public views::TextfieldController {
       auto* hint = zapped_->AddChildView(std::make_unique<views::Label>(
           u"Zap Elements, then click parts of the page to hide them."));
       hint->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-      hint->SetFontList(Font(12, gfx::Font::Weight::NORMAL));
+      hint->SetFontList(UiFont(gfx::Font::Weight::NORMAL));
       hint->SetEnabledColor(muted);
     }
     for (size_t i = 0; i < zapped_list_.size(); ++i) {
@@ -567,7 +557,7 @@ class BoostEditorView : public views::View, public views::TextfieldController {
       row->SetCrossAxisAlignment(views::BoxLayout::CrossAxisAlignment::kCenter);
       auto* label = row->AddChildView(std::make_unique<views::Label>(
           base::UTF8ToUTF16(zapped_list_[i])));
-      label->SetFontList(Monospace(12));
+      label->SetFontList(UiMonospaceFont());
       label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
       label->SetElideBehavior(gfx::ELIDE_MIDDLE);
       label->SetEnabledColor(fg);

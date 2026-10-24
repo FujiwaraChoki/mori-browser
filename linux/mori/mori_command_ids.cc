@@ -19,6 +19,7 @@
 #include "chrome/browser/ui/views/mori/mori_boosts.h"
 #include "chrome/browser/ui/views/mori/mori_cheatsheet.h"
 #include "chrome/browser/ui/views/mori/mori_peek.h"
+#include "chrome/browser/ui/views/mori/mori_picture_in_picture.h"
 #include "chrome/browser/ui/views/mori/mori_folders.h"
 #include "chrome/browser/ui/views/mori/mori_settings.h"
 #include "chrome/browser/ui/views/mori/mori_tab_list.h"
@@ -60,7 +61,7 @@ void TogglePin(BrowserWindowInterface* browser) {
   }
 }
 
-// Ctrl+Shift+O: the web address on the clipboard, in Peek (Mori 3).
+// Ctrl+Shift+O: the web address on the clipboard, in Peek (Mori).
 void PeekClipboard(BrowserWindowInterface* browser) {
   ui::Clipboard::GetForCurrentThread()->ReadText(
       ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/std::nullopt,
@@ -80,9 +81,9 @@ constexpr int kCtrl = ui::EF_CONTROL_DOWN;
 constexpr int kShift = ui::EF_SHIFT_DOWN;
 constexpr int kAlt = ui::EF_ALT_DOWN;
 
-// Mori 3's keymap (crates/mori/src/actions.rs) where Chromium differs.
+// Mori's keymap where Chromium differs.
 constexpr AcceleratorMapping kMoriAccelerators[] = {
-    // Arc: hide the sidebar; Zen/Mori 3 compact mode does the same here.
+    // Arc: hide the sidebar; Zen/Mori compact mode does the same here.
     {ui::VKEY_S, kCtrl, IDC_TOGGLE_VERTICAL_TABS},
 #if !BUILDFLAG(IS_WIN)
     // Alt+1-9 picks a tab, as Ctrl+1-9 does (Chromium's Linux keys).
@@ -113,6 +114,7 @@ constexpr AcceleratorMapping kMoriAccelerators[] = {
     {ui::VKEY_TAB, kCtrl, kCommandSwitchRecentTab},
     {ui::VKEY_TAB, kCtrl | kShift, kCommandSwitchRecentTabBack},
     {ui::VKEY_OEM_2, kCtrl, kCommandShowShortcuts},
+    {ui::VKEY_OEM_6, kCtrl | kShift, kCommandPictureInPicture},
     {ui::VKEY_O, kCtrl | kShift, kCommandPeekClipboard},
     // Arc's Capture: drag over the page to capture an area.
     {ui::VKEY_X, kCtrl | kShift, IDC_SHARING_HUB_SCREENSHOT},
@@ -132,7 +134,7 @@ bool IsMoriCommand(int command_id) {
   return command_id >= kCommandFirst && command_id <= kCommandLast;
 }
 
-bool HandlePinnedTabClose(BrowserWindowInterface* browser) {
+bool HandlePersistentTabClose(BrowserWindowInterface* browser) {
   if (browser->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
     return false;
   }
@@ -142,10 +144,13 @@ bool HandlePinnedTabClose(BrowserWindowInterface* browser) {
     return false;
   }
 
-  if (model->IsTabPinned(index)) {
-    const tabs::TabHandle pin = model->GetTabAtIndex(index)->GetHandle();
+  const auto persistent = [](const tabs::TabInterface* tab) {
+    return tab->IsPinned() || GetTabFolder(tab).has_value();
+  };
+  if (persistent(model->GetActiveTab())) {
+    const tabs::TabHandle entry = model->GetTabAtIndex(index)->GetHandle();
     // Select first: Chromium cannot discard the foreground tab. Use a real
-    // blank tab for the last pin, rather than Mori's new-tab launcher overlay.
+    // blank tab for the last entry rather than the new-tab launcher overlay.
     if (model->count() == 1) {
       chrome::NewTab(browser, NewTabTypes::kNewTabCommand);
     } else {
@@ -153,7 +158,7 @@ bool HandlePinnedTabClose(BrowserWindowInterface* browser) {
                           TabStripUserGestureDetails(
                               TabStripUserGestureDetails::GestureType::kKeyboard));
     }
-    if (tabs::TabInterface* tab = pin.Get()) {
+    if (tabs::TabInterface* tab = entry.Get()) {
       if (auto* lifecycle =
               resource_coordinator::TabLifecycleUnitExternal::FromWebContents(
                   tab->GetContents())) {
@@ -163,24 +168,35 @@ bool HandlePinnedTabClose(BrowserWindowInterface* browser) {
     return true;
   }
 
-  // A mixed multi-selection must not let Chromium's CloseSelectedTabs remove
-  // pins alongside ordinary tabs. Snapshot handles before any close mutates it.
-  bool has_pin = false;
-  std::vector<tabs::TabHandle> unpinned;
+  // A mixed selection must retain favorites and folder entries too. Snapshot
+  // handles before discarding or closing can replace contents or mutate indices.
+  bool has_persistent = false;
+  std::vector<tabs::TabHandle> ordinary;
+  std::vector<tabs::TabHandle> sleeping;
   for (const tabs::TabInterface* tab : model->selection_model().selected_tabs()) {
-    if (tab->IsPinned()) {
-      has_pin = true;
+    if (persistent(tab)) {
+      has_persistent = true;
+      sleeping.push_back(tab->GetHandle());
     } else {
-      unpinned.push_back(tab->GetHandle());
+      ordinary.push_back(tab->GetHandle());
     }
   }
-  if (!has_pin) {
+  if (!has_persistent) {
     return false;
   }
-  for (const tabs::TabHandle& handle : unpinned) {
+  for (const tabs::TabHandle& handle : sleeping) {
+    if (tabs::TabInterface* tab = handle.Get()) {
+      if (auto* lifecycle =
+              resource_coordinator::TabLifecycleUnitExternal::FromWebContents(
+                  tab->GetContents())) {
+        lifecycle->DiscardTab(mojom::LifecycleUnitDiscardReason::EXTERNAL);
+      }
+    }
+  }
+  for (const tabs::TabHandle& handle : ordinary) {
     if (tabs::TabInterface* tab = handle.Get()) {
       const int tab_index = model->GetIndexOfTab(tab);
-      if (tab_index != TabStripModel::kNoTab && !model->IsTabPinned(tab_index)) {
+      if (tab_index != TabStripModel::kNoTab && !persistent(tab)) {
         model->CloseWebContentsAt(tab_index,
                                  TabCloseTypes::CLOSE_USER_GESTURE |
                                      TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
@@ -192,6 +208,9 @@ bool HandlePinnedTabClose(BrowserWindowInterface* browser) {
 
 void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id) {
   switch (command_id) {
+    case kCommandPictureInPicture:
+      TogglePictureInPicture(browser);
+      break;
     case kCommandNewFolder:
       NewFolder(browser);
       break;
@@ -223,7 +242,7 @@ void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id) {
       ToggleAssistant(browser);
       break;
     case kCommandEditTheme:
-      // Mori 3's "Edit Theme…": the theme is in Settings.
+      // Mori's "Edit Theme…": the theme is in Settings.
       ShowThemeSettings(browser);
       break;
   }

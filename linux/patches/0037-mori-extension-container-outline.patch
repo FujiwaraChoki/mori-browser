@@ -1,0 +1,6 @@
+diff --git a/chrome/browser/ui/views/extensions/extensions_toolbar_desktop.cc b/chrome/browser/ui/views/extensions/extensions_toolbar_desktop.cc
+--- a/chrome/browser/ui/views/extensions/extensions_toolbar_desktop.cc
++++ b/chrome/browser/ui/views/extensions/extensions_toolbar_desktop.cc
+@@ -151,1 +151,1 @@
+-    : ToolbarIconContainerView(/*uses_highlight=*/true),
++    : ToolbarIconContainerView(/*uses_highlight=*/false),

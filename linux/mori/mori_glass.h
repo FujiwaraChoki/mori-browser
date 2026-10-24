@@ -1,4 +1,4 @@
-// Apple's Liquid Glass for Mori's sidebar, as in Mori 3 (theme.rs): a clear
+// Apple's Liquid Glass for Mori's sidebar, as in Mori (theme.rs): a clear
 // fill, a bright rim where the glass bends light at its edge, and a line of
 // light along its top. Three materials:
 //

@@ -1,0 +1,38 @@
+--- a/chrome/browser/ui/views/frame/browser_frame_view_win.cc
++++ b/chrome/browser/ui/views/frame/browser_frame_view_win.cc
+@@ -751,6 +751,14 @@
+       !GetBrowserView()->GetWebAppFrameToolbarPreferredSize().IsEmpty()) {
+     top_inset = browser_widget()->IsFullscreen() ? 0 : WindowTopY();
+   }
++  // Mori's toolbar lives in the sidebar, so it cannot reserve space for
++  // Windows caption buttons. Keep a real titlebar above the entire client
++  // area, including infobars: otherwise an alert's dismiss button can overlap
++  // the window close button and empty toolbar space cannot drag the window.
++  if (GetBrowserView()->ShouldDrawVerticalTabStrip() &&
++      !browser_widget()->IsFullscreen()) {
++    top_inset = std::max(top_inset, caption_button_container_->bounds().bottom());
++  }
+   client_view_bounds_.Inset(gfx::Insets::TLBR(top_inset, 0, 0, 0));
+ }
+ 
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -1685,7 +1685,9 @@
+     // Ensure that corners of the window remain rounded.
+     CustomCornersBackground::Corners vertical_tabs_corners;
+     if (layout_data_->window_state == WindowState::kNormal) {
+-      if (animation.top_offset == 0) {
++      // Mori's tab list starts below its sidebar toolbar, not at the window
++      // corner. A window-shaped cutout here exposes a black crescent on Windows.
++      if (animation.top_offset == 0 && !layout_data_->mori_sidebar_toolbar) {
+         vertical_tabs_corners[CornerOrientation::kTopLeading] =
+             vertical_tabs_background->GetWindowCorner(/*upper=*/true);
+       }
+@@ -1869,6 +1871,7 @@
+       // Curve trailing corner when it becomes the top trailing corner of the
+       // browser.
+       if (layout_data_->window_state == WindowState::kNormal &&
++          !layout_data_->mori_sidebar_toolbar &&
+           IsParentedTo(views().top_container, views().browser_view) &&
+           params.trailing_exclusion.IsEmpty()) {
+         toolbar_corners[CornerOrientation::kTopTrailing] =

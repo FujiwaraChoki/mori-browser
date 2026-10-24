@@ -109,8 +109,8 @@
    }
  
    NOTREACHED() << "Unknown tab child view";
---- a/chrome/browser/ui/tabs/vertical_tab_strip_state_controller.cc
-+++ b/chrome/browser/ui/tabs/vertical_tab_strip_state_controller.cc
+--- a/chrome/browser/ui/tabs/vertical_tab_strip_state_controller_impl.cc
++++ b/chrome/browser/ui/tabs/vertical_tab_strip_state_controller_impl.cc
 @@ -79,10 +79,16 @@
              base::Unretained(this)));
    }

@@ -2,7 +2,7 @@
 # Usage: run.sh NAME [chrome args/URLs] — start the Chromium build in sway
 # instance NAME with a throwaway profile ($HL/profile) and the test extension.
 # FIXTURE=1 also loads fixture-ext, which pins and groups tabs on first run;
-# NOEXT=1 loads no extension (to compare against Mori 3).
+# NOEXT=1 loads no extension (for testing without the fixture UI).
 H=$(cd "$(dirname "$0")" && pwd); R=${MORI_HARNESS_RUN:-$(cd "$H/../.." && pwd)/ungoogled-chromium-linux/harness-run}
 source $R/$1/env.sh; shift
 OUT=${MORI_OUT:-$(cd "$H/../.." && pwd)/ungoogled-chromium-linux/build/src/out/Default}

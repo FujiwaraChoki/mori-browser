@@ -91,7 +91,7 @@ class RenameField : public views::Textfield,
     views::Textfield::OnThemeChanged();
     const bool dark = color_utils::IsDark(
         GetColorProvider()->GetColor(ui::kColorFrameActive));
-    // Mori 3's field colour.
+    // Mori's field colour.
     SetBackground(views::CreateRoundedRectBackground(
         dark ? SkColorSetRGB(0x2F, 0x2F, 0x2F)
              : SkColorSetRGB(0xFF, 0xFF, 0xFF),
@@ -101,7 +101,7 @@ class RenameField : public views::Textfield,
 
   void OnBlur() override {
     views::Textfield::OnBlur();
-    // A click elsewhere keeps the name, as Mori 3. Leaving the window
+    // A click elsewhere keeps the name, as Mori. Leaving the window
     // (nothing focused) doesn't.
     base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(&RenameField::FinishIfFocusMoved,

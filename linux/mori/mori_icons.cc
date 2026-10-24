@@ -73,7 +73,7 @@ constexpr Replacement kReplacements[] = {
     {"kPageInfoCustomIcon", "lock"},
     {"kStarChromeRefreshOldIcon", "star"},
     {"kStarIcon", "star"},
-    // Mori 3: a bookmarked page's star is a yellow outline.
+    // Mori: a bookmarked page's star is a yellow outline.
     {"kStarActiveChromeRefreshOldIcon", "star", false, SkColorSetRGB(0xFF, 0xB9, 0x00)},
     {"kStarFilledIcon", "star", false, SkColorSetRGB(0xFF, 0xB9, 0x00)},
     // Tabs and sidebar.

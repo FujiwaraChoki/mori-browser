@@ -1,0 +1,14 @@
+--- a/chrome/browser/importer/importer_list.cc
++++ b/chrome/browser/importer/importer_list.cc
+@@ -206,8 +206,9 @@
+       const std::string* relative =
+           parser.root().FindStringByDottedPath(key + ".IsRelative");
+       const base::FilePath profile_path =
+-          relative && *relative == "0" ? base::FilePath(*path)
+-                                       : dir.Append(*path);
++          relative && *relative == "0"
++              ? base::FilePath::FromUTF8Unsafe(*path)
++              : dir.Append(base::FilePath::FromUTF8Unsafe(*path));
+       if (!base::PathExists(profile_path.AppendASCII("places.sqlite"))) {
+         continue;
+       }

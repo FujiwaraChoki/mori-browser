@@ -1,4 +1,4 @@
-// Boosts (Arc's Boosts, Mori 3's Boost this site): a site's own CSS, its own
+// Boosts (Arc's Boosts, Mori's Boost this site): a site's own CSS, its own
 // JavaScript and elements the user zapped away, applied whenever a page of
 // that site (or its subdomains) loads. Kept in the profile's
 // "Mori Boosts.json".

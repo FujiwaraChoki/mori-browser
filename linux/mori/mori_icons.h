@@ -1,4 +1,4 @@
-// Mori draws Lucide icons, as Mori 3 does, in place of Chromium's own: back,
+// Mori draws Lucide icons, as Mori does, in place of Chromium's own: back,
 // forward, reload, the menu, the address field, tabs, the command bar.
 
 #ifndef CHROME_BROWSER_UI_VIEWS_MORI_MORI_ICONS_H_

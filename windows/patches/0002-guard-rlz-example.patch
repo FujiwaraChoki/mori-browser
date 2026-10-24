@@ -1,0 +1,5 @@
+--- a/rlz/BUILD.gn
++++ b/rlz/BUILD.gn
+@@ -208,1 +208,1 @@
+-if (!is_ios && !is_android) {
++if (enable_rlz_support && !is_ios && !is_android) {

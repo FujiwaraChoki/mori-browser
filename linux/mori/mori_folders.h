@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
+#include "components/tabs/public/tab_interface.h"
 
 class BrowserWindowInterface;
 class TabCollectionNode;
@@ -107,6 +108,12 @@ void AddTabToFolder(BrowserWindowInterface* browser,
 // Takes `tab` out of its folder, to just below it.
 void RemoveTabFromFolder(BrowserWindowInterface* browser,
                          tabs::TabInterface* tab);
+
+// Resolve the release position before native drag cleanup, then commit once
+// Chromium has released its dragged views. Canceled drags never call this.
+void QueueSidebarTabDrop(BrowserWindowInterface* browser,
+                         std::vector<tabs::TabHandle> tabs,
+                         const gfx::Point& screen_point);
 
 // The folder header's menu actions.
 void NewTabInFolder(BrowserWindowInterface* browser,

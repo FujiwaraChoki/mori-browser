@@ -1,4 +1,4 @@
-// Importing tabs from other browsers (Mori 3's, Arc's onboarding): Zen's
+// Importing tabs from other browsers (Mori's, Arc's onboarding): Zen's
 // workspaces and essentials, Firefox's windows, and Arc's sidebar (a copy
 // of StorableSidebar.json in the home or Downloads folder, as Arc has no
 // Linux build). The tabs of every workspace or window join Mori's tabs;

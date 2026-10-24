@@ -1,7 +1,10 @@
 # Mori on Linux (Chromium build)
 
-Mori's Linux browser built into ungoogled-chromium. See
-`docs/DECISIONS-linux-chromium.md` for why and how.
+Mori's shared desktop browser is built into ungoogled-chromium using Views.
+See [BUILDING.md](../BUILDING.md) for current platform setup and
+[the archived decision record](../docs/archive/DECISIONS-linux-chromium.md)
+for the migration history. The shared patch baseline is Chromium 156.0.8078.47;
+Windows is validated, while this port still needs Linux and macOS host checks.
 
 - `mori/`: Mori's C++ (Views) sources. `build.sh` links this folder into the
   Chromium tree as `chrome/browser/ui/views/mori`.
@@ -45,6 +48,9 @@ Use **New Folder** in the sidebar menu or command bar to create a folder
 with a blank tab. A tab's menu also offers **New Folder with Tab** and
 **Add to …**. Folder headers offer rename, collapse, icons and deletion.
 Folder tabs stay out of auto-archive and Archive Unpinned Tabs.
+Ctrl+W unloads a folder tab's page while preserving its saved entry. Use the
+row's close button for explicit removal, or drag the tab into ordinary tabs
+before closing it. Tabs can also be dragged between folders and favorites.
 
 Importing Arc or Zen tabs keeps folder names and membership, including
 separate folders with the same name. Folders persist through session restore.

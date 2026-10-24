@@ -151,7 +151,7 @@ class Settings {
             .Set("spaces_ungrouped", spaces_ungrouped_)));
   }
 
-  // Mori 3's defaults.
+  // Mori's defaults.
   bool links_in_little_ = true;
   int archive_after_hours_ = 24;
   // Mori's spaces were tab groups; their tabs came out of them.

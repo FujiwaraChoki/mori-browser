@@ -1,226 +1,227 @@
 # Building Mori Browser
 
-This repository holds two implementations of Mori:
+The main desktop browser uses Chromium Views. Its shared source is
+`linux/mori/`, with hooks in `linux/patches/` and host scripts in `windows/`,
+`linux/`, and `mac/`. The retired desktop SwiftUI overlay is no longer used.
+The iOS app is a separate WKWebView build.
 
-- **Mori 3 (Rust, cross-platform)** - a GPUI chrome around Chromium embedded
-  through CEF, in the Cargo workspace under `crates/`. This is the build that
-  runs on Linux.
-- **Mori 2 (macOS)** - the SwiftUI/AppKit chrome compiled into an
-  ungoogled-chromium checkout. See [Mori 2 on macOS](#mori-2-on-macos) below.
+## Windows: Chromium Views
 
-## Mori 3 on Linux
 
-### Prerequisites
+Build it with a full Chromium **156.0.8078.47** checkout and its dependencies
+synced with `depot_tools`.
 
-- Rust (stable, edition 2024; `rustup` toolchain 1.98 or newer).
-- A Vulkan-capable GPU driver (GPUI renders with wgpu/Vulkan).
-- `cmake`, a C++ compiler, and the usual X11/Wayland/xkbcommon development
-  headers (on Arch: `base-devel cmake libxkbcommon wayland libx11`).
-- About 2 GB of disk for the CEF binary distribution.
+Prerequisites are Visual Studio 2026 C++ Build Tools (including MFC/ATL),
+Windows SDK 10.0.28000.2270 or newer with SDK Debugging Tools, Git for Windows
+(including GNU `patch`), and Python 3. Keep `depot_tools` at the repository root
+and set `DEPOT_TOOLS_WIN_TOOLCHAIN=0`. The version, source revision, and matching
+ungoogled release are pinned in
+`windows/chromium.json`. The ungoogled patch repository lives in the checkout's
+`ungoogled-base` directory, pinned to `156.0.8078.47-1`.
 
-### Build and run
+Use a short checkout path to avoid Windows path-length failures. On this
+machine the upgraded checkout lives at `C:\mori-build-156`; the working
+155 checkout at `C:\mori-build` remains its read-only Git object cache.
+Prepare an upgrade in a separate directory with:
 
-```sh
-cargo run --release
+```powershell
+python windows/prepare_checkout.py --cache-checkout C:\mori-build
 ```
 
-The first build downloads the matching CEF distribution (Chromium 154) into
-`.cef/` at the repository root (configured in `.cargo/config.toml`). The CEF
-runtime files are copied next to the binary in `target/<profile>/`, so the
-binary runs straight from there:
+Keep the build checkout at a real short path: some tools resolve junctions while others do
+not, which can break generated-file lookup. It contains `.gclient` and the
+`src` directory. For dependency updates, pin the revision by commit:
 
-```sh
-target/release/mori                 # restores the last session (every window)
-target/release/mori example.com     # opens the link in Little Mori, or as a tab
-                                    #   (Settings > General > Links from other apps)
-target/release/mori --new-window    # a new window
-target/release/mori --private-window
+```powershell
+cd C:\mori-build-156
+gclient sync --no-history --revision src@1d17a2e2ee147bb7d6ae2ab6abdb3a2510c17775
 ```
 
-Starting `mori` again while it runs hands the URLs and window switches to the
-running instance (Chromium's process singleton) and exits.
+Sync dependencies **before** applying Mori; a later sync can overwrite patched
+files. Use a fresh synced checkout if patches or their application state need
+to be reset. From the Mori repository root:
 
-### Package and install
-
-```sh
-scripts/package-linux.sh            # -> dist/mori-linux-x86_64/
-scripts/install-linux.sh            # -> ~/.local/opt/mori, ~/.local/bin/mori,
-                                    #    desktop entry and icon
-scripts/install-linux.sh --default  # ... and make Mori the default browser
+```powershell
+python windows/build.py --setup-only   # apply patches and generate build files
+python windows/build.py --jobs 12      # configure and compile chrome.exe
 ```
 
-Both scripts move an existing output to the trash with `gio trash`; they never
-delete with `rm -rf`.
+For a native per-user Windows installer:
 
-### Tests
-
-```sh
-cargo test -p mori-core -p mori-engine -p mori
-cargo clippy --workspace
+```powershell
+python -m pip install Pillow
+python windows/package.py --jobs 12
 ```
 
-`mori-core` (workspace, stores, omnibox, launcher ranking, theme math, page
-scripts) is UI-free and carries most of the unit tests.
+This builds Chromium's `mini_installer` target and writes
+`dist/Mori-Setup-156.0.8078.47-x64.exe`, its SHA-256 checksum, and build metadata.
+The application, installer, Windows shortcuts, and browser registration use
+the Mori name. The Windows icon and product images come from the original
+`mac/assets/AppIcon.png`; `windows/branding.py` converts the existing artwork
+to multi-resolution Windows resources. The native installer includes the
+runtime DLLs, provides uninstall support, and preserves browser profile data
+across application updates. Local installer builds are unsigned.
 
-### Runtime environment
+To create the visible setup wizard, with Inno Setup 6 installed, run:
 
-| Variable | Effect |
-|---|---|
-| `MORI_DATA_DIR` | Use another data directory (default `~/.local/share/mori`). Handy for an isolated test profile. |
-| `MORI_START_URL` | Start with a single tab at this URL instead of restoring the session. |
-| `MORI_NO_SANDBOX` | Disable Chromium's sandbox (only for systems without user namespaces). |
-| `MORI_OZONE_PLATFORM` | Chromium's ozone backend (default `headless`: pages are drawn by Mori and Mori bridges the clipboard itself). |
-| `MORI_REMOTE_DEBUGGING_PORT` | Expose the Chrome DevTools Protocol on this port. |
-| `MORI_CODEX_DYNAMIC_TOOLS=0`, `MORI_ENABLE_CODEX_ASSISTANT=0` | Assistant switches (see the assistant panel). |
-| `RUST_LOG` | Log filter, e.g. `warn,mori=info,mori_engine=debug`. |
-
-Data lives in `$MORI_DATA_DIR`: `session.json` (spaces, folders, tabs),
-`settings.json`, `history.json`, `bookmarks.json`, `archive.json`,
-`routes.json`, `boosts.json`, `favicons/`, and Chromium's profile in
-`profile/`.
-
-## Mori 2 on macOS
-
-The macOS build is the Mori browser work on top of ungoogled-chromium.
-
-### Views-based macOS build
-
-The newer `ungoogled-chromium-mac` checkout uses the shared Views UI:
-
-```sh
-mac/build.sh
-mac/package.sh                      # -> dist/Mori.app
-open dist/Mori.app
+```powershell
+python windows/build-wizard.py
 ```
 
-`mac/build.sh` applies the Mori name and icon after building Chromium.
-`mac/package.sh /Applications/Mori.app` installs a branded bundle (moving any
-previous Mori bundle to the trash). The internal executable remains Chromium;
-the bundle name, localized display names, and Dock icon are Mori. The icon is
-kept in `mac/assets/AppIcon.svg`; run `mac/build-icon.sh` (requires librsvg and
-Xcode) to regenerate the PNG, ICNS, and macOS asset catalog. The branding step
-replaces Chromium's icon assets and ad-hoc signs the modified app. The standalone
-recolorable logo is `mac/assets/mori-mark.svg`.
+This writes `dist/Mori-Setup-156.0.8078.47-x64-Wizard.exe` and its checksum.
+Both installer builds verify their embedded version, Mori product name, and
+original Mori icon before publishing the output.
 
-The instructions below apply to the older SwiftUI checkout.
+`--checkout C:\another-short-path` selects a different checkout. The script
+discovers Visual Studio with `vswhere`, uses Chromium's bundled compilers and
+Ninja, and builds locally with component DLLs and no debug symbols. It applies
+the shared ungoogled-chromium patches, domain substitution, Mori's patches,
+and Windows compatibility fixes. Unlike tarball packaging scripts, it retains
+the tools and dependencies already installed by `gclient`. Its patch state
+is stored beside `src` in `mori-setup-state.json`; subsequent runs resume setup.
+Build and package commands share a checkout lock, so parallel tasks queue their
+builds rather than writing the same outputs concurrently.
+The Mori source folder is linked into Chromium, so source edits are picked up
+by incremental builds.
 
-### Layout
+The output is `C:\mori-build-156\src\out\Default\chrome.exe`; keep the accompanying
+DLLs and runtime files together. Run with an isolated test profile:
 
-- `ungoogled-chromium-macos/build/src` is the Chromium source tree used for
-  day-to-day builds.
-- `out/Default/Mori.app` inside that source tree is the local build output.
-- `$HOME/Downloads/MoriBrowser.app` is the packaged app used for manual testing.
-- `depot_tools` and `binshims` are checked out beside the source tree and should
-  be placed on `PATH` for builds.
-
-### Prerequisites
-
-- macOS with Xcode installed at `/Applications/Xcode.app`.
-- The Chromium checkout and generated `out/Default` build directory already
-  present under `ungoogled-chromium-macos/build/src`.
-- Enough free disk space for Chromium link output and dSYMs.
-
-### Build
-
-Run from the repository root:
-
-```sh
-repo_root="$(git rev-parse --show-toplevel)"
-cd "$repo_root/ungoogled-chromium-macos/build/src"
-export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-export PATH="$repo_root/binshims:$repo_root/depot_tools:$PATH"
-ninja -j 16 -l 24 -C out/Default chrome
+```powershell
+C:\mori-build-156\src\out\Default\chrome.exe --user-data-dir="$env:TEMP\MoriTestProfile" --no-first-run
 ```
 
-The normal successful build still prints warnings from Swift deployment-target
-mismatch and `CoreAudioTypes` auto-linking. Treat ninja exit code `0` as the
-source of truth.
+The Windows build enables `proprietary_codecs=true` and
+`ffmpeg_branding="Chrome"` for H.264/AAC playback in MP4 and MediaSource
+players, including X videos. These codec flags do not change Mori's branding.
+After changing them, rebuild the browser and installer; an existing installed
+browser keeps its old codec support until it is updated and restarted.
+Verify codec detection and actual MP4/MediaSource decoding with:
 
-### Package To Downloads
-
-After a successful build:
-
-```sh
-repo_root="$(git rev-parse --show-toplevel)"
-cd "$repo_root/ungoogled-chromium-macos/build/src"
-if [ -e "$HOME/Downloads/MoriBrowser.app" ]; then
-  trash "$HOME/Downloads/MoriBrowser.app"
-fi
-/usr/bin/ditto "out/Default/Mori.app" "$HOME/Downloads/MoriBrowser.app"
+```powershell
+npm --prefix windows run test:media
 ```
 
-Use `trash`, not `rm -rf`, when replacing old app bundles.
+The suite uses Chromium's local H.264/AAC fixture and isolated profiles.
+`MORI_TEST_BROWSER` selects another browser executable, including an installed
+copy of Mori. Install the test dependencies as described below.
 
-Verify the packaged framework timestamp:
 
-```sh
-find "$HOME/Downloads/MoriBrowser.app/Contents/Frameworks" \
-  -type f \( -name 'Chromium Framework' -o -name 'Mori Framework' \) \
-  -exec stat -f '%Sm %N' -t '%Y-%m-%d %H:%M:%S' {} \;
+### Windows validation
+
+Install the pinned Playwright dependency and use its CLI through the package
+scripts with Node.js 20 or newer. No separate Playwright browser download is needed: these tests use the
+Mori executable from the checkout pinned in `windows/chromium.json`.
+
+```powershell
+python -m unittest discover -s windows/tests -p "test_*.py" -v
+npm ci --prefix windows
+npm --prefix windows test
 ```
 
-### Run
+`MORI_TEST_BROWSER` overrides the executable path. Use a copied runtime, with
+all its DLLs and data files, when other tasks may rebuild the default output.
+Both suites use isolated profiles and enable Chromium's native sandbox.
+The media suite uses a progressive H.264/AAC MP4 for URL playback and a
+fragmented fixture for MediaSource playback.
 
-Open the packaged app:
+### Picture in Picture
 
-```sh
-/usr/bin/open -n "$HOME/Downloads/MoriBrowser.app"
+
+Settings → Tabs → Picture in Picture controls the video hover button,
+automatic entry when switching tabs, and returning automatic players to their
+source tab. Automatic entry is off by default. Ctrl+Shift+] and the command
+bar's Picture in Picture action also toggle the active video's player.
+
+The video controls use Chromium's native PiP API and work with HTML video,
+MediaSource players such as YouTube, and permitted embedded players. They
+respect fullscreen mode, a video's `disablePictureInPicture` flag, and frame
+permissions. Captions rendered separately by a website are not copied into the
+native video window.
+
+Run the headless integration suite against the built Windows executable with
+the pinned Playwright CLI:
+
+```powershell
+npm --prefix windows run test:pip
 ```
 
-For isolated testing without reusing the main Chromium profile:
+`MORI_TEST_BROWSER` overrides the executable path, and `MORI_TEST_MEDIA`
+overrides the Chromium `content/test/data/media/bear-320x240.webm` fixture.
+Tests use isolated temporary profiles and do not use the installed browser's
+profile.
+
+
+## Linux: Chromium Views
+
+Use an upstream `ungoogled-chromium-portablelinux` checkout, including its
+submodules, at `ungoogled-chromium-linux/`. Its core and Chromium source must
+match the version in `windows/chromium.json` before applying Mori's shared
+patches. The scripts reject mismatched versions.
 
 ```sh
-profile="$HOME/Library/Application Support/MoriBrowserTestProfile"
-mkdir -p "$profile"
-/usr/bin/open -n "$HOME/Downloads/MoriBrowser.app" --args \
-  --user-data-dir="$profile" \
-  --no-first-run
+linux/fetch.sh
+JOBS=12 linux/build.sh
+linux/run.sh
 ```
 
-Check that it stayed running:
+The build uses Python, Node/npm, Ninja, gperf, Go, clang-format, and Chromium's
+LLVM, Rust, and Linux sysroot. Follow the matching upstream packaging checkout's
+host dependency requirements. `linux/build.sh --setup-only` applies Mori's
+patches and generates Ninja files; `--toolchain-only` prepares the toolchain.
+
+The Linux Views output is
+`ungoogled-chromium-linux/build/src/out/Default/chrome`. See
+[linux/README.md](linux/README.md) for the headless harness and native import and
+passkey test targets. The current Chromium 156 patch port has been built on
+Windows; Linux host verification remains pending.
+
+## macOS: Chromium Views
+
+The macOS build uses the same `linux/mori/` source, including the small native
+adapter in `mori_window_events_mac.mm`. It builds `Chromium.app`, brands the
+bundle as Mori, and packages `dist/Mori.app`.
+
+Prepare an upstream macOS ungoogled-chromium packaging checkout, including its
+submodules, at `ungoogled-chromium-mac/`. Use the matching Chromium version from
+`windows/chromium.json` and the packaging checkout's Xcode/SDK requirements.
+The source version guard runs before Mori patches are applied. These scripts
+target Apple Silicon and require Python, Node/npm, Ninja, and esbuild; a local
+`.venv-build` environment can provide Python build dependencies.
 
 ```sh
-pgrep -fl "$HOME/Downloads/MoriBrowser.app/Contents/MacOS/Mori"
+mac/fetch.sh
+JOBS=10 mac/build.sh
+mac/package.sh
+open -n dist/Mori.app --args --user-data-dir="$TMPDIR/MoriViewsTest" --no-first-run
 ```
 
-### Logging
+`mac/build.sh --setup-only` generates the build files without compiling.
+`mac/package.sh /Applications/Mori.app` selects a different package destination.
+Existing bundles go to the trash. Packaging applies the name and original Mori
+icon, signs nested helpers and the framework with their existing entitlements,
+and verifies the resulting bundle. Local ad-hoc signing is not notarization.
+The current Chromium 156 port still needs macOS host verification.
 
-For keyboard shortcut diagnostics, current instrumented builds emit `MORI-KEY`
-messages. To capture launch logs directly:
+The source artwork is `mac/assets/AppIcon.svg`; `mac/build-icon.sh` regenerates
+PNG, ICNS, and the asset catalog with librsvg and Xcode. Windows packaging uses
+`mac/assets/AppIcon.png`. Keep these assets when changing platform wrappers.
 
-```sh
-"$HOME/Downloads/MoriBrowser.app/Contents/MacOS/Mori" \
-  --enable-logging=stderr \
-  --v=0
-```
+## iOS app
 
-You can also confirm an instrumented packaged binary contains the diagnostics:
+The independent iOS app is in `ios/`. Open
+`ios/MoriBrowser.xcodeproj` on a Mac with Xcode; the `MoriBrowser` scheme includes
+the application and tests. The checked-in project targets iOS 18 or newer and
+uses WKWebView. Set an appropriate development team for device signing.
+`ios/project.yml` is the XcodeGen project source.
 
-```sh
-find "$HOME/Downloads/MoriBrowser.app/Contents/Frameworks" \
-  -type f \( -name 'Chromium Framework' -o -name 'Mori Framework' \) \
-  -exec strings -a {} \; | grep -m 5 'MORI-KEY'
-```
+This app retains SwiftUI; it does not depend on the removed desktop overlay.
 
-### Avoiding Stale Binaries
+## Logs and profiles
 
-If an already-running browser process is reused, it may still have the old
-framework loaded. For shortcut testing, prefer a fresh `open -n` launch with a
-separate `--user-data-dir`, or quit the existing app before testing the newly
-packaged bundle.
-
-### Common Build Loop
-
-```sh
-repo_root="$(git rev-parse --show-toplevel)"
-cd "$repo_root/ungoogled-chromium-macos/build/src"
-export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
-export PATH="$repo_root/binshims:$repo_root/depot_tools:$PATH"
-ninja -j 16 -l 24 -C out/Default chrome
-
-if [ -e "$HOME/Downloads/MoriBrowser.app" ]; then
-  trash "$HOME/Downloads/MoriBrowser.app"
-fi
-/usr/bin/ditto "out/Default/Mori.app" "$HOME/Downloads/MoriBrowser.app"
-/usr/bin/open -n "$HOME/Downloads/MoriBrowser.app"
-```
+For the Views builds, pass `--enable-logging=stderr --v=0` to the executable.
+Use `--user-data-dir` to keep experiments separate from normal browsing data.
+On macOS the Views executable is `Mori.app/Contents/MacOS/Chromium`.
+Keep all runtime DLLs/frameworks, resources, locales, and snapshots with their
+executable. A new link does not update a running browser process: use a fresh
+isolated process when checking a new build.

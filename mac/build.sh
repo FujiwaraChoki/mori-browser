@@ -17,6 +17,8 @@ _out="${_src}/out/Default"
 
 [ -x "${_mori}/.venv-build/bin/python3" ] && export PATH="${_mori}/.venv-build/bin:${PATH}"
 export PATH="/opt/homebrew/bin:${PATH}"
+python3 "${_mori}/linux/tools/check_chromium_version.py" \
+    --base "${_main}" --source "${_src}"
 JOBS=${JOBS:-10}
 
 # Mori's sources are linked into the tree; linux/patches/*.patch hook them
@@ -63,7 +65,7 @@ GN
     if ! cmp -s "${_out}/args.gn.new" "${_out}/args.gn"; then
         mv "${_out}/args.gn.new" "${_out}/args.gn"
     else
-        rm "${_out}/args.gn.new"
+        trash "${_out}/args.gn.new"
     fi
 }
 
@@ -80,7 +82,9 @@ if [[ ! -f "${_esbuild_module}/package.json" ]] || \
         --no-bin-links --ignore-scripts --omit=optional --no-audit --no-fund \
         "esbuild@${_esbuild_version}"
 fi
-rm -rf third_party/devtools-frontend/src/node_modules/esbuild
+if [ -e third_party/devtools-frontend/src/node_modules/esbuild ] || [ -L third_party/devtools-frontend/src/node_modules/esbuild ]; then
+    trash third_party/devtools-frontend/src/node_modules/esbuild
+fi
 ln -s "${_esbuild_module}" third_party/devtools-frontend/src/node_modules/esbuild
 
 [ -x out/Default/gn ] || ./tools/gn/bootstrap/bootstrap.py -o out/Default/gn --skip-generate-buildfiles

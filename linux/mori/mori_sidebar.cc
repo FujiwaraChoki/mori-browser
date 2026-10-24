@@ -69,7 +69,7 @@ constexpr float kSpring[] = {
     0.743381f, 0.830233f, 0.894782f, 0.940547f, 0.971397f, 0.990984f,
     1.002456f, 1.008359f, 1.010649f, 1.010757f, 1.009681f, 1.008083f,
     1.006372f, 1.004782f, 1.003423f};
-// Mori 3's floating sidebar corners (metrics::RADIUS).
+// Mori's floating sidebar corners (metrics::RADIUS).
 constexpr float kFloatingRadius = 10;
 
 double Spring(double t) {
@@ -398,7 +398,7 @@ class SidebarState : public ui::EventObserver,
   void Relayout() {
     // Peeking, the toolbar's container floats over the page with the tab
     // list (which already paints to its own layer). It needs a layer of its
-    // own, above the page's. Together they make Mori 3's floating card, with
+    // own, above the page's. Together they make Mori's floating card, with
     // its rounded corners.
     views::View* top = browser_view_->top_container();
     views::View* tabs = TabsRegion();

@@ -1,160 +1,69 @@
-# Source Layout
+# Source layout
 
-## Mori 3 (Rust workspace)
+## Main desktop implementation: Chromium Views
 
-```text
-Cargo.toml                  workspace; CEF and GPUI versions are pinned here
-.cargo/config.toml          CEF_PATH -> .cef/ (downloaded on first build)
-crates/mori-engine/         Chromium via CEF
-crates/mori-core/           product model and logic (no UI, no engine)
-crates/mori/                the GPUI application
-scripts/package-linux.sh    self-contained bundle in dist/
-scripts/install-linux.sh    per-user install (~/.local)
-packaging/linux/            desktop entry
-```
+| Path | Responsibility |
+| --- | --- |
+| `linux/mori/` | Shared first-party desktop C++ and native macOS event adapter. |
+| `linux/patches/` | Numbered patches connecting Mori to Chromium's browser and Views toolkit. |
+| `windows/` | Checkout preparation, build/version pins, Windows patches, branding, installers, and tests. |
+| `linux/*.sh`, `linux/harness/` | Linux Views build and isolated compositor harness. |
+| `mac/*.sh`, `mac/assets/` | macOS Views build/package helpers and shared original branding artwork. |
+| `docs/`, `BUILDING.md` | Architecture, platform status, source map, and build workflows. |
 
-### `crates/mori-engine`
+The main desktop feature files are:
 
-- `lib.rs` - process entry (`run_subprocess_if_needed`), `initialize`, the
-  external message pump (`pump`, `next_pump_delay_ms`), shutdown, relaunch
-  queue, resource discovery.
-- `app.rs` - CEF `App`: command-line policy and the browser process handler.
-- `context.rs` - browsing contexts: the global one, persistent profiles and
-  in-memory private contexts.
-- `view.rs` - `WebView` (one offscreen browser), `ViewEvent`, frames, and every
-  page operation (navigation, input, editing, find, zoom, dialogs, permissions).
-- `client.rs` - all CEF handlers (render, display, load, life span/popups,
-  requests, JS dialogs, permissions, context menu, find).
-- `downloads.rs` - download handler and controls.
-- `devtools.rs` - `evaluate` over the DevTools protocol.
-- `keys.rs` - key name to Windows key code / XKB scan code translation.
+- `mori_command_bar.*`, `mori_commands.*`, `mori_command_ids.*`: navigation,
+  autocomplete, commands, and keyboard bindings.
+- `mori_sidebar.*`, `mori_tab_list.*`, `mori_toolbar_layout.*`: window/sidebar
+  layout, library/assistant entry points, and tab presentation.
+- `mori_folders.*`, `mori_folder_tree.h`, `mori_folder_session.h`: persistent
+  folders, tab membership, unload/removal behavior, and drag-and-drop targets.
+- `mori_settings.*`, `mori_themes.*`, `mori_color_mixer.*`, `mori_typography.h`:
+  preferences, colours, themes, and shared UI type size.
+- `mori_menu.*`, `mori_app_menu.*`, `mori_library.*`, `mori_import*`: menus,
+  history/bookmarks, and importing existing browser data.
+- `mori_picture_in_picture.*`, `mori_picture_in_picture_script.h`: native video
+  PiP and page controls.
+- `mori_peek.*`, `mori_little.*`, `mori_boosts.*`: Peek, external-link windows,
+  and per-site customizations.
+- `mori_codex.*`, `mori_assistant*`: assistant connection, presentation, and tools.
+- `mori_window_events_mac.mm`: native macOS event integration for Views.
+- `tests/`: native Chromium import/passkey tests; `linux/tests/` has additional
+  focused tests. Windows headless suites and tooling tests are in `windows/tests/`.
 
-### `crates/mori-core`
+### Dependency and output boundaries
 
-- `workspace.rs` - spaces, folders, pinned/loose tabs, selection, moves,
-  session persistence.
-- `settings.rs`, `history.rs`, `bookmarks.rs`, `archive.rs`, `routes.rs`
-  (Air Traffic Control), `boosts.rs` - persisted stores.
-- `omnibox.rs` - URL-vs-search resolution and display helpers.
-- `launcher.rs` - launcher scoring and ranking.
-- `theme.rs` - palettes, OKLCH/HSL maths, gradient themes and presets.
-- `scripts.rs` - page scripts (reader, media, page text).
-- `paths.rs`, `util.rs` - data directory, atomic JSON I/O, host helpers.
-- `windows.rs` - per-window selection over the shared workspace and the saved
-  windows; `profiles.rs` - profiles and which space uses which.
+Full Chromium trees, upstream packaging checkouts, downloaded toolchains,
+`depot_tools/`, `.cef/`, `target/`, and `dist/` are ignored local dependencies or
+outputs. The Windows build normally uses the short external checkout path in
+`windows/chromium.json`. Linux and macOS use ignored platform checkouts beside
+these host script directories. No first-party source needs to be kept inside a
+tracked Chromium dependency tree.
 
-### `crates/mori`
+The retired desktop SwiftUI and Rust/CEF implementations have been removed
+from the working tree.
+Their historical source remains available in Git history. Shared app icons remain
+in `mac/assets/` and are also used by Windows branding.
 
-- `main.rs` - startup: subprocess check, engine init, URL arguments.
-- `windows.rs` - normal, private and Little Mori windows: opening, session
-  restore, keeping stores in step, relaunches, per-window themes, profiles.
-- `default_browser.rs` - checking and setting the default browser.
-- `browser.rs` - the `Browser` root entity: model, live tabs, engine events,
-  and commands.
-- `engine_hub.rs` - pumps CEF from GPUI and routes view events.
-- `web_surface.rs` - draws a page and forwards mouse/keyboard/IME input.
-- `actions.rs` - actions and default key bindings.
-- `commands.rs` - named commands shared by the launcher and menus.
-- `theme.rs` - GPUI tokens, gradient wash and grain rendering.
-- `favicons.rs`, `screenshot.rs`, `assets.rs`.
-- `assistant/` - the Codex app-server client and browser tools.
-- `ui/` - `root.rs` (layout and action routing), `sidebar.rs`, `launcher.rs`,
-  `find_bar.rs`, `menus.rs`, `overlays.rs` (dialogs, permissions, Peek),
-  `panels.rs` (Downloads, Library), `settings.rs`, `boost_editor.rs`,
-  `assistant.rs`, `components.rs`, `windows.rs` (Little Mori header, private
-  badge, window and profile menus and settings).
+The standalone Rust helper in `linux/harness/vptr/` supplies virtual pointer
+input to headless sway tests. Its Cargo workspace is independent of the browser.
 
-## Mori 2 (macOS overlay)
-
-This repository contains a full Chromium checkout, but the first-party Mori
-code is intentionally narrow.
-
-### Repository Root
-
-- `README.md` - project overview and entry point.
-- `BUILDING.md` - canonical build, package, run, and logging workflow.
-- `docs/ARCHITECTURE.md` - runtime boundaries and data flow.
-- `ungoogled-chromium-macos/build/src` - Chromium source tree used for builds.
-- `depot_tools` and `binshims` - local build tooling.
-
-Build products, the Chromium checkout, and `depot_tools` are local dependencies.
-The Mori overlay under Chromium is the source of truth for app behavior.
-
-### Mori Overlay
-
-Path:
+## iOS
 
 ```text
-ungoogled-chromium-macos/build/src/chrome/browser/ui/mori/
+ios/project.yml                 XcodeGen project definition
+ios/MoriBrowser.xcodeproj/       checked-in Xcode project and scheme
+ios/MoriBrowser/Model/           workspace, session, commands, records
+ios/MoriBrowser/Store/           application state
+ios/MoriBrowser/UI/              SwiftUI interface
+ios/MoriBrowser/Web/             WKWebView session, reader, favicon helpers
+ios/MoriBrowser/Theme/           theme tokens
+ios/MoriBrowser/Assets.xcassets/  iOS app artwork
+ios/MoriBrowserTests/            iOS tests
 ```
 
-Do not edit older prototypes under `content/shell/browser/mori`; they are not
-the app that gets packaged.
+## Historical documentation
 
-There is also a local overlay guide at:
-
-```text
-ungoogled-chromium-macos/build/src/chrome/browser/ui/mori/README.md
-```
-
-### SwiftUI Chrome
-
-- `MoriRoot.swift` - SwiftUI root, Objective-C entry points, and the shared
-  app model exposed to the bridge.
-- `RootView.swift`, `Sidebar.swift`, `Toolbar.swift`, `TabRow.swift`,
-  `LauncherOverlay.swift` - browser chrome, tab surfaces, and command palette.
-- `Components.swift`, `Glass.swift`, `Icon.swift`, `MorphingFolderIcon.swift`,
-  `ToastCenter.swift`, `ToastOverlay.swift` - shared UI building blocks.
-- `SettingsView.swift`, `ThemePicker.swift`, `Theme.swift`,
-  `GradientTheme.swift`, `GradientEngine.swift`, `ThemePresets.swift`,
-  `OKLCH.swift`, `FontRegistry.swift` - settings, tokens, and theming.
-
-### App State
-
-- `BrowserStore.swift` - top-level observable browser state.
-- `BrowserStore+DragDrop.swift` - drag/drop behavior for sidebar organization.
-- `BrowserTab.swift`, `BrowserContext.swift`, `Contexts.swift`,
-  `TabFolder.swift` - tabs, spaces, and folder models.
-- `BrowserSettings.swift`, `ArchiveStore.swift`, `BookmarkStore.swift`,
-  `DownloadStore.swift`, `ExtensionStore.swift`, `HistoryStore.swift` -
-  persisted app and browser-adjacent stores.
-
-### Product Features
-
-- `AIPanel.swift`, `CodexAppServerClient.swift`, `BrowserAutomation.swift` -
-  AI panel and page-acting tools.
-- `Boosts.swift`, `BoostStore.swift`, `Reader.swift`, `Peek.swift`,
-  `SidebarPeek.swift`, `Screenshot.swift` - page customization and transient
-  browsing tools.
-- `AirTrafficControl.swift`, `RouteStore.swift` - host-based tab routing.
-- `DownloadsPanel.swift`, `ExtensionsMenu.swift`, `LibraryPanel.swift`,
-  `FindBar.swift`, `ContextMenu.swift` - browser panels and overlays.
-- `MediaAgentScripts.swift`, `MediaController.swift`, `MediaPlayer.swift`,
-  `MediaPolling.swift`, `PiPWindowStyler.swift` - media detection and controls.
-- `PasskeyAuthenticator.swift`, `PasskeySupport.swift` - passkey support.
-- `ShortcutRegistry.swift` - app command routing and reserved Chromium shortcut
-  decisions.
-- `TabMaintenance.swift` - tab sleep and archive timers.
-
-### Chromium Bridge
-
-- `mori_bridge.h` - Swift bridging header.
-- `mori_chrome_bridge.mm` - main Swift/AppKit to Chromium integration layer.
-- `mori_browser_window.mm` and `mori_browser_window.h` - browser window
-  lifecycle and web-focused keyboard handling.
-- `mori_chrome_extensions.mm` - Chromium extension API integration.
-- `mori_permission_prompt.mm` and `mori_permission_prompt.h` - permission UI
-  integration.
-- `MoriBrowserView.h`, `MoriPrivacy.h`, `mori_chrome_hooks.h` - remaining
-  bridge declarations.
-
-### Build Wiring
-
-The Swift files are compiled by the `mori_ui_swift` target in:
-
-```text
-ungoogled-chromium-macos/build/src/chrome/browser/ui/BUILD.gn
-```
-
-When adding, moving, or deleting Swift files, update that GN source list in the
-same change.
+`docs/archive/DECISIONS-linux-chromium.md` records the original migration and
+feature-porting work. Use `BUILDING.md` for current build commands and versions.

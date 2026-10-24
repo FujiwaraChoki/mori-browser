@@ -1,0 +1,12 @@
+{
+  "name": "mori-windows-tests",
+  "private": true,
+  "scripts": {
+    "test": "npm run test:pip && npm run test:media",
+    "test:pip": "playwright test --config tests/pip.config.cjs --reporter=line",
+    "test:media": "playwright test --config tests/media.config.cjs --reporter=line"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
+}

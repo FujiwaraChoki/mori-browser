@@ -18,7 +18,7 @@ enum CommandId {
   kCommandSleepBackgroundTabs = kCommandFirst,
   kCommandEditTheme,
   kCommandTogglePin,
-  // Mori 3's Clear: closes the tabs that aren't favorites.
+  // Mori's Clear: closes the tabs that aren't favorites.
   kCommandArchiveUnpinnedTabs,
   // Ctrl+Tab and Ctrl+Shift+Tab: recent tabs (mori_tab_switcher.h).
   kCommandSwitchRecentTab,
@@ -32,17 +32,18 @@ enum CommandId {
   // Ctrl+Shift+K: the assistant panel.
   kCommandToggleAssistant,
   kCommandNewFolder,
-  kCommandLast = kCommandNewFolder,
+  kCommandPictureInPicture,
+  kCommandLast = kCommandPictureInPicture,
 };
 
 bool IsMoriCommand(int command_id);
 void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id);
 
-// Handles Close Tab when its selection contains pins. Pins keep their sidebar
-// entries; closing the active pin switches away and unloads its page.
-bool HandlePinnedTabClose(BrowserWindowInterface* browser);
+// Handles Close Tab for favorites and folder tabs. Their sidebar entries and
+// folder membership survive; closing an active entry switches away and unloads.
+bool HandlePersistentTabClose(BrowserWindowInterface* browser);
 
-// Mori 3's shortcuts on top of Chromium's (Ctrl+S hides the sidebar,
+// Mori's shortcuts on top of Chromium's (Ctrl+S hides the sidebar,
 // Ctrl+Shift+C copies the URL, ...). Replaces
 // Chromium's binding where a key has one.
 void ApplyMoriAccelerators(std::vector<AcceleratorMapping>* accelerators);

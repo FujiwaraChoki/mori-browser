@@ -1,4 +1,5 @@
 #include "chrome/browser/ui/views/mori/mori_cheatsheet.h"
+#include "chrome/browser/ui/views/mori/mori_typography.h"
 
 #include "build/build_config.h"
 #include <memory>
@@ -57,12 +58,13 @@ struct Group {
   std::vector<Entry> entries;
 };
 
-// Mori 3's groups (crates/mori/src/actions.rs, its descriptions).
+// Mori's groups.
 std::vector<Group> Groups() {
   return {
       {u"Tabs",
        {{u"New tab", IDC_NEW_TAB},
         {u"Close tab", IDC_CLOSE_TAB},
+        {u"Picture in Picture", kCommandPictureInPicture},
         {u"Reopen closed tab", IDC_RESTORE_TAB},
         {u"Recent tabs", kCommandSwitchRecentTab},
         {u"Next tab", IDC_SELECT_NEXT_TAB},
@@ -131,19 +133,13 @@ bool IsDark(const views::View* view) {
       view->GetColorProvider()->GetColor(ui::kColorFrameActive));
 }
 
-gfx::FontList Font(int size, gfx::Font::Weight weight) {
-  const gfx::FontList base;
-  return base.DeriveWithSizeDelta(size - base.GetFontSize())
-      .DeriveWithWeight(weight);
-}
-
 // A key cap: the shortcut in a small rounded chip.
 class KeyCap : public views::Label {
   METADATA_HEADER(KeyCap, views::Label)
 
  public:
   explicit KeyCap(const std::u16string& text) : views::Label(text) {
-    SetFontList(Font(11, gfx::Font::Weight::MEDIUM));
+    SetFontList(UiFont(gfx::Font::Weight::MEDIUM));
     SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(2, 6)));
   }
 
@@ -189,14 +185,14 @@ class CheatsheetPanel : public views::View, public views::TextfieldController {
         kShadowInsets + gfx::Insets::VH(16, 20), 12));
     auto* title = AddChildView(std::make_unique<views::Label>(
         u"Keyboard Shortcuts"));
-    title->SetFontList(Font(15, gfx::Font::Weight::SEMIBOLD));
+    title->SetFontList(UiFont(gfx::Font::Weight::SEMIBOLD));
     title->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     title_ = title;
     field_ = AddChildView(std::make_unique<SearchField>(base::BindRepeating(
         &CheatsheetPanel::OnBlurred, weak_factory_.GetWeakPtr())));
     field_->SetController(this);
     field_->SetPlaceholderText(u"Search shortcuts");
-    field_->SetFontList(Font(14, gfx::Font::Weight::NORMAL));
+    field_->SetFontList(UiFont(gfx::Font::Weight::NORMAL));
     field_->SetBorder(views::CreateEmptyBorder(gfx::Insets::VH(6, 10)));
     field_->GetViewAccessibility().SetName(u"Search shortcuts");
     columns_ = AddChildView(std::make_unique<views::View>());
@@ -295,7 +291,7 @@ class CheatsheetPanel : public views::View, public views::TextfieldController {
           views::BoxLayout::Orientation::kVertical, gfx::Insets(), 4));
       auto* heading = card->AddChildView(std::make_unique<views::Label>(
           group.title));
-      heading->SetFontList(Font(12, gfx::Font::Weight::BOLD));
+      heading->SetFontList(UiFont(gfx::Font::Weight::BOLD));
       heading->SetHorizontalAlignment(gfx::ALIGN_LEFT);
       heading->SetEnabledColor(dark ? SkColorSetRGB(0xA0, 0xA1, 0xA2)
                                     : SkColorSetRGB(0x5A, 0x5C, 0x5E));
@@ -316,7 +312,7 @@ class CheatsheetPanel : public views::View, public views::TextfieldController {
             views::BoxLayout::CrossAxisAlignment::kCenter);
         auto* label = row->AddChildView(std::make_unique<views::Label>(
             entry.label));
-        label->SetFontList(Font(13, gfx::Font::Weight::NORMAL));
+        label->SetFontList(UiFont(gfx::Font::Weight::NORMAL));
         label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
         label->SetEnabledColor(dark ? SkColorSetRGB(0xEE, 0xEE, 0xEF)
                                     : SkColorSetRGB(0x1D, 0x1F, 0x22));

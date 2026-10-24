@@ -1,4 +1,4 @@
-// Arc's Ctrl+S (and Mori 3's compact mode): the sidebar hides, the page takes
+// Arc's Ctrl+S (and Mori's compact mode): the sidebar hides, the page takes
 // the whole window, and touching the window's left edge slides the sidebar
 // in over the page until the pointer moves away.
 

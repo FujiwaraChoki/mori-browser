@@ -1,4 +1,4 @@
-// Mori 3's settings (crates/mori/src/ui/settings.rs): a sheet over the page
+// Mori's settings: a sheet over the page
 // with a rail of categories, in place of Chromium's settings page. Every
 // control reads and writes Chromium's own preferences (or Mori's, for
 // Mori-only features); "All Settings" opens Chromium's full page for

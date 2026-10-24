@@ -1,4 +1,4 @@
-// Mori 3's context menus (crates/mori/src/ui/menus.rs) in place of
+// Mori's context menus in place of
 // Chromium's: the tab menu, the sidebar's menu, and the page menu, which
 // keeps Chromium's items (spelling, extensions, autofill) but reads like
 // Mori's: Title Case, Lucide icons, Mori's actions.
@@ -41,8 +41,8 @@ void ShowTabMenu(BrowserWindowInterface* browser,
                  ui::mojom::MenuSourceType source_type,
                  views::Widget* parent);
 
-// The menu of the sidebar's empty space: Mori 3 shows its "..." menu there
-// (Chromium shows the window's system menu). False when `browser` isn't a
+// The menu of the sidebar's empty space, with tab and folder creation and
+// sidebar appearance options. False when `browser` isn't a
 // Mori window and Chromium's menu should show.
 bool ShowSidebarMenu(BrowserWindowInterface* browser,
                      const gfx::Point& point,
@@ -56,7 +56,7 @@ void ShowFolderMenu(BrowserWindowInterface* browser,
                     ui::mojom::MenuSourceType source_type,
                     views::Widget* parent);
 
-// Rewrites the page's context menu, built by Chromium, into Mori 3's.
+// Rewrites the page's context menu, built by Chromium, into Mori's.
 void RestylePageMenu(ui::SimpleMenuModel* model,
                      BrowserWindowInterface* browser,
                      const content::ContextMenuParams& params);
@@ -66,10 +66,10 @@ void RestylePageMenu(ui::SimpleMenuModel* model,
 bool IsMoriMenuItem(int command_id);
 
 // Ctrl+D: bookmarks the page on screen, or removes its bookmark, and says
-// which in a toast (Mori 3 has no bookmark dialog).
+// which in a toast (Mori has no bookmark dialog).
 void ToggleActiveTabBookmark(BrowserWindowInterface* browser);
 
-// Shortcuts Mori 3's page menu doesn't show (Back's Alt+Left, Save's
+// Shortcuts Mori's page menu doesn't show (Back's Alt+Left, Save's
 // Ctrl+S, which hides the sidebar in Mori).
 bool HidesPageMenuShortcut(int command_id);
 

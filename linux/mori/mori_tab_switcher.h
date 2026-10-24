@@ -1,4 +1,4 @@
-// Ctrl+Tab in most-recently-used order, as in Arc and Mori 3: hold Ctrl and
+// Ctrl+Tab in most-recently-used order, as in Arc and Mori: hold Ctrl and
 // press Tab to move through an overlay of recent tabs, release Ctrl to go to
 // the highlighted one. A quick tap switches without showing the overlay.
 
