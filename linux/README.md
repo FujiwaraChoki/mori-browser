@@ -3,7 +3,7 @@
 Mori's shared desktop browser is built into ungoogled-chromium using Views.
 See [BUILDING.md](../BUILDING.md) for current platform setup and
 [the archived decision record](../docs/archive/DECISIONS-linux-chromium.md)
-for the migration history. The shared patch baseline is Chromium 156.0.8078.47;
+for the migration history. The shared patch baseline is Chromium 156.0.8078.79;
 Windows is validated, while this port still needs Linux and macOS host checks.
 
 - `mori/`: Mori's C++ (Views) sources. `build.sh` links this folder into the

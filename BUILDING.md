@@ -11,7 +11,7 @@ see [CI and local build runners](docs/CI.md). macOS CI is deferred.
 ## Windows: Chromium Views
 
 
-Build it with a full Chromium **156.0.8078.47** checkout and its dependencies
+Build it with a full Chromium **156.0.8078.79** checkout and its dependencies
 synced with `depot_tools`.
 
 Prerequisites are Visual Studio 2026 C++ Build Tools (including MFC/ATL),
@@ -20,10 +20,10 @@ Windows SDK 10.0.28000.2270 or newer with SDK Debugging Tools, Git for Windows
 and set `DEPOT_TOOLS_WIN_TOOLCHAIN=0`. The version, source revision, and matching
 ungoogled release are pinned in
 `windows/chromium.json`. The ungoogled patch repository lives in the checkout's
-`ungoogled-base` directory, pinned to `156.0.8078.47-1`.
+`ungoogled-base` directory, pinned to `156.0.8078.79-1`.
 
 Use a short checkout path to avoid Windows path-length failures. On this
-machine the upgraded checkout lives at `C:\mori-build-156`; the working
+machine the upgraded checkout lives at `C:\mori-build-156-79`; the working
 155 checkout at `C:\mori-build` remains its read-only Git object cache.
 Prepare an upgrade in a separate directory with:
 
@@ -36,8 +36,8 @@ not, which can break generated-file lookup. It contains `.gclient` and the
 `src` directory. For dependency updates, pin the revision by commit:
 
 ```powershell
-cd C:\mori-build-156
-gclient sync --no-history --revision src@1d17a2e2ee147bb7d6ae2ab6abdb3a2510c17775
+cd C:\mori-build-156-79
+gclient sync --no-history --revision src@a21ce95c24ce3964416f09ae1862f53f319eb4d0
 ```
 
 Sync dependencies **before** applying Mori; a later sync can overwrite patched
@@ -57,7 +57,7 @@ python windows/package.py --jobs 12
 ```
 
 This builds Chromium's `mini_installer` target and writes
-`dist/Mori-Setup-156.0.8078.47-x64.exe`, its SHA-256 checksum, and build metadata.
+`dist/Mori-Setup-156.0.8078.79-x64.exe`, its SHA-256 checksum, and build metadata.
 The application, installer, Windows shortcuts, and browser registration use
 the Mori name. The Windows icon and product images come from the original
 `mac/assets/AppIcon.png`; `windows/branding.py` converts the existing artwork
@@ -71,7 +71,7 @@ To create the visible setup wizard, with Inno Setup 6 installed, run:
 python windows/build-wizard.py
 ```
 
-This writes `dist/Mori-Setup-156.0.8078.47-x64-Wizard.exe` and its checksum.
+This writes `dist/Mori-Setup-156.0.8078.79-x64-Wizard.exe` and its checksum.
 Both installer builds verify their embedded version, Mori product name, and
 original Mori icon before publishing the output.
 
@@ -87,11 +87,11 @@ builds rather than writing the same outputs concurrently.
 The Mori source folder is linked into Chromium, so source edits are picked up
 by incremental builds.
 
-The output is `C:\mori-build-156\src\out\Default\chrome.exe`; keep the accompanying
+The output is `C:\mori-build-156-79\src\out\Default\chrome.exe`; keep the accompanying
 DLLs and runtime files together. Run with an isolated test profile:
 
 ```powershell
-C:\mori-build-156\src\out\Default\chrome.exe --user-data-dir="$env:TEMP\MoriTestProfile" --no-first-run
+C:\mori-build-156-79\src\out\Default\chrome.exe --user-data-dir="$env:TEMP\MoriTestProfile" --no-first-run
 ```
 
 The Windows build enables `proprietary_codecs=true` and

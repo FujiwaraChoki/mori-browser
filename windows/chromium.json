@@ -1,8 +1,8 @@
 {
-  "version": "156.0.8078.47",
-  "revision": "1d17a2e2ee147bb7d6ae2ab6abdb3a2510c17775",
+  "version": "156.0.8078.79",
+  "revision": "a21ce95c24ce3964416f09ae1862f53f319eb4d0",
   "channel": "stable",
-  "ungoogled_release": "156.0.8078.47-1",
-  "ungoogled_revision": "0673f8701c94e5688c33ef8ce5e36602d311d246",
-  "default_checkout": "C:\\mori-build-156"
+  "ungoogled_release": "156.0.8078.79-1",
+  "ungoogled_revision": "28a211ab4ab6b83d919966a4f58a6df23cf4fb29",
+  "default_checkout": "C:\\mori-build-156-79"
 }
