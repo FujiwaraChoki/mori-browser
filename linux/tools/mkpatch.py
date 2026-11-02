@@ -17,9 +17,6 @@ PATCHES = ROOT / "linux" / "patches"
 
 # Which Chromium files each patch covers.
 GROUPS = {
-    "0001-drop-unreachable-managed-profile-test-path": [
-        "chrome/browser/enterprise/signin/profile_management_disclaimer_service.cc",
-    ],
     "0002-mori-hooks": [
         "chrome/browser/ui/browser_command_controller.cc",
         "chrome/browser/ui/accelerator_table.cc",

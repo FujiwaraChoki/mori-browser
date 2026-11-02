@@ -43,11 +43,11 @@ must be awake and signed in; after a reboot they start at Windows sign-in.
 | Item | Location/name |
 | --- | --- |
 | Windows runner | `sami-pc-windows`, label `mori-windows`, application at `C:\mori-ci\runner-windows` |
-| Windows engine cache | `C:\mori-build-156` |
+| Windows engine cache | `C:\mori-build-156-79` |
 | Windows machine paths | `C:\mori-ci\machine.json` (Python, Node, depot_tools, checkout, local artifacts) |
 | Linux runner | `sami-pc-linux`, label `mori-linux`, inside WSL distribution `Mori-Linux` |
 | Linux account/application | ordinary user `mori`, `/home/mori/actions-runner` |
-| Linux engine cache | `/home/mori/.local/share/mori-ci/chromium-156.0.8078.47` |
+| Linux engine cache | `/home/mori/.local/share/mori-ci/chromium-156.0.8078.79` |
 | Automatic startup | Windows scheduled task `MoriGitHubRunners`, running as Sami at sign-in |
 | Startup script and logs | `C:\mori-ci\start-runners.ps1`, `*-runner.stdout.log` and `*-runner.stderr.log` |
 
@@ -65,7 +65,7 @@ legacy hashes; changes to patch content still require a fresh checkout.
 
 The Windows job reuses the existing engine cache. Under the checkout lock it
 can redirect Chromium's Mori source junction to the checked-out CI revision.
-It archives the previous junction under `C:\mori-build-156\mori-overlay-links`;
+It archives the previous junction under `C:\mori-build-156-79\mori-overlay-links`;
 the developer's source files are preserved. To return a manual build to the
 developer checkout, run from that repository:
 
