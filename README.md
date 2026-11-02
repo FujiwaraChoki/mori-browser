@@ -9,6 +9,16 @@ The current Windows build uses **Chromium 156.0.8078.47** with the matching
 ungoogled-chromium base. Its exact revisions live in
 [windows/chromium.json](windows/chromium.json).
 
+> [!WARNING]
+> **Security notice (2 November 2026):** the current Windows preview is based on
+> Chromium 156.0.8078.47, which has critical vulnerabilities that are fixed in
+> Chromium 156.0.8078.73. A crafted web page can run code in the browser, and
+> [CVE-2026-118306](https://security-tracker.debian.org/tracker/CVE-2026-118306)
+> can run code outside its sandbox. The list includes CVE-2026-118331, CVE-2026-118344,
+> and CVE-2026-118348; see the [full advisory](https://security-tracker.debian.org/tracker/DSA-6592-1).
+> A patched build is in progress. Until it is released, do not use this preview
+> to browse untrusted sites.
+
 **Windows download:** [Get the current Windows x64 preview](https://github.com/FujiwaraChoki/mori-browser/releases/tag/windows-156.0.8078.47-preview.1).
 Choose the `Wizard.exe` asset for the visible setup wizard. The release includes
 SHA-256 checksums and build metadata; these preview installers are unsigned.
