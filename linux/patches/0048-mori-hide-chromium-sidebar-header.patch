@@ -1,6 +1,6 @@
 --- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
 +++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h
-@@ -101,6 +101,8 @@
+@@ -90,6 +90,8 @@
    // an exclusion width is provided, nothing can be rendered within the
    // rectangle defined by `(caption_button_width, toolbar_height)` that is
    // aligned to the leading, top corner.
@@ -11,7 +11,7 @@
    void SetIsExitingExpandOnHoverForLayout(bool is_exiting_expand_on_hover);
 --- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
 +++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
-@@ -337,6 +337,11 @@
+@@ -355,6 +355,11 @@
    return true;
  }
  
@@ -23,7 +23,7 @@
  void VerticalTabStripRegionView::SetToolbarHeightForLayout(int toolbar_height) {
    top_button_container_->SetToolbarHeightForLayout(toolbar_height);
  }
-@@ -409,8 +414,11 @@
+@@ -436,8 +441,11 @@
      button_available_size.set_width(button_available_size.width() -
                                      2 * horizontal_padding);
    }
@@ -36,18 +36,18 @@
    const gfx::Size tab_strip_size =
        tab_strip_view() ? tab_strip_view()->GetPreferredSize() : gfx::Size();
    const gfx::Size organizer_panel_size =
-@@ -435,7 +443,7 @@
+@@ -462,7 +470,7 @@
    // Lay out the top button container.
    layout.child_layouts.push_back(
        {.child_view = top_button_container_.get(),
 -       .visible = true,
 +       .visible = top_button_container_->GetVisible(),
-        .bounds =
-            gfx::Rect(horizontal_padding, 0,
-                      std::max(0, available.width() - 2 * horizontal_padding),
+        .bounds = gfx::Rect(
+            horizontal_padding, 0,
+            blending_with_organizer_tray
 --- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
 +++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
-@@ -1652,13 +1652,8 @@
+@@ -1711,13 +1711,8 @@
    }
    // Mori: the sidebar toolbar replaces the tab strip's own header row.
    if (views().vertical_tab_strip_region_view) {

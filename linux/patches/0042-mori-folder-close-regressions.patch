@@ -8,7 +8,7 @@
  
  #include "base/path_service.h"
  #include "base/task/current_thread.h"
-@@ -820,6 +821,72 @@
+@@ -825,6 +826,72 @@
    }
  }
  

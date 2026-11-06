@@ -1,0 +1,15 @@
+--- a/chrome/browser/ui/ui_features.cc
++++ b/chrome/browser/ui/ui_features.cc
+@@ -20,7 +20,11 @@
+ namespace features {
+ 
+ // Enables the migration of browser commands to Action API.
+-BASE_FEATURE(kUseActionsForBrowserCommands, base::FEATURE_ENABLED_BY_DEFAULT);
++// Mori: off. With it on, browser commands (including keyboard shortcuts) run as
++// actions and skip BrowserCommandController::ExecuteCommandWithDisposition,
++// where Mori handles its commands (the command bar instead of a bare new tab,
++// the sidebar instead of Chromium's vertical tabs toggle, ...).
++BASE_FEATURE(kUseActionsForBrowserCommands, base::FEATURE_DISABLED_BY_DEFAULT);
+ 
+ // Enables the use of WGC for the Eye Dropper screen capture.
+ BASE_FEATURE(kAllowEyeDropperWGCScreenCapture,

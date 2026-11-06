@@ -20,8 +20,10 @@ PRISTINE = UC / "pristine"
 
 
 def series(patch_dir):
-    names = (patch_dir / "series").read_text().split()
-    return [patch_dir / n for n in names if not n.startswith("#")]
+    # Same rules as ungoogled-chromium's utils/_common.py parse_series.
+    lines = (patch_dir / "series").read_text().splitlines()
+    names = [l.strip().split(" #")[0] for l in lines if l and not l.startswith("#")]
+    return [patch_dir / n for n in names]
 
 
 def sections_for(patch_file, path):

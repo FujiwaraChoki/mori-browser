@@ -1,6 +1,6 @@
 --- a/ui/views/bubble/bubble_dialog_delegate_view.cc
 +++ b/ui/views/bubble/bubble_dialog_delegate_view.cc
-@@ -1041,6 +1041,33 @@
+@@ -1051,6 +1051,33 @@
             ->GetPlatformProperties()
             .supports_global_screen_coordinates) {
      adjust_to_fix_available_bounds = false;

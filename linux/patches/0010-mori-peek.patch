@@ -35,7 +35,7 @@
  #include "base/check_deref.h"
  #include "base/metrics/histogram_macros.h"
  #include "base/notimplemented.h"
-@@ -548,6 +550,14 @@
+@@ -542,6 +544,14 @@
                                    std::move(navigation_handle_callback));
    }
  

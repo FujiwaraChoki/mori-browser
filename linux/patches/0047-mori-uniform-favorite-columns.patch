@@ -1,6 +1,6 @@
 --- a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
 +++ b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
-@@ -415,8 +415,6 @@
+@@ -412,8 +412,6 @@
    }
    int child_width = GetLayoutConstant(LayoutConstant::kVerticalTabMinWidth) *
                      (contains_split ? 2 : 1);
@@ -9,7 +9,7 @@
  
    // If the width is bounded, calculate how many children can fit on a row.
    // Since all children are allocated the same width this will be the same for
-@@ -443,18 +441,11 @@
+@@ -438,18 +436,11 @@
                                                (child_width + kTabPadding)) +
                                     1));
  
@@ -31,7 +31,7 @@
      }
  
      // Allocate extra space to the tabs.
-@@ -462,20 +453,12 @@
+@@ -457,20 +448,12 @@
          (children_on_row * child_width) + (kTabPadding * (children_on_row - 1));
      child_width += std::floor(available_width / children_on_row);
    }
@@ -53,7 +53,7 @@
  
      auto drag_data = GetVisualDataForDraggedView(*child);
      const bool should_show_child = !(drag_data && drag_data->should_hide);
-@@ -500,16 +483,10 @@
+@@ -495,16 +478,10 @@
        total_height = std::max(total_height, (y + bounds.height()));
  
        row_index++;

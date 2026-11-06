@@ -1,6 +1,6 @@
 --- a/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
 +++ b/chrome/browser/ui/views/tabs/common/tab_strip_view.cc
-@@ -587,6 +587,9 @@
+@@ -572,6 +572,9 @@
      scroll_view->SetVerticalScrollBar(
          std::make_unique<VerticalTabStripScrollBar>(
              collection_node_->GetController()->GetStateController()));
@@ -10,9 +10,9 @@
    } else {
      scroll_view->SetHorizontalScrollBarMode(
          views::ScrollView::ScrollBarMode::kHiddenButEnabled);
-@@ -755,8 +758,9 @@
+@@ -740,8 +743,9 @@
    scroll_view->RegisterPostLayoutCallback(base::DoNothing());
-   if (IsVerticalOrientation(collection_node_)) {
+   if (orientation_ == TabStripOrientation::kVertical) {
      scroll_view->SetDrawOverflowIndicator(true);
 +    // Mori: tab activation must keep the sidebar scrollbar hidden too.
      scroll_view->SetVerticalScrollBarMode(

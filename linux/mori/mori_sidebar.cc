@@ -93,15 +93,16 @@ class SidebarState : public ui::EventObserver,
 
   void Toggle() {
     hidden_ = !hidden_;
-    peeking_ = false;
+    // As in Zen, a hidden sidebar stays in the layout, floating over the page
+    // and translated out of sight. Showing and hiding it only moves it; it
+    // never relayouts the window. Docked, it sits where the layout puts it.
+    peeking_ = hidden_;
     showing_ = false;
     leaving_window_ = false;
     keep_timer_.Stop();
     show_timer_.Stop();
     slide_.Stop();
-    // Docked, the sidebar sits where the layout puts it.
-    shown_ = 1;
-    ApplySlide();
+    shown_ = hidden_ ? 0 : 1;
     if (hidden_ && browser_view_->GetWidget()) {
       monitor_ = MonitorWindow(
           this, browser_view_->GetWidget(),
@@ -111,6 +112,7 @@ class SidebarState : public ui::EventObserver,
       monitor_.reset();
     }
     Relayout();
+    ApplySlide();
   }
 
   // ui::EventObserver:
@@ -289,24 +291,18 @@ class SidebarState : public ui::EventObserver,
   void Show() {
     keep_timer_.Stop();
     show_timer_.Stop();
-    if (!peeking_) {
-      peeking_ = true;
-      Relayout();
-      // It starts out of sight to the left.
-      shown_ = 0;
-      ApplySlide();
-    }
     if (!showing_) {
       showing_ = true;
+      SetWindowButtonsVisible(browser_view_->GetWidget(), true);
       StartSlide();
     }
   }
 
-  // Slide the floating sidebar out, then take it out of the layout.
+  // Slide the floating sidebar back out of sight.
   void Hide() {
     keep_timer_.Stop();
     show_timer_.Stop();
-    if (!peeking_ || !showing_) {
+    if (!showing_) {
       return;
     }
     showing_ = false;
@@ -330,10 +326,9 @@ class SidebarState : public ui::EventObserver,
   void FinishSlide() {
     shown_ = showing_ ? 1 : 0;
     ApplySlide();
-    if (!showing_ && peeking_) {
-      peeking_ = false;
-      Relayout();
-    }
+    // macOS: the traffic lights go with the sidebar, as in Arc.
+    SetWindowButtonsVisible(browser_view_->GetWidget(),
+                            !hidden_ || showing_);
   }
 
   // How far left of its place the card is now.
@@ -447,8 +442,7 @@ class SidebarState : public ui::EventObserver,
       tabs->layer()->SetRoundedCornerRadius(
           gfx::RoundedCornersF(0, 0, radius, radius));
     }
-    // macOS: the traffic lights go with the sidebar, as in Arc.
-    SetWindowButtonsVisible(browser_view_->GetWidget(), !hidden_ || peeking_);
+    SetWindowButtonsVisible(browser_view_->GetWidget(), !hidden_ || showing_);
     browser_view_->InvalidateLayout();
     // Moving a view without resizing it can reuse its old backing. Repaint the
     // layered descendants too so the toolbar and tabs sample the wash at their

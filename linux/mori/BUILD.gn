@@ -1,0 +1,115 @@
+# Mori's browser UI. Chromium 157 split chrome/browser/ui's single "ui" target
+# into small per-directory targets, so Mori's sources live in their own
+# target here (this folder is linked into the tree as
+# chrome/browser/ui/views/mori). //chrome/browser/ui/views/frame:browser_view
+# depends on it, which links it into the browser.
+#
+# Built elsewhere: mori_corners, mori_icons and mori_lucide_icons.inc in
+# //ui/gfx (patch 0008), and mori_color_mixer in //chrome/browser/ui/color
+# (patch 0002), because code in those targets calls them.
+
+import("//build/config/ui.gni")
+
+source_set("mori") {
+  sources = [
+    "mori_app_menu.cc",
+    "mori_app_menu.h",
+    "mori_assistant.cc",
+    "mori_assistant.h",
+    "mori_assistant_tools.cc",
+    "mori_assistant_tools.h",
+    "mori_boosts.cc",
+    "mori_boosts.h",
+    "mori_cheatsheet.cc",
+    "mori_cheatsheet.h",
+    "mori_codex.cc",
+    "mori_codex.h",
+    "mori_command_bar.cc",
+    "mori_command_bar.h",
+    "mori_command_ids.cc",
+    "mori_command_ids.h",
+    "mori_commands.cc",
+    "mori_commands.h",
+    "mori_favicons.cc",
+    "mori_favicons.h",
+    "mori_folder_session.h",
+    "mori_folder_tree.h",
+    "mori_folders.cc",
+    "mori_folders.h",
+    "mori_glass.cc",
+    "mori_glass.h",
+    "mori_import.cc",
+    "mori_import.h",
+    "mori_import_parser.h",
+    "mori_json_file.cc",
+    "mori_json_file.h",
+    "mori_layout.h",
+    "mori_library.cc",
+    "mori_library.h",
+    "mori_little.cc",
+    "mori_little.h",
+    "mori_markdown.h",
+    "mori_menu.cc",
+    "mori_menu.h",
+    "mori_new_tab.cc",
+    "mori_new_tab.h",
+    "mori_overlay.cc",
+    "mori_overlay.h",
+    "mori_passkeys.h",
+    "mori_peek.cc",
+    "mori_peek.h",
+    "mori_picture_in_picture.cc",
+    "mori_picture_in_picture.h",
+    "mori_picture_in_picture_script.h",
+    "mori_session.cc",
+    "mori_session.h",
+    "mori_settings.cc",
+    "mori_settings.h",
+    "mori_sidebar.cc",
+    "mori_sidebar.h",
+    "mori_tab_list.cc",
+    "mori_tab_list.h",
+    "mori_tab_names.cc",
+    "mori_tab_names.h",
+    "mori_tab_switcher.cc",
+    "mori_tab_switcher.h",
+    "mori_themes.cc",
+    "mori_themes.h",
+    "mori_toast.cc",
+    "mori_toast.h",
+    "mori_toolbar_layout.cc",
+    "mori_toolbar_layout.h",
+    "mori_typography.h",
+    "mori_web_store.cc",
+    "mori_web_store.h",
+    "mori_window_events.cc",
+    "mori_window_events.h",
+  ]
+  if (is_mac) {
+    sources += [ "mori_window_events_mac.mm" ]
+  }
+
+  # Like Chromium's own split targets: chrome/browser and chrome/browser/ui are
+  # one circularly dependent unit, and this group carries their generated
+  # headers (resources, strings, mojo bindings, features).
+  public_deps = [ "//chrome/browser:browser_public_dependencies" ]
+  deps = [
+    "//base",
+    "//chrome/app:branded_strings",
+    "//chrome/app:command_ids",
+    "//chrome/app:generated_resources",
+    "//chrome/app/theme:chrome_unscaled_resources",
+    "//chrome/app/theme:theme_resources",
+    "//chrome/app/vector_icons",
+    "//chrome/browser/ui/color:color_headers",
+    "//components/vector_icons",
+    "//skia",
+    "//ui/base",
+    "//ui/color",
+    "//ui/compositor",
+    "//ui/gfx",
+    "//ui/views",
+    "//ui/views/controls/webview",
+    "//url",
+  ]
+}

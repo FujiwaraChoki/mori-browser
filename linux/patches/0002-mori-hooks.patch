@@ -1,6 +1,6 @@
 --- a/chrome/browser/ui/browser_command_controller.cc
 +++ b/chrome/browser/ui/browser_command_controller.cc
-@@ -59,6 +59,12 @@
+@@ -61,6 +61,12 @@
  #include "chrome/browser/ui/actions/command_action_updater.h"
  #include "chrome/browser/ui/browser_actions.h"
  #include "chrome/browser/ui/browser_commands.h"
@@ -13,7 +13,7 @@
  #include "chrome/browser/ui/browser_element_identifiers.h"
  #include "chrome/browser/ui/browser_select_file_dialog_controller.h"
  #include "chrome/browser/ui/browser_window.h"
-@@ -528,6 +534,15 @@
+@@ -540,6 +546,15 @@
    }
  #endif
  
@@ -29,7 +29,7 @@
    return command_id == IDC_CLOSE_TAB || command_id == IDC_CLOSE_WINDOW ||
           command_id == IDC_NEW_INCOGNITO_WINDOW ||
           command_id == IDC_NEW_ISOLATED_WINDOW || command_id == IDC_NEW_TAB ||
-@@ -707,7 +722,9 @@
+@@ -719,7 +734,9 @@
        ToggleTabScrollButtonsPin(browser_);
        break;
      case IDC_TOGGLE_VERTICAL_TABS:
@@ -40,7 +40,7 @@
        break;
      case IDC_TOGGLE_VERTICAL_TABS_COLLAPSE:
  #if !BUILDFLAG(IS_MAC)
-@@ -752,6 +769,10 @@
+@@ -764,6 +781,10 @@
        CloseWindow(browser_);
        break;
      case IDC_NEW_TAB: {
@@ -51,7 +51,7 @@
        NewTab(browser_, NewTabTypes::kNewTabCommand);
        break;
      }
-@@ -933,7 +954,8 @@
+@@ -945,7 +966,8 @@
        SavePage(browser_);
        break;
      case IDC_BOOKMARK_THIS_TAB:
@@ -61,7 +61,7 @@
        break;
      case IDC_BOOKMARK_ALL_TABS:
        BookmarkAllTabs(browser_);
-@@ -1105,6 +1127,10 @@
+@@ -1133,6 +1155,10 @@
          break;
        }
        base::RecordAction(base::UserMetricsAction("Accel_Focus_Location"));
@@ -72,7 +72,7 @@
        FocusLocationBar(browser_);
        break;
      case IDC_FOCUS_SEARCH:
-@@ -1267,6 +1293,11 @@
+@@ -1295,6 +1321,11 @@
        ShowAvatarMenu(browser_);
        break;
      case IDC_SHOW_HISTORY:
@@ -84,7 +84,7 @@
        ShowHistory(webui::GetBrowserForOpeningWebUi(browser_));
        break;
      case IDC_SHOW_HISTORY_CLUSTERS_SIDE_PANEL:
-@@ -1300,6 +1331,10 @@
+@@ -1324,6 +1355,10 @@
                            chrome::kPerformanceSubPage);
        break;
      case IDC_OPTIONS:
@@ -95,7 +95,7 @@
        ShowSettings(webui::GetBrowserForOpeningWebUi(browser_));
        break;
      case IDC_EDIT_SEARCH_ENGINES:
-@@ -1607,6 +1642,11 @@
+@@ -1644,6 +1679,11 @@
        break;
      }
      default:
@@ -107,116 +107,39 @@
        LOG(WARNING) << "Received Unimplemented Command: " << id;
        break;
    }
-@@ -1726,6 +1766,11 @@
- 
-   if (IsInLockedFullscreenMode(/*allow_ontask=*/false)) {
+@@ -1789,6 +1829,11 @@
      return;
-+  }
-+
+   }
+ 
 +  // Mori: its own commands.
 +  for (int id = mori::kCommandFirst; id <= mori::kCommandLast; ++id) {
 +    command_updater_->UpdateCommandEnabled(id, true);
-   }
- 
++  }
++
    // Navigation commands
+   const bool can_reload = CanReload(browser_);
+   command_updater_->UpdateCommandEnabled(IDC_RELOAD, can_reload);
 --- a/chrome/browser/ui/accelerator_table.cc
 +++ b/chrome/browser/ui/accelerator_table.cc
-@@ -3,6 +3,8 @@
- // found in the LICENSE file.
+@@ -4,6 +4,8 @@
  
  #include "chrome/browser/ui/accelerator_table.h"
-+
-+#include "chrome/browser/ui/views/mori/mori_command_ids.h"
  
++#include "chrome/browser/ui/views/mori/mori_command_ids.h"
++
  #include <stddef.h>
  
-@@ -358,6 +360,9 @@
-                          std::begin(kTabGroupAcceleratorMap),
+ #include <algorithm>
+@@ -352,6 +354,9 @@
                           std::end(kTabGroupAcceleratorMap));
  #endif  // !BUILDFLAG(IS_MAC) && !BUILDFLAG(IS_CHROMEOS)
-+
+ 
 +    // Mori: Mori 3's shortcuts (Ctrl+S, Alt+1-9, ...).
 +    mori::ApplyMoriAccelerators(accelerators);
-   }
- 
-   return *accelerators;
---- a/chrome/browser/ui/BUILD.gn
-+++ b/chrome/browser/ui/BUILD.gn
-@@ -3341,6 +3341,7 @@
-   }
- 
-   if (is_mac) {
-+    sources += [ "views/mori/mori_window_events_mac.mm" ]
-     deps += [
-       ":browser_commands_mac",
-       ":browser_commands_mac_impl",
-@@ -3531,6 +3532,66 @@
-       "views/frame/base_tab_strip_region_view.cc",
-       "views/frame/base_tab_strip_region_view.h",
-       "views/frame/browser_view.cc",
-+      "views/mori/mori_command_bar.cc",
-+      "views/mori/mori_command_bar.h",
-+      "views/mori/mori_command_ids.cc",
-+      "views/mori/mori_command_ids.h",
-+      "views/mori/mori_app_menu.cc",
-+      "views/mori/mori_assistant.cc",
-+      "views/mori/mori_assistant.h",
-+      "views/mori/mori_assistant_tools.cc",
-+      "views/mori/mori_assistant_tools.h",
-+      "views/mori/mori_app_menu.h",
-+      "views/mori/mori_sidebar.cc",
-+      "views/mori/mori_sidebar.h",
-+      "views/mori/mori_codex.cc",
-+      "views/mori/mori_codex.h",
-+      "views/mori/mori_commands.cc",
-+      "views/mori/mori_commands.h",
-+      "views/mori/mori_boosts.cc",
-+      "views/mori/mori_boosts.h",
-+      "views/mori/mori_cheatsheet.cc",
-+      "views/mori/mori_cheatsheet.h",
-+      "views/mori/mori_json_file.cc",
-+      "views/mori/mori_json_file.h",
-+      "views/mori/mori_favicons.cc",
-+      "views/mori/mori_favicons.h",
-+      "views/mori/mori_glass.cc",
-+      "views/mori/mori_glass.h",
-+      "views/mori/mori_folders.cc",
-+      "views/mori/mori_folders.h",
-+      "views/mori/mori_import.cc",
-+      "views/mori/mori_import.h",
-+      "views/mori/mori_little.cc",
-+      "views/mori/mori_library.cc",
-+      "views/mori/mori_library.h",
-+      "views/mori/mori_little.h",
-+      "views/mori/mori_new_tab.cc",
-+      "views/mori/mori_new_tab.h",
-+      "views/mori/mori_settings.cc",
-+      "views/mori/mori_settings.h",
-+      "views/mori/mori_menu.cc",
-+      "views/mori/mori_menu.h",
-+      "views/mori/mori_overlay.cc",
-+      "views/mori/mori_overlay.h",
-+      "views/mori/mori_peek.cc",
-+      "views/mori/mori_peek.h",
-+      "views/mori/mori_tab_switcher.cc",
-+      "views/mori/mori_tab_switcher.h",
-+      "views/mori/mori_tab_names.cc",
-+      "views/mori/mori_tab_names.h",
-+      "views/mori/mori_tab_list.cc",
-+      "views/mori/mori_tab_list.h",
-+      "views/mori/mori_themes.cc",
-+      "views/mori/mori_themes.h",
-+      "views/mori/mori_toast.cc",
-+      "views/mori/mori_toast.h",
-+      "views/mori/mori_toolbar_layout.cc",
-+      "views/mori/mori_toolbar_layout.h",
-+      "views/mori/mori_web_store.cc",
-+      "views/mori/mori_web_store.h",
-+      "views/mori/mori_window_events.cc",
-+      "views/mori/mori_window_events.h",
-       "views/frame/horizontal_tab_strip_region_view.cc",
-       "views/frame/horizontal_tab_strip_region_view.h",
-       "views/frame/vertical_tab_strip_region_view.cc",
++
+     for (AcceleratorMapping& mapping : *accelerators) {
+       mapping.action_id = chrome::GetActionIdForCommandId(mapping.command_id);
+     }
 --- a/chrome/browser/ui/color/BUILD.gn
 +++ b/chrome/browser/ui/color/BUILD.gn
 @@ -22,6 +22,8 @@
@@ -246,3 +169,14 @@
  
    if (key.custom_theme) {
      key.custom_theme->AddColorMixers(provider, key);
+--- a/chrome/browser/ui/views/frame/BUILD.gn
++++ b/chrome/browser/ui/views/frame/BUILD.gn
+@@ -767,6 +767,8 @@
+     "//chrome/browser:browser_public_dependencies",
+   ]
+   deps = [
++    # Mori: its browser UI (linux/mori), linked into the browser here.
++    "//chrome/browser/ui/views/mori",
+     ":app_menu_button",
+     ":browser_frame_view",
+     ":browser_native_widget",

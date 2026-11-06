@@ -28,7 +28,7 @@
    // when custom tabs are present.
 --- a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
 +++ b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
-@@ -267,6 +267,13 @@
+@@ -276,6 +276,13 @@
  void BrowserNativeWidgetMac::GetWindowFrameTitlebarHeight(
      bool* override_titlebar_height,
      float* titlebar_height) {
@@ -42,7 +42,7 @@
    if (browser_view_ && browser_view_->browser_widget() &&
        browser_view_->browser_widget()->GetFrameView()) {
      *override_titlebar_height = true;
-@@ -276,7 +283,8 @@
+@@ -285,7 +292,8 @@
          std::max(top_element_info.tabstrip_preferred_height,
                   top_element_info.toolbar_minimum_height) +
          browser_view_->browser_widget()->GetFrameView()->GetTopInset(true);

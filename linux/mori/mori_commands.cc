@@ -28,6 +28,8 @@ namespace {
 struct Candidate {
   CommandItem item;
   std::u16string keywords;
+  // Answers only when `keywords`, one phrase per comma, is all that was typed.
+  bool whole_query_only = false;
 };
 
 std::vector<std::u16string> Words(std::u16string_view text) {
@@ -42,6 +44,14 @@ bool EveryWordStartsOneOf(const std::vector<std::u16string>& query,
       return w.starts_with(q);
     });
   });
+}
+
+bool QueryIsOneOf(const std::vector<std::u16string>& query,
+                  std::u16string_view phrases) {
+  return std::ranges::contains(
+      base::SplitString(phrases, u",", base::TRIM_WHITESPACE,
+                        base::SPLIT_WANT_NONEMPTY),
+      base::JoinString(query, u" "));
 }
 
 // Mori's command list, in its order.
@@ -80,7 +90,7 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
   command(u"New Private Window", u"incognito", "hat-glasses",
           IDC_NEW_INCOGNITO_WINDOW);
   command(u"Reader View", u"read article distraction", "book-open-text",
-          IDC_SHOW_READING_MODE_SIDE_PANEL);
+          IDC_SHOW_READING_MODE);
   command(u"Sleep Background Tabs", u"memory unload", "moon",
           kCommandSleepBackgroundTabs);
   command(u"Reopen Closed Tab", u"undo restore", "rotate-ccw",
@@ -125,6 +135,10 @@ std::vector<Candidate> Candidates(BrowserWindowInterface* browser) {
   command(u"Keyboard Shortcuts", u"keys hotkeys cheatsheet help", "keyboard",
           kCommandShowShortcuts);
   command(u"Settings", u"preferences options", "settings", IDC_OPTIONS);
+  // Commands rank above search and Enter runs the first row, so anything that
+  // matches on a prefix or a common word would turn a search into a quit.
+  command(u"Quit Mori", u"quit, quit mori, exit mori", "log-out", IDC_EXIT);
+  out.back().whole_query_only = true;
   command(u"History & Bookmarks", u"library archive", "library",
           IDC_SHOW_HISTORY);
   command(u"Downloads", u"files", "download", IDC_SHOW_DOWNLOADS);
@@ -178,6 +192,12 @@ std::vector<CommandItem> MatchCommands(BrowserWindowInterface* browser,
   std::vector<CommandItem> by_title;
   std::vector<CommandItem> by_keyword;
   for (Candidate& candidate : Candidates(browser)) {
+    if (candidate.whole_query_only) {
+      if (QueryIsOneOf(query_words, candidate.keywords)) {
+        by_title.push_back(std::move(candidate.item));
+      }
+      continue;
+    }
     const std::vector<std::u16string> title = Words(candidate.item.title);
     std::vector<std::u16string> all = title;
     std::ranges::move(Words(candidate.keywords), std::back_inserter(all));

@@ -1,0 +1,466 @@
+--- a/chrome/browser/browser_process_impl.cc
++++ b/chrome/browser/browser_process_impl.cc
+@@ -253,6 +253,8 @@
+ 
+ #if BUILDFLAG(ENABLE_SESSION_SERVICE)
+ #include "chrome/browser/sessions/exit_type_service.h"
++#include "chrome/browser/sessions/session_service.h"
++#include "chrome/browser/sessions/session_service_factory.h"
+ #endif
+ 
+ #if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_CHROMEOS)
+@@ -896,6 +898,12 @@
+     if (exit_type_service) {
+       exit_type_service->SetCurrentSessionExitType(ExitType::kForcedShutdown);
+     }
++    // Mori: the session's last 2.5 s are still waiting on a timer. Without this
++    // they are lost, and restored windows then overwrite newer prefs with them.
++    if (SessionService* session_service =
++            SessionServiceFactory::GetForProfileIfExisting(profile)) {
++      session_service->SaveNow(rundown_counter->GetRundownClosure());
++    }
+ #endif
+     if (profile->GetPrefs()) {
+       profile->GetPrefs()->CommitPendingWrite(
+--- a/chrome/browser/sessions/session_restore.cc
++++ b/chrome/browser/sessions/session_restore.cc
+@@ -63,6 +63,7 @@
+ #include "chrome/browser/ui/browser_tabrestore.h"
+ #include "chrome/browser/ui/browser_tabstrip.h"
+ #include "chrome/browser/ui/browser_window.h"
++#include "chrome/browser/ui/views/mori/mori_session.h"
+ #include "chrome/browser/ui/browser_window/public/browser_collection.h"
+ #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+@@ -750,6 +751,8 @@
+     int tab_count = 0;
+     SessionRestore::StateCounts counts;
+     std::vector<RestoredTab> restored_tabs;
++    // Mori: these windows are about to reopen, so they are no longer closed.
++    mori::ForgetRestoredWindowEntries(profile_, *windows);
+     BrowserWindowInterface* result =
+         ProcessSessionWindows(windows, active_window_id, restored_tabs,
+                               &window_count, &tab_count, &counts);
+@@ -805,6 +808,11 @@
+ 
+     PruneWindows(windows);
+ 
++    // Mori: session files from before popups stopped being tracked can hold them.
++    std::erase_if(*windows, [](const auto& window) {
++      return window->type == sessions::SessionWindow::TYPE_POPUP;
++    });
++
+     if (windows->empty()) {
+       // Restore was unsuccessful. The cookie/storage systems can also delete
+       // their data, since no session restore will happen at a later point.
+--- a/chrome/browser/sessions/session_service_base.cc
++++ b/chrome/browser/sessions/session_service_base.cc
+@@ -277,6 +277,14 @@
+       sessions::CreateSetTabIndexInWindowCommand(tab_id, new_index));
+ }
+ 
++bool SessionServiceBase::IsTrackingWindow(SessionID window_id) const {
++  return ShouldTrackChangesToWindow(window_id);
++}
++
++void SessionServiceBase::SaveNow(base::OnceClosure done) {
++  command_storage_manager_->SaveAndRunWhenWritten(std::move(done));
++}
++
+ void SessionServiceBase::TabInserted(WebContents* contents) {
+   sessions::SessionTabHelper* session_tab_helper =
+       sessions::SessionTabHelper::FromWebContents(contents);
+--- a/chrome/browser/sessions/session_service_base.h
++++ b/chrome/browser/sessions/session_service_base.h
+@@ -114,6 +114,13 @@
+   // Called when a tab is inserted.
+   void TabInserted(content::WebContents* contents);
+ 
++  // Mori: whether this service records `window_id`.
++  bool IsTrackingWindow(SessionID window_id) const;
++
++  // Mori: writes everything pending now, for a shutdown that will not wait, and
++  // runs `done` on the backend's sequence once it is on disk.
++  void SaveNow(base::OnceClosure done);
++
+   // Called when a tab is closing.
+   void TabClosing(content::WebContents* contents);
+ 
+--- a/chrome/browser/sessions/session_service.cc
++++ b/chrome/browser/sessions/session_service.cc
+@@ -17,6 +17,8 @@
+ #include "base/debug/dump_without_crashing.h"
+ #include "base/functional/bind.h"
+ #include "base/metrics/histogram_functions.h"
++#include "base/task/sequenced_task_runner.h"
++#include "base/time/time.h"
+ #include "base/values.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/apps/app_service/launch_utils.h"
+@@ -176,8 +178,10 @@
+ // static
+ bool SessionService::IsRelevantWindowType(
+     sessions::SessionWindow::WindowType window_type) {
+-  return (window_type == sessions::SessionWindow::TYPE_NORMAL) ||
+-         (window_type == sessions::SessionWindow::TYPE_POPUP);
++  // Mori: popups, Little windows among them, are transient. Tracking them would
++  // make them count as open windows, so closing the main window first would
++  // erase it from the session, and they would come back without their UI.
++  return window_type == sessions::SessionWindow::TYPE_NORMAL;
+ }
+ 
+ bool SessionService::ShouldRestore(BrowserWindowInterface* browser) {
+@@ -252,6 +256,7 @@
+   pending_tab_close_ids_.clear();
+   window_closing_ids_.clear();
+   pending_window_close_ids_.clear();
++  deferred_window_closes_.clear();
+ 
+   command_storage_manager()->MoveCurrentSessionToLastSession();
+   ScheduleResetCommands();
+@@ -405,11 +410,14 @@
+     // This is necessary to ensure the session is properly stored when closing
+     // the final window.
+     pending_tab_close_ids_.insert(tab_id);
++  } else if (window_closing_ids_.contains(window_id)) {
++    // Mori: a secondary window is closing. Its tabs stay in the session as long
++    // as the window does.
++    deferred_window_closes_[window_id].insert(tab_id);
+   } else {
+-    // If an individual tab is being closed or a secondary window is being
+-    // closed, just mark the tab as closed now.
++    // If an individual tab is being closed, just mark the tab as closed now.
+     ScheduleCommand(sessions::CreateTabClosedCommand(tab_id));
+-    if (!window_closing_ids_.contains(window_id) && IsOnlyOneTabLeft()) {
++    if (IsOnlyOneTabLeft()) {
+       // This is the last tab in the last tabbed browser.
+       has_open_trackable_browsers_ = false;
+     }
+@@ -482,30 +490,74 @@
+   if (use_pending_close) {
+     LogExitEvent();
+     pending_window_close_ids_.insert(window_id);
++    MakeDeferredWindowClosesPending();
+   } else {
+     window_closing_ids_.insert(window_id);
+   }
+ }
+ 
+ void SessionService::WindowClosed(SessionID window_id) {
+-  windows_tracking()->erase(window_id);
++  // Mori: popups are not tracked, and closing one says nothing about the session.
++  const bool was_tracked = windows_tracking()->erase(window_id) > 0;
+   last_selected_tab_in_window()->erase(window_id);
+ 
+   if (window_closing_ids_.contains(window_id)) {
+     window_closing_ids_.erase(window_id);
+-    ScheduleCommand(sessions::CreateWindowClosedCommand(window_id));
+-  } else if (!pending_window_close_ids_.contains(window_id)) {
++    DeferWindowClose(window_id);
++  } else if (was_tracked && !pending_window_close_ids_.contains(window_id)) {
+     // We'll hit this if user closed the last tab in a window.
+     has_open_trackable_browsers_ = HasOpenTrackableBrowsers(window_id);
+     if (!has_open_trackable_browsers_) {
+       LogExitEvent();
+       pending_window_close_ids_.insert(window_id);
++      MakeDeferredWindowClosesPending();
+     } else {
+-      ScheduleCommand(sessions::CreateWindowClosedCommand(window_id));
++      DeferWindowClose(window_id);
+     }
+   }
+ }
+ 
++void SessionService::DeferWindowClose(SessionID window_id) {
++  deferred_window_closes_[window_id];
++  if (!pending_window_close_ids_.empty()) {
++    MakeDeferredWindowClosesPending();
++    return;
++  }
++  // Long enough for a compositor to work through the windows at logout, or for
++  // someone to close them by hand before quitting. A window closed this close to
++  // the end of the session coming back is much cheaper than losing one.
++  constexpr base::TimeDelta kDeferredWindowCloseDelay = base::Seconds(15);
++  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
++      FROM_HERE,
++      base::BindOnce(&SessionService::CommitDeferredWindowClose,
++                     weak_factory_.GetWeakPtr(), window_id),
++      kDeferredWindowCloseDelay);
++}
++
++void SessionService::CommitDeferredWindowClose(SessionID window_id) {
++  auto it = deferred_window_closes_.find(window_id);
++  if (it == deferred_window_closes_.end()) {
++    return;
++  }
++  for (SessionID tab_id : it->second) {
++    ScheduleCommand(sessions::CreateTabClosedCommand(tab_id));
++  }
++  ScheduleCommand(sessions::CreateWindowClosedCommand(window_id));
++  deferred_window_closes_.erase(it);
++  if (deferred_window_closes_.empty() && reset_after_deferred_closes_ &&
++      is_saving_enabled()) {
++    ScheduleResetCommands();
++  }
++}
++
++void SessionService::MakeDeferredWindowClosesPending() {
++  for (const auto& [window_id, tab_ids] : deferred_window_closes_) {
++    pending_window_close_ids_.insert(window_id);
++    pending_tab_close_ids_.insert(tab_ids.begin(), tab_ids.end());
++  }
++  deferred_window_closes_.clear();
++}
++
+ void SessionService::SetWindowType(SessionID window_id,
+                                    BrowserWindowInterface::Type type) {
+   sessions::SessionWindow::WindowType window_type =
+@@ -685,6 +737,11 @@
+ 
+ void SessionService::ScheduleResetCommands() {
+   DCHECK(is_saving_enabled());
++  if (!deferred_window_closes_.empty()) {
++    reset_after_deferred_closes_ = true;
++    return;
++  }
++  reset_after_deferred_closes_ = false;
+   command_storage_manager()->set_pending_reset(true);
+   command_storage_manager()->ClearPendingCommands();
+   tab_to_available_range()->clear();
+@@ -767,6 +824,9 @@
+ void SessionService::RebuildCommandsIfRequired() {
+   if (rebuild_on_next_save() && pending_window_close_ids_.empty() &&
+       is_saving_enabled()) {
++    // Mori: a rebuild here means history was deleted or a write failed. Both
++    // matter more than keeping a recently closed window.
++    deferred_window_closes_.clear();
+     ScheduleResetCommands();
+   }
+ }
+--- a/chrome/browser/sessions/session_service.h
++++ b/chrome/browser/sessions/session_service.h
+@@ -7,6 +7,7 @@
+ 
+ #include <map>
+ #include <optional>
++#include <set>
+ #include <string>
+ 
+ #include "base/callback_list.h"
+@@ -235,6 +236,13 @@
+   bool ShouldDeleteSessionStorageOnTabClosing(
+       SessionID window_id) const override;
+ 
++  // Mori: see `deferred_window_closes_`.
++  void DeferWindowClose(SessionID window_id);
++  void CommitDeferredWindowClose(SessionID window_id);
++  // The last window is closing too, so all of them closed together: hold every
++  // deferred close as pending, which keeps those windows for the next launch.
++  void MakeDeferredWindowClosesPending();
++
+   // Invoked with true when all browsers start closing.
+   void OnClosingAllBrowsersChanged(bool closing);
+ 
+@@ -263,6 +271,15 @@
+   using WindowClosingIDs = std::set<SessionID>;
+   WindowClosingIDs window_closing_ids_;
+ 
++  // Mori: a window closed while others stay open, with the tabs that closed
++  // with it. Its close is written only after a delay, so a window-by-window
++  // quit (a compositor closing everything at logout) restores them all.
++  std::map<SessionID, std::set<SessionID>> deferred_window_closes_;
++
++  // Mori: a reset rebuilds the file from open windows, which would lose the
++  // deferred ones, so it waits until they are committed.
++  bool reset_after_deferred_closes_ = false;
++
+   // Are there any open trackable browsers?
+   bool has_open_trackable_browsers_ = false;
+ 
+--- a/chrome/browser/ui/browser_live_tab_context.cc
++++ b/chrome/browser/ui/browser_live_tab_context.cc
+@@ -13,6 +13,7 @@
+ #include "base/check_deref.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/to_string.h"
++#include "base/strings/utf_string_conversions.h"
+ #include "base/token.h"
+ #include "base/uuid.h"
+ #include "base/values.h"
+@@ -28,6 +29,8 @@
+ #include "chrome/browser/ui/browser_tab_strip_model_delegate.h"
+ #include "chrome/browser/ui/browser_tabrestore.h"
+ #include "chrome/browser/ui/browser_window.h"
++#include "chrome/browser/ui/views/mori/mori_folders.h"
++#include "chrome/browser/ui/views/mori/mori_tab_names.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
+@@ -201,6 +204,15 @@
+   glic::PopulateGlicExtraData(tab_strip_model_->GetTabAtIndex(index),
+                               &extra_data);
+ 
++  // Mori: a tab reopens with its name and in its folder.
++  content::WebContents* contents = tab_strip_model_->GetWebContentsAt(index);
++  if (std::optional<std::u16string> name = mori::GetTabName(contents)) {
++    extra_data[mori::kTabNameKey] = base::UTF16ToUTF8(*name);
++  }
++  if (std::string folder = mori::GetTabFolderData(contents); !folder.empty()) {
++    extra_data[mori::kTabFolderKey] = std::move(folder);
++  }
++
+   return extra_data;
+ }
+ 
+--- a/chrome/browser/ui/sessions/session_service_browser_helper.cc
++++ b/chrome/browser/ui/sessions/session_service_browser_helper.cc
+@@ -91,14 +91,23 @@
+   switch (change.type()) {
+     case TabStripModelChange::kInserted: {
+       for (const auto& contents : change.GetInsert()->contents) {
+-        sessions::SessionTabHelper::FromWebContents(contents.contents)
+-            ->SetWindowID(session_id_);
++        sessions::SessionTabHelper* tab_helper =
++            sessions::SessionTabHelper::FromWebContents(contents.contents);
++        const SessionID previous_window_id = tab_helper->window_id();
++        tab_helper->SetWindowID(session_id_);
+ 
+         SyncHistoryWithTabs(contents.index);
+ 
+         SessionServiceBase* service = GetSessionService();
+         if (service) {
+           service->TabInserted(contents.contents);
++          // Mori: a tab arriving from an untracked window (Little, a popup) has
++          // no history in the session yet.
++          if (previous_window_id.is_valid() &&
++              !service->IsTrackingWindow(previous_window_id)) {
++            service->TabRestored(contents.contents,
++                                 tab_strip_model->IsTabPinned(contents.index));
++          }
+           int new_active_index = tab_strip_model->active_index();
+           if (contents.index < new_active_index) {
+             service->SetSelectedTabInWindow(session_id_, new_active_index);
+@@ -129,6 +138,12 @@
+     case TabStripModelChange::kMoved: {
+       auto* move = change.GetMove();
+       SyncHistoryWithTabs(std::min(move->from_index, move->to_index));
++      // Mori: the active tab keeps being active but its index changed, and the
++      // session stores the index. active_tab_changed() below stays false.
++      if (SessionServiceBase* service = GetSessionServiceIfExisting()) {
++        service->SetSelectedTabInWindow(session_id_,
++                                        tab_strip_model->active_index());
++      }
+       break;
+     }
+     case TabStripModelChange::kReplaced: {
+--- a/components/sessions/content/session_tab_helper.cc
++++ b/components/sessions/content/session_tab_helper.cc
+@@ -11,17 +11,67 @@
+ #include "components/sessions/core/serialized_user_agent_override.h"
+ #include "content/public/browser/navigation_controller.h"
+ #include "content/public/browser/navigation_details.h"
++#include "content/public/browser/navigation_entry.h"
+ #include "content/public/browser/web_contents.h"
+ 
+ namespace sessions {
+ 
++namespace {
++
++// Mori: a page's title usually arrives after the commit that SessionTabHelper
++// records, and nothing else writes the entry on a page that stays still. Such a
++// tab restores with no title and shows its URL until it loads.
++class SessionTitleObserver
++    : public content::WebContentsObserver,
++      public content::WebContentsUserData<SessionTitleObserver> {
++ public:
++  ~SessionTitleObserver() override = default;
++
++  void TitleWasSet(content::NavigationEntry* entry) override {
++    content::NavigationController& controller = web_contents()->GetController();
++    const int index = controller.GetLastCommittedEntryIndex();
++    if (!entry || index < 0 || controller.GetEntryAtIndex(index) != entry) {
++      return;
++    }
++    SessionTabHelperDelegate* delegate = delegate_lookup_.Run(web_contents());
++    const SessionTabHelper* helper =
++        SessionTabHelper::FromWebContents(web_contents());
++    if (!delegate || !helper) {
++      return;
++    }
++    delegate->UpdateTabNavigation(
++        helper->window_id(), helper->session_id(),
++        ContentSerializedNavigationBuilder::FromNavigationEntry(index, entry));
++  }
++
++ private:
++  friend class content::WebContentsUserData<SessionTitleObserver>;
++  SessionTitleObserver(content::WebContents* contents,
++                       SessionTabHelper::DelegateLookup lookup)
++      : content::WebContentsObserver(contents),
++        content::WebContentsUserData<SessionTitleObserver>(*contents),
++        delegate_lookup_(std::move(lookup)) {}
++
++  SessionTabHelper::DelegateLookup delegate_lookup_;
++
++  WEB_CONTENTS_USER_DATA_KEY_DECL();
++};
++
++WEB_CONTENTS_USER_DATA_KEY_IMPL(SessionTitleObserver);
++
++}  // namespace
++
+ SessionTabHelper::SessionTabHelper(content::WebContents* contents,
+                                    DelegateLookup lookup)
+     : content::WebContentsObserver(contents),
+       content::WebContentsUserData<SessionTabHelper>(*contents),
+-      delegate_lookup_(std::move(lookup)),
++      delegate_lookup_(lookup),
+       session_id_(SessionID::NewUnique()),
+-      window_id_(SessionID::InvalidValue()) {}
++      window_id_(SessionID::InvalidValue()) {
++  if (delegate_lookup_) {
++    SessionTitleObserver::CreateForWebContents(contents, std::move(lookup));
++  }
++}
+ 
+ SessionTabHelper::~SessionTabHelper() = default;
+ 
+--- a/components/sessions/core/command_storage_manager.cc
++++ b/components/sessions/core/command_storage_manager.cc
+@@ -362,6 +362,11 @@
+   }
+ }
+ 
++void CommandStorageManager::SaveAndRunWhenWritten(base::OnceClosure done) {
++  Save();
++  backend_task_runner_->PostNonNestableTask(FROM_HERE, std::move(done));
++}
++
+ void CommandStorageManager::Save() {
+   weak_factory_for_timer_.InvalidateWeakPtrs();
+ 
+--- a/components/sessions/core/command_storage_manager.h
++++ b/components/sessions/core/command_storage_manager.h
+@@ -111,6 +111,9 @@
+   // Passes all pending commands to the backend for saving.
+   void Save();
+ 
++  // Mori: Save(), then runs `done` on the backend's sequence, after the writes.
++  void SaveAndRunWhenWritten(base::OnceClosure done);
++
+   // Returns true if StartSaveTimer() has been called, but a save has not yet
+   // occurred.
+   bool HasPendingSave() const;
+--- a/components/sessions/core/tab_restore_service_helper.cc
++++ b/components/sessions/core/tab_restore_service_helper.cc
+@@ -682,6 +682,10 @@
+     return;
+   }
+ 
++  // Mori: record it, as restoring an entry does, or it returns next launch.
++  if (observer_) {
++    observer_->OnRestoreEntryById(id, it);
++  }
+   entries_.erase(it);
+   NotifyEntriesChanged();
+ }

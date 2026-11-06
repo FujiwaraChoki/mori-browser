@@ -1,19 +1,19 @@
 --- a/chrome/browser/ui/views/extensions/extensions_toolbar_desktop.h
 +++ b/chrome/browser/ui/views/extensions/extensions_toolbar_desktop.h
-@@ -143,6 +143,13 @@
-   // under kExtensionsMenuAccessControl feature is fully rolled out and we can
+@@ -144,6 +144,13 @@
    // call directly into the menu coordinator.
    bool IsExtensionsMenuShowing() const;
-+
+ 
 +  // Keep the toolbar anchor visible while an extension owns transient UI.
 +  bool HasActivePopup() const {
 +    return popup_owner_ || popped_out_action_.has_value() ||
 +           extension_with_open_context_menu_id_.has_value() ||
 +           !anchored_widgets_.empty() || IsExtensionsMenuShowing();
 +  }
- 
++
    // Event handler for when the extensions menu is opened.
    void OnMenuOpening();
+ 
 --- a/chrome/browser/ui/views/location_bar/location_bar_view.cc
 +++ b/chrome/browser/ui/views/location_bar/location_bar_view.cc
 @@ -3,6 +3,7 @@
@@ -24,7 +24,7 @@
  
  #include <algorithm>
  #include <memory>
-@@ -938,7 +939,11 @@
+@@ -965,7 +966,11 @@
                            /*edge_padding=*/trailing_decorations_edge_padding);
  
    // Perform layout.
@@ -37,7 +37,7 @@
  
    // Use the unelided omnibox width as the `reserved_width` so preferred size
    // calculations of decorations are calculated to maximize this constraint.
-@@ -962,7 +967,7 @@
+@@ -989,7 +994,7 @@
    // The bounds must be wide enough for all the decorations to fit, so if
    // |entry_width| is negative, enlarge by the necessary extra space.
    gfx::Rect location_bounds(0, vertical_padding,

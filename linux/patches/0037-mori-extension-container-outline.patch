@@ -1,6 +1,11 @@
-diff --git a/chrome/browser/ui/views/extensions/extensions_toolbar_desktop.cc b/chrome/browser/ui/views/extensions/extensions_toolbar_desktop.cc
 --- a/chrome/browser/ui/views/extensions/extensions_toolbar_desktop.cc
 +++ b/chrome/browser/ui/views/extensions/extensions_toolbar_desktop.cc
-@@ -151,1 +151,1 @@
+@@ -149,7 +149,7 @@
+ ExtensionsToolbarDesktop::ExtensionsToolbarDesktop(
+     BrowserWindowInterface* browser,
+     DisplayMode display_mode)
 -    : ToolbarIconContainerView(/*uses_highlight=*/true),
 +    : ToolbarIconContainerView(/*uses_highlight=*/false),
+       browser_(browser),
+       model_(ToolbarActionsModel::Get(browser_->GetProfile())),
+       display_mode_(display_mode),

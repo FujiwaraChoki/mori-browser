@@ -1005,6 +1005,19 @@ constexpr IconOp kSquareArrowOutUpRightOps[] = {
     {'L', {21.0f, 3.0f}},
     {'L', {21.0f, 9.0f}},
 };
+constexpr IconOp kLogOutOps[] = {
+    {'M', {16.0f, 17.0f}},
+    {'L', {21.0f, 12.0f}},
+    {'L', {16.0f, 7.0f}},
+    {'M', {21.0f, 12.0f}},
+    {'L', {9.0f, 12.0f}},
+    {'M', {9.0f, 21.0f}},
+    {'L', {5.0f, 21.0f}},
+    {'A', {2.0f, 2.0f, 0.0f, 0.0f, 1.0f, 3.0f, 19.0f}},
+    {'L', {3.0f, 5.0f}},
+    {'A', {2.0f, 2.0f, 0.0f, 0.0f, 1.0f, 5.0f, 3.0f}},
+    {'L', {9.0f, 3.0f}},
+};
 constexpr IconOp kLinkOps[] = {
     {'M', {10.0f, 13.0f}},
     {'A', {5.0f, 5.0f, 0.0f, 0.0f, 0.0f, 17.54f, 13.54f}},
@@ -1595,6 +1608,7 @@ constexpr gfx::VectorIcon kMoriSquarePenIcon(kPlaceholderReps, 1, "mori::square-
 constexpr gfx::VectorIcon kMoriSquareIcon(kPlaceholderReps, 1, "mori::square");
 constexpr gfx::VectorIcon kMoriArrowUpIcon(kPlaceholderReps, 1, "mori::arrow-up");
 constexpr gfx::VectorIcon kMoriSquareArrowOutUpRightIcon(kPlaceholderReps, 1, "mori::square-arrow-out-up-right");
+constexpr gfx::VectorIcon kMoriLogOutIcon(kPlaceholderReps, 1, "mori::log-out");
 constexpr gfx::VectorIcon kMoriLinkIcon(kPlaceholderReps, 1, "mori::link");
 constexpr gfx::VectorIcon kMoriFileCodeIcon(kPlaceholderReps, 1, "mori::file-code");
 constexpr gfx::VectorIcon kMoriImageIcon(kPlaceholderReps, 1, "mori::image");
@@ -1704,6 +1718,7 @@ constexpr LucideIconData kLucideIcons[] = {
     {"square", kSquareOps, &kMoriSquareIcon},
     {"arrow-up", kArrowUpOps, &kMoriArrowUpIcon},
     {"square-arrow-out-up-right", kSquareArrowOutUpRightOps, &kMoriSquareArrowOutUpRightIcon},
+    {"log-out", kLogOutOps, &kMoriLogOutIcon},
     {"link", kLinkOps, &kMoriLinkIcon},
     {"file-code", kFileCodeOps, &kMoriFileCodeIcon},
     {"image", kImageOps, &kMoriImageIcon},

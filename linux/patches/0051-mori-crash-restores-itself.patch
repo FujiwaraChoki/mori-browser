@@ -1,0 +1,888 @@
+--- a/chrome/browser/sessions/exit_type_service.cc
++++ b/chrome/browser/sessions/exit_type_service.cc
+@@ -7,6 +7,7 @@
+ #include "base/containers/flat_set.h"
+ #include "base/memory/ptr_util.h"
+ #include "base/memory/raw_ptr.h"
++#include "base/time/time.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/lifetime/browser_shutdown.h"
+ #include "chrome/browser/profiles/profile.h"
+@@ -32,12 +33,17 @@
+ constexpr char kPrefExitTypeNormal[] = "Normal";
+ constexpr char kPrefExitTypeForcedShutdown[] = "SessionEnded";
+ 
++// Mori: "Crashed", within a minute of reopening the session after a crash.
++constexpr char kPrefExitTypeCrashedInRecovery[] = "CrashedInRecovery";
++constexpr base::TimeDelta kCrashRecoveryWindow = base::Seconds(60);
++
+ // Converts the `kSessionExitType` pref to the corresponding EXIT_TYPE.
+ ExitType SessionTypePrefValueToExitType(const std::string& value) {
+   if (value == kPrefExitTypeForcedShutdown) {
+     return ExitType::kForcedShutdown;
+   }
+-  if (value == kPrefExitTypeCrashed) {
++  if (value == kPrefExitTypeCrashed ||
++      value == kPrefExitTypeCrashedInRecovery) {
+     return ExitType::kCrashed;
+   }
+   return ExitType::kClean;
+@@ -197,14 +203,41 @@
+       last_session_exit_type_(SessionTypePrefValueToExitType(
+           profile_->GetPrefs()->GetString(prefs::kSessionExitType))),
+       current_session_exit_type_(ExitType::kCrashed),
+-      waiting_for_user_to_ack_crash_(last_session_exit_type_ ==
+-                                     ExitType::kCrashed) {
++      // Mori: never. Waiting keeps saving off and, with any window that counts
++      // as an answer, lets an empty session replace the one that crashed.
++      waiting_for_user_to_ack_crash_(false),
++      is_crash_loop_(profile_->GetPrefs()->GetString(prefs::kSessionExitType) ==
++                     kPrefExitTypeCrashedInRecovery) {
+   // Mark the session as open.
++  if (last_session_exit_type_ == ExitType::kCrashed) {
++#if BUILDFLAG(IS_WIN)
++    profile_->AckCrashForTracking();
++#endif
++    StartCrashRecoveryWindow();
++    return;
++  }
+   profile_->GetPrefs()->SetString(prefs::kSessionExitType,
+                                   kPrefExitTypeCrashed);
+-  if (waiting_for_user_to_ack_crash_) {
+-    browser_tab_observer_ = std::make_unique<BrowserTabObserverImpl>(this);
++  // Mori: now, not on the next timed write. A crash during startup has to read
++  // as one, or a session that crashes on load would reopen forever.
++  profile_->GetPrefs()->CommitPendingWrite();
++}
++
++void ExitTypeService::StartCrashRecoveryWindow() {
++  if (current_session_exit_type_ != ExitType::kCrashed) {
++    return;
+   }
++  profile_->GetPrefs()->SetString(prefs::kSessionExitType,
++                                  kPrefExitTypeCrashedInRecovery);
++  profile_->GetPrefs()->CommitPendingWrite();
++  crash_recovery_timer_.Start(
++      FROM_HERE, kCrashRecoveryWindow, base::BindOnce([](ExitTypeService* self) {
++        if (self->current_session_exit_type_ == ExitType::kCrashed) {
++          self->profile_->GetPrefs()->SetString(prefs::kSessionExitType,
++                                                kPrefExitTypeCrashed);
++          self->profile_->GetPrefs()->CommitPendingWrite();
++        }
++      }, base::Unretained(this)));
+ }
+ 
+ void ExitTypeService::CheckUserAckedCrash() {
+--- a/chrome/browser/sessions/exit_type_service.h
++++ b/chrome/browser/sessions/exit_type_service.h
+@@ -12,6 +12,7 @@
+ #include "base/callback_list.h"
+ #include "base/functional/callback_forward.h"
+ #include "base/memory/raw_ptr.h"
++#include "base/timer/timer.h"
+ #include "components/keyed_service/core/keyed_service.h"
+ 
+ class Profile;
+@@ -91,6 +92,18 @@
+   // See class description for caveats around `kCrashed`.
+   ExitType last_session_exit_type() const { return last_session_exit_type_; }
+ 
++  // Mori: a crash reopens the session by itself, with saving on, so nothing
++  // waits for the user. The exception is a crash soon after such a reopening.
++  bool is_crash_loop() const { return is_crash_loop_; }
++
++  // Mori: the session is being reopened after a crash. For a minute, a crash
++  // counts as caused by that, and the next launch does not reopen it again.
++  void StartCrashRecoveryWindow();
++
++  // Mori: "Restore pages?" is looked at once per run, whatever launches follow.
++  bool crash_bubble_shown() const { return crash_bubble_shown_; }
++  void set_crash_bubble_shown() { crash_bubble_shown_ = true; }
++
+   std::unique_ptr<CrashedLock> CreateCrashedLock();
+ 
+   Profile* profile() { return profile_; }
+@@ -149,6 +162,11 @@
+   // once the user acknowledges the crash.
+   bool waiting_for_user_to_ack_crash_;
+ 
++  // Mori: see the accessors.
++  bool is_crash_loop_ = false;
++  bool crash_bubble_shown_ = false;
++  base::OneShotTimer crash_recovery_timer_;
++
+   // Set to true once a restore completes.
+   bool did_restore_complete_ = false;
+ 
+--- a/chrome/browser/sessions/session_service.cc
++++ b/chrome/browser/sessions/session_service.cc
+@@ -16,6 +16,7 @@
+ #include "base/debug/alias.h"
+ #include "base/debug/dump_without_crashing.h"
+ #include "base/functional/bind.h"
++#include "base/task/bind_post_task.h"
+ #include "base/metrics/histogram_functions.h"
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/time/time.h"
+@@ -64,6 +65,7 @@
+ #include "components/sessions/core/session_id.h"
+ #include "components/sessions/core/session_types.h"
+ #include "components/sessions/core/tab_restore_service.h"
++#include "components/sessions/core/tab_restore_service_impl.h"
+ #include "components/tab_groups/tab_group_id.h"
+ #include "content/public/browser/navigation_details.h"
+ #include "content/public/browser/navigation_entry.h"
+@@ -150,6 +152,14 @@
+                           base::Unretained(this)));
+   ExitTypeService* exit_type_service =
+       ExitTypeService::GetInstanceForProfile(profile);
++  // Mori: saving stays on after a crash, and starts a newer file. Keep the one
++  // that crashed, whatever happens to this session. If this launch won't reopen
++  // it, only the user's answer lets it go.
++  if (is_first_session_service_ && exit_type_service &&
++      exit_type_service->last_session_exit_type() == ExitType::kCrashed) {
++    command_storage_manager()->PreserveLastSession(
++        /*hold=*/HasPendingUncleanExit(profile));
++  }
+   if (exit_type_service && exit_type_service->waiting_for_user_to_ack_crash()) {
+     SetSavingEnabled(false);
+     exit_type_service->AddCrashAckCallback(base::BindOnce(
+@@ -267,6 +277,56 @@
+   ++count_delete_last_session_for_testing_;
+ }
+ 
++void SessionService::HasHeldSessions(base::OnceCallback<void(bool)> callback) {
++  command_storage_manager()->HasHeldSessions(std::move(callback));
++}
++
++void SessionService::RestoreHeldSessions(BrowserWindowInterface* browser) {
++  held_restore_subscription_ = SessionRestore::RegisterOnSessionRestoredCallback(
++      base::BindRepeating(&SessionService::OnHeldSessionsRestored,
++                          weak_factory_.GetWeakPtr()));
++  command_storage_manager()->ReadHeldSessionsNext();
++  SessionRestore::RestoreSessionAfterCrash(browser);
++}
++
++void SessionService::OnHeldSessionsRestored(Profile* restored_profile,
++                                            int num_tabs) {
++  if (restored_profile != profile()) {
++    return;
++  }
++  held_restore_subscription_ = {};
++  // Not before this session's file has them: a crash until then loses nothing.
++  SaveNow(base::BindPostTaskToCurrentDefault(
++      base::BindOnce(&SessionService::ReleaseHeldSessions,
++                     weak_factory_.GetWeakPtr())));
++}
++
++void SessionService::DismissHeldSessions() {
++  command_storage_manager()->ReadHeldSessionsNext();
++  GetLastSession(base::BindOnce(&SessionService::OnGotHeldSessionsToDismiss,
++                                weak_factory_.GetWeakPtr()));
++}
++
++void SessionService::OnGotHeldSessionsToDismiss(
++    std::vector<std::unique_ptr<sessions::SessionWindow>> windows,
++    SessionID active_window_id,
++    bool read_error) {
++  // Reopen Closed Tab gets them, and they stay held until that is on disk.
++  base::OnceClosure release = base::BindPostTaskToCurrentDefault(base::BindOnce(
++      &SessionService::ReleaseHeldSessions, weak_factory_.GetWeakPtr()));
++  if (sessions::TabRestoreService* tab_restore_service =
++          TabRestoreServiceFactory::GetForProfile(profile())) {
++    static_cast<sessions::TabRestoreServiceImpl*>(tab_restore_service)
++        ->AddSessionWindows(std::move(windows), std::move(release));
++  } else {
++    std::move(release).Run();
++  }
++}
++
++void SessionService::ReleaseHeldSessions() {
++  command_storage_manager()->ReleaseHeldSessions();
++}
++
+ void SessionService::SetSplitTab(SessionID window_id,
+                                  SessionID tab_id,
+                                  std::optional<split_tabs::SplitTabId> split) {
+--- a/chrome/browser/sessions/session_service.h
++++ b/chrome/browser/sessions/session_service.h
+@@ -92,6 +92,15 @@
+   // Deletes the last session.
+   void DeleteLastSession();
+ 
++  // Mori: sessions a crash left behind and no launch reopened wait, on disk,
++  // for the user's answer in the "Restore pages?" bubble. Asks whether any do.
++  void HasHeldSessions(base::OnceCallback<void(bool)> callback);
++
++  // Mori: the answers. Restoring them opens them in `browser`. Dismissing them
++  // puts them in Reopen Closed Tab.
++  void RestoreHeldSessions(BrowserWindowInterface* browser);
++  void DismissHeldSessions();
++
+   // Sets a tab's split ID, if any. Note that a split can't be across
+   // multiple windows.
+   void SetSplitTab(SessionID window_id,
+@@ -180,6 +189,14 @@
+   void DidScheduleCommand() override;
+ 
+  private:
++  // Mori: see RestoreHeldSessions() and DismissHeldSessions().
++  void OnHeldSessionsRestored(Profile* restored_profile, int num_tabs);
++  void OnGotHeldSessionsToDismiss(
++      std::vector<std::unique_ptr<sessions::SessionWindow>> windows,
++      SessionID active_window_id,
++      bool read_error);
++  void ReleaseHeldSessions();
++
+   // Allow tests to access our inner structures for testing purposes.
+   FRIEND_TEST_ALL_PREFIXES(SessionServiceTest, SavedSessionNotification);
+   FRIEND_TEST_ALL_PREFIXES(SessionServiceTest, RestoreActivation1);
+@@ -309,6 +326,9 @@
+ 
+   base::CallbackListSubscription closing_all_browsers_subscription_;
+ 
++  // Mori: see RestoreHeldSessions().
++  base::CallbackListSubscription held_restore_subscription_;
++
+   bool did_log_exit_ = false;
+ 
+   int unrecoverable_write_error_count_ = 0;
+--- a/chrome/browser/ui/startup/infobar_utils.cc
++++ b/chrome/browser/ui/startup/infobar_utils.cc
+@@ -21,6 +21,7 @@
+ #include "chrome/browser/infobars/infobar_features.h"
+ #include "chrome/browser/obsolete_system/obsolete_system.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/sessions/exit_type_service.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/session_crashed_bubble.h"
+ #include "chrome/browser/ui/startup/automation_infobar_delegate.h"
+@@ -214,11 +215,21 @@
+   }
+ 
+   // Web apps should not display the session restore bubble (crbug.com/40800614)
++  // Mori: it appears only if a session is held, which it finds out itself, in
++  // a window that can anchor it and hold what it restores: not Little Mori, not
++  // incognito.
++  ExitTypeService* exit_type_service =
++      browser->GetProfile()->IsOffTheRecord()
++          ? nullptr
++          : ExitTypeService::GetInstanceForProfile(browser->GetProfile());
+   const bool should_display_bubble =
+       !startup_command_line.HasSwitch("hide-crashed-bubble") &&
+-      !is_web_app && HasPendingUncleanExit(browser->GetProfile());
++      !is_web_app && exit_type_service &&
++      !exit_type_service->crash_bubble_shown() &&
++      browser->GetType() == BrowserWindowInterface::TYPE_NORMAL;
+   base::UmaHistogramBoolean("Startup.CrashBubbleShown", should_display_bubble);
+   if (should_display_bubble) {
++    exit_type_service->set_crash_bubble_shown();
+     SessionCrashedBubble::ShowIfNotOffTheRecordProfile(
+         browser,
+         /*skip_tab_checking=*/false);
+--- a/chrome/browser/ui/startup/startup_browser_creator.cc
++++ b/chrome/browser/ui/startup/startup_browser_creator.cc
+@@ -1629,11 +1629,22 @@
+ }
+ 
+ bool HasPendingUncleanExit(Profile* profile) {
+-  return ExitTypeService::GetLastSessionExitType(profile) ==
+-             ExitType::kCrashed &&
+-         !ProfileLaunchObserver::HasBeenLaunchedAndBrowserOpen(profile) &&
+-         !base::CommandLine::ForCurrentProcess()->HasSwitch(
+-             switches::kHideCrashRestoreBubble);
++  if (ExitTypeService::GetLastSessionExitType(profile) != ExitType::kCrashed ||
++      ProfileLaunchObserver::HasBeenLaunchedAndBrowserOpen(profile) ||
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          switches::kHideCrashRestoreBubble)) {
++    return false;
++  }
++  // Mori: a crash reopens the session like any other exit. It is only pending,
++  // meaning startup leaves it for the user to decide, in a crash loop or when
++  // startup would not reopen the session anyway.
++  ExitTypeService* service =
++      ExitTypeService::GetInstanceForProfile(profile->GetOriginalProfile());
++  return !service->crash_bubble_shown() &&
++         (service->is_crash_loop() ||
++          !StartupBrowserCreator::GetSessionStartupPref(
++               *base::CommandLine::ForCurrentProcess(), profile)
++               .ShouldRestoreLastSession());
+ }
+ 
+ StartupProfilePathInfo GetStartupProfilePath(
+--- a/chrome/browser/ui/views/session_crashed_bubble_view.cc
++++ b/chrome/browser/ui/views/session_crashed_bubble_view.cc
+@@ -23,6 +23,8 @@
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/sessions/exit_type_service.h"
+ #include "chrome/browser/sessions/session_restore.h"
++#include "chrome/browser/sessions/session_service.h"
++#include "chrome/browser/sessions/session_service_factory.h"
+ #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+@@ -99,9 +101,26 @@
+ 
+ DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kUmaConsentCheckboxId);
+ 
++// Mori: what this launch did with the session, which is not always that the last
++// exit was a crash.
++ui::DialogModelLabel GetMessage(Profile* profile) {
++  if (ExitTypeService::GetLastSessionExitType(profile) != ExitType::kCrashed) {
++    return ui::DialogModelLabel(
++        u"Mori didn't reopen these pages after a crash earlier.");
++  }
++  ExitTypeService* service = ExitTypeService::GetInstanceForProfile(profile);
++  if (service && service->is_crash_loop() &&
++      SessionStartupPref::GetStartupPref(profile).ShouldRestoreLastSession()) {
++    return ui::DialogModelLabel(
++        u"Mori closed unexpectedly right after reopening these pages, so they "
++        u"weren't opened again. One of them may be the cause.");
++  }
++  return ui::DialogModelLabel(IDS_SESSION_CRASHED_VIEW_MESSAGE);
++}
++
+ class SessionCrashedBubbleDelegate : public ui::DialogModelDelegate {
+  public:
+-  explicit SessionCrashedBubbleDelegate(Profile* profile) {
++  explicit SessionCrashedBubbleDelegate(Profile* profile) : profile_(profile) {
+     if (ExitTypeService* exit_type_service =
+             ExitTypeService::GetInstanceForProfile(profile)) {
+       crashed_lock_ = exit_type_service->CreateCrashedLock();
+@@ -119,11 +138,25 @@
+     dialog_model()->host()->Close();
+ 
+     RecordBubbleHistogramValue(SESSION_CRASHED_BUBBLE_STARTUP_PAGES);
++    DismissHeldSessions();
+     // Opening tabs has side effects, so it's preferable to do it after the
+     // bubble was closed.
+     SessionRestore::OpenStartupPagesAfterCrash(browser);
+   }
+ 
++  // Mori: an answer. Being closed along with the window, or at exit, is not.
++  void DismissHeldSessions() {
++    if (SessionService* session_service =
++            SessionServiceFactory::GetForProfile(profile_)) {
++      session_service->DismissHeldSessions();
++    }
++  }
++
++  void OnCloseAction() {
++    ignored_ = false;
++    DismissHeldSessions();
++  }
++
+   void OnWindowClosing() {
+     if (ignored_) {
+       RecordBubbleHistogramValue(SESSION_CRASHED_BUBBLE_IGNORED);
+@@ -145,9 +178,17 @@
+     dialog_model()->host()->Close();
+ 
+     RecordBubbleHistogramValue(SESSION_CRASHED_BUBBLE_RESTORED);
++    // Mori: if this crashes as well, the next launch asks again.
++    if (ExitTypeService* exit_type_service =
++            ExitTypeService::GetInstanceForProfile(browser->GetProfile())) {
++      exit_type_service->StartCrashRecoveryWindow();
++    }
+     // Restoring tabs has side effects, so it's preferable to do it after the
+     // bubble was closed.
+-    SessionRestore::RestoreSessionAfterCrash(browser);
++    if (SessionService* session_service =
++            SessionServiceFactory::GetForProfile(browser->GetProfile())) {
++      session_service->RestoreHeldSessions(browser);
++    }
+   }
+ 
+   void MaybeEnableUma() {
+@@ -180,6 +221,7 @@
+     return true;
+   }
+ 
++  const raw_ptr<Profile> profile_;
+   bool ignored_ = true;
+   std::unique_ptr<ExitTypeService::CrashedLock> crashed_lock_;
+ };
+@@ -226,22 +268,40 @@
+     return;
+   }
+ 
++  // Mori: this offers the sessions that are held, so without one there is
++  // nothing to ask.
++  SessionService* session_service =
++      SessionServiceFactory::GetForProfile(browser->GetProfile());
++  if (!session_service) {
++    return;
++  }
++
+   // Observes possible browser removal before Show is called.
+   auto browser_observer =
+       std::make_unique<SessionCrashedBubbleView::BrowserRemovalObserver>(
+           browser);
+ 
+-  if (DoesSupportConsentCheck()) {
+-    GoogleUpdateSettings::CollectStatsConsentTaskRunner()
+-        ->PostTaskAndReplyWithResult(
+-            FROM_HERE,
+-            base::BindOnce(&GoogleUpdateSettings::GetCollectStatsConsent),
+-            base::BindOnce(&SessionCrashedBubbleView::Show,
+-                           std::move(browser_observer), skip_tab_checking));
+-  } else {
+-    SessionCrashedBubbleView::Show(std::move(browser_observer),
+-                                   skip_tab_checking, false);
+-  }
++  session_service->HasHeldSessions(base::BindOnce(
++      [](std::unique_ptr<SessionCrashedBubbleView::BrowserRemovalObserver>
++             browser_observer,
++         bool skip_tab_checking, bool has_held_sessions) {
++        if (!has_held_sessions) {
++          return;
++        }
++        if (DoesSupportConsentCheck()) {
++          GoogleUpdateSettings::CollectStatsConsentTaskRunner()
++              ->PostTaskAndReplyWithResult(
++                  FROM_HERE,
++                  base::BindOnce(&GoogleUpdateSettings::GetCollectStatsConsent),
++                  base::BindOnce(&SessionCrashedBubbleView::Show,
++                                 std::move(browser_observer),
++                                 skip_tab_checking));
++        } else {
++          SessionCrashedBubbleView::Show(std::move(browser_observer),
++                                         skip_tab_checking, false);
++        }
++      },
++      std::move(browser_observer), skip_tab_checking));
+ }
+ 
+ // static
+@@ -285,9 +345,9 @@
+     return nullptr;
+   }
+ 
+-  auto* control = browser_view->toolbar_button_provider()->GetAppMenuControl();
+-  views::BubbleAnchor anchor =
+-      control ? control->GetAnchor() : views::BubbleAnchor();
++  // Mori: over the page. The app menu button is in the sidebar, and this stays
++  // until answered, so anchored there it would cover the tabs.
++  views::BubbleAnchor anchor(browser_view->contents_container());
+ 
+   auto bubble_delegate_unique =
+       std::make_unique<SessionCrashedBubbleDelegate>(browser->GetProfile());
+@@ -301,7 +361,10 @@
+       .SetDialogDestroyingCallback(
+           base::BindOnce(&SessionCrashedBubbleDelegate::OnWindowClosing,
+                          base::Unretained(bubble_delegate)))
+-      .AddParagraph(ui::DialogModelLabel(IDS_SESSION_CRASHED_VIEW_MESSAGE));
++      .SetCloseActionCallback(
++          base::BindOnce(&SessionCrashedBubbleDelegate::OnCloseAction,
++                         base::Unretained(bubble_delegate)))
++      .AddParagraph(GetMessage(browser->GetProfile()));
+ 
+   if (offer_uma_optin) {
+     RecordBubbleHistogramValue(SESSION_CRASHED_BUBBLE_OPTIN_BAR_SHOWN);
+@@ -333,7 +396,7 @@
+           l10n_util::GetStringUTF16(IDS_SESSION_CRASHED_VIEW_RESTORE_BUTTON)));
+ 
+   auto bubble = std::make_unique<views::BubbleDialogModelHost>(
+-      dialog_builder.Build(), anchor, views::BubbleBorder::TOP_RIGHT);
++      dialog_builder.Build(), anchor, views::BubbleBorder::FLOAT);
+ 
+   views::BubbleDialogDelegate* bubble_ptr = bubble.get();
+   g_instance_for_test = bubble_ptr;
+--- a/components/sessions/core/command_storage_backend.cc
++++ b/components/sessions/core/command_storage_backend.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "components/sessions/core/command_storage_backend.h"
+ 
++#include <set>
++
+ #include <stdint.h>
+ 
+ #include <algorithm>
+@@ -31,10 +33,14 @@
+ #include "base/task/sequenced_task_runner.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/time/default_clock.h"
++#include "base/time/time.h"
+ #include "build/build_config.h"
+ #include "components/os_crypt/async/common/encryptor.h"
+ #include "components/sessions/core/session_constants.h"
+ #include "components/sessions/core/session_service_commands.h"
++#include "components/sessions/core/session_types.h"
++#include "url/gurl.h"
++#include "components/sessions/core/session_service_commands.h"
+ #include "third_party/abseil-cpp/absl/strings/str_format.h"
+ 
+ namespace sessions {
+@@ -94,6 +100,27 @@
+                           kTimestampSeparator);
+ }
+ 
++// Mori: these prefixes keep the files of PreserveLastSession() from matching
++// GetSessionFilename(), which everything else here looks for.
++constexpr base::FilePath::CharType kBackupPrefix[] =
++    FILE_PATH_LITERAL("Crashed ");
++constexpr base::FilePath::CharType kHeldPrefix[] = FILE_PATH_LITERAL("Held ");
++constexpr size_t kMaxSessionBackups = 3;
++constexpr base::TimeDelta kMaxSessionBackupAge = base::Days(30);
++
++base::FilePath WithPrefix(const base::FilePath& path,
++                          const base::FilePath::CharType* prefix) {
++  return path.DirName().Append(base::FilePath::StringType(prefix) +
++                               path.BaseName().value());
++}
++
++// Mori: a page nobody chose. A window of these has nothing worth keeping.
++bool IsBlankPage(const GURL& url) {
++  return url.is_empty() || url.IsAboutBlank() ||
++         (url.SchemeIs("chrome") &&
++          (url.host() == "newtab" || url.host() == "new-tab-page"));
++}
++
+ // Helper for UMA metrics.
+ std::string GetHistogramName(SessionType type,
+                              bool encrypted,
+@@ -585,6 +612,21 @@
+   const base::TimeTicks start_time = base::TimeTicks::Now();
+   InitIfNecessary();
+ 
++  if (read_held_next_) {
++    read_held_next_ = false;
++    CommandStorageBackend::ReadCommandsResult held;
++    held.status = CommandStorageReadStatus::kNoFile;
++    for (const base::FilePath& path : GetSessionFilesWithPrefix(kHeldPrefix)) {
++      SessionFileReader::ReadResult read =
++          SessionFileReader::Read(path, encryptor_.get());
++      held.status = read.status;
++      held.commands.insert(held.commands.end(),
++                           std::make_move_iterator(read.commands.begin()),
++                           std::make_move_iterator(read.commands.end()));
++    }
++    return held;
++  }
++
+   SessionFileReader::ReadResult read_result;
+   if (last_session_info_) {
+     VLOG(1) << "CommandStorageBackend::ReadLastSessionCommands, reading from: "
+@@ -619,6 +661,117 @@
+   last_session_info_ = base::unexpected(CommandStorageReadStatus::kNoFile);
+ }
+ 
++void CommandStorageBackend::PreserveLastSession(bool hold) {
++  InitIfNecessary();
++  if (!last_session_info_) {
++    return;
++  }
++  const base::FilePath path = last_session_info_->path;
++  if (IsLastSessionBlank()) {
++    // There is nothing to bring back. Backups are few, and a crash that repeats
++    // would otherwise fill them with this and push out the ones that count.
++    if (hold) {
++      DeleteLastSession();
++    }
++    return;
++  }
++  if (hold) {
++    if (base::Move(path, WithPrefix(path, kHeldPrefix))) {
++      last_session_info_ = base::unexpected(CommandStorageReadStatus::kNoFile);
++    }
++    return;
++  }
++  // A launch that crashed before it saved anything still has the same last
++  // session, and its copy holds the same.
++  const base::FilePath backup = WithPrefix(path, kBackupPrefix);
++  if (!base::PathExists(backup) && base::CopyFile(path, backup)) {
++    TrimSessionBackups();
++  }
++}
++
++bool CommandStorageBackend::HasHeldSessions() {
++  InitIfNecessary();
++  return !GetSessionFilesWithPrefix(kHeldPrefix).empty();
++}
++
++void CommandStorageBackend::ReadHeldSessionsNext() {
++  read_held_next_ = true;
++}
++
++void CommandStorageBackend::ReleaseHeldSessions() {
++  InitIfNecessary();
++  for (const base::FilePath& held : GetSessionFilesWithPrefix(kHeldPrefix)) {
++    base::FilePath::StringType name = held.BaseName().value();
++    name.erase(0, base::FilePath::StringType(kHeldPrefix).size());
++    base::Move(held, held.DirName().Append(
++                         base::FilePath::StringType(kBackupPrefix) + name));
++  }
++  TrimSessionBackups();
++}
++
++void CommandStorageBackend::DeleteSessionBackups() {
++  for (const base::FilePath& path : GetSessionFilesWithPrefix(kBackupPrefix)) {
++    base::DeleteFile(path);
++  }
++  for (const base::FilePath& path : GetSessionFilesWithPrefix(kHeldPrefix)) {
++    base::DeleteFile(path);
++  }
++}
++
++bool CommandStorageBackend::IsLastSessionBlank() const {
++  SessionFileReader::ReadResult read =
++      SessionFileReader::Read(last_session_info_->path, encryptor_.get());
++  if (IsCommandStorageReadError(read.status) && read.commands.empty()) {
++    return false;  // It can't be told. Keep it.
++  }
++  std::vector<std::unique_ptr<SessionWindow>> windows;
++  SessionID active_window_id = SessionID::InvalidValue();
++  std::string platform_session_id;
++  std::set<SessionID> discarded_window_ids;
++  RestoreSessionFromCommands(read.commands, &windows, &active_window_id,
++                             &platform_session_id, &discarded_window_ids);
++  for (const std::unique_ptr<SessionWindow>& window : windows) {
++    for (const std::unique_ptr<SessionTab>& tab : window->tabs) {
++      // The extra data is what a tab's folder and custom name are kept in.
++      if (!tab->extra_data.empty()) {
++        return false;
++      }
++      for (const SerializedNavigationEntry& entry : tab->navigations) {
++        if (!IsBlankPage(entry.virtual_url())) {
++          return false;
++        }
++      }
++    }
++  }
++  return true;
++}
++
++void CommandStorageBackend::TrimSessionBackups() const {
++  std::vector<base::FilePath> backups =
++      GetSessionFilesWithPrefix(kBackupPrefix);
++  for (size_t i = 0; i + kMaxSessionBackups < backups.size(); ++i) {
++    base::DeleteFile(backups[i]);
++  }
++}
++
++std::vector<base::FilePath> CommandStorageBackend::GetSessionFilesWithPrefix(
++    const base::FilePath::CharType* prefix) const {
++  std::vector<base::FilePath> files;
++  base::FileEnumerator file_enum(
++      supplied_path_.Append(is_encrypted() ? kEncryptedSessionsDirectory
++                                           : kSessionsDirectory),
++      false, base::FileEnumerator::FILES,
++      base::FilePath::StringType(prefix) +
++          GetSessionFilename(type_, FILE_PATH_LITERAL("*")));
++  for (base::FilePath name = file_enum.Next(); !name.empty();
++       name = file_enum.Next()) {
++    files.push_back(name);
++  }
++  // Their names end in the session's timestamp.
++  std::sort(files.begin(), files.end());
++  return files;
++}
++
+ void CommandStorageBackend::MoveCurrentSessionToLastSession() {
+   InitIfNecessary();
+   CloseFile();
+@@ -685,6 +838,16 @@
+ 
+   // Best effort delete all sessions except the current & last.
+   DeleteLastSessionFiles();
++
++  // Mori: they hold history, so they don't stay forever either.
++  for (const base::FilePath& backup :
++       GetSessionFilesWithPrefix(kBackupPrefix)) {
++    base::File::Info info;
++    if (base::GetFileInfo(backup, &info) &&
++        base::Time::Now() - info.last_modified > kMaxSessionBackupAge) {
++      base::DeleteFile(backup);
++    }
++  }
+ }
+ 
+ // static
+--- a/components/sessions/core/command_storage_backend.h
++++ b/components/sessions/core/command_storage_backend.h
+@@ -130,6 +130,28 @@
+   // Deletes the file containing the commands for the last session.
+   void DeleteLastSession();
+ 
++  // Mori: for a last session that ended in a crash. With `hold`, nothing is
++  // about to reopen it, so it moves aside until the user answers, whatever
++  // launches and crashes come first, and a newer session can't replace it.
++  // Otherwise, a copy goes aside, keeping the newest few. A session with nothing
++  // of the user's in it is not worth either.
++  void PreserveLastSession(bool hold);
++
++  // Mori: whether any session is waiting for the user's answer.
++  bool HasHeldSessions();
++
++  // Mori: makes the next ReadLastSessionCommands() read those sessions instead,
++  // oldest first.
++  void ReadHeldSessionsNext();
++
++  // Mori: the user has answered, and what the sessions hold is safe elsewhere.
++  // They join the backups.
++  void ReleaseHeldSessions();
++
++  // Mori: deletes the held sessions and backups. They hold history, so they go
++  // when it does.
++  void DeleteSessionBackups();
++
+   // Moves the current session file to the last session file. This is typically
+   // called during startup or if the user launches the app and no tabbed
+   // browsers are running. After calling this, set_pending_reset() must be
+@@ -226,6 +248,16 @@
+   // best effort operation.
+   void DeleteLastSessionFiles() const;
+ 
++  // Mori: session files with `prefix` before their usual name, oldest first.
++  std::vector<base::FilePath> GetSessionFilesWithPrefix(
++      const base::FilePath::CharType* prefix) const;
++
++  // Mori: whether the last session has no page or data of the user's in it.
++  bool IsLastSessionBlank() const;
++
++  // Mori: deletes all but the newest few backups.
++  void TrimSessionBackups() const;
++
+   // Gets all sessions files.
+   std::vector<SessionInfo> GetSessionFilesSortedByReverseTimestamp() const {
+     return GetSessionFilesSortedByReverseTimestamp(supplied_path_, type_,
+@@ -272,6 +304,9 @@
+   // May be null, in which case the file is not encrypted.
+   scoped_refptr<os_crypt_async::Encryptor> encryptor_;
+ 
++  // Mori: see ReadHeldSessionsNext().
++  bool read_held_next_ = false;
++
+   // File and path commands are being written.
+   std::unique_ptr<OpenFile> open_file_;
+ 
+--- a/components/sessions/core/command_storage_manager.cc
++++ b/components/sessions/core/command_storage_manager.cc
+@@ -465,10 +465,40 @@
+   }
+ }
+ 
++void CommandStorageManager::PreserveLastSession(bool hold) {
++  backend_task_runner_->PostNonNestableTask(
++      FROM_HERE, base::BindOnce(&CommandStorageBackend::PreserveLastSession,
++                                backend_.get(), hold));
++}
++
++void CommandStorageManager::HasHeldSessions(
++    base::OnceCallback<void(bool)> callback) {
++  backend_task_runner_->PostTaskAndReplyWithResult(
++      FROM_HERE,
++      base::BindOnce(&CommandStorageBackend::HasHeldSessions, backend_.get()),
++      std::move(callback));
++}
++
++void CommandStorageManager::ReadHeldSessionsNext() {
++  backend_task_runner_->PostNonNestableTask(
++      FROM_HERE, base::BindOnce(&CommandStorageBackend::ReadHeldSessionsNext,
++                                backend_.get()));
++}
++
++void CommandStorageManager::ReleaseHeldSessions() {
++  backend_task_runner_->PostNonNestableTask(
++      FROM_HERE, base::BindOnce(&CommandStorageBackend::ReleaseHeldSessions,
++                                backend_.get()));
++}
++
+ void CommandStorageManager::DeleteLastSession() {
+   backend_task_runner_->PostNonNestableTask(
+       FROM_HERE, base::BindOnce(&CommandStorageBackend::DeleteLastSession,
+                                 backend_.get()));
++  // Mori: the held sessions and backups hold the same history.
++  backend_task_runner_->PostNonNestableTask(
++      FROM_HERE, base::BindOnce(&CommandStorageBackend::DeleteSessionBackups,
++                                backend_.get()));
+   if (ShouldWriteEncryptedFiles()) {
+     if (!encrypted_backend_) {
+       // This should be uncommon, but could occur if OnEncryptorReady is slow.
+--- a/components/sessions/core/command_storage_manager.h
++++ b/components/sessions/core/command_storage_manager.h
+@@ -111,6 +111,15 @@
+   // Passes all pending commands to the backend for saving.
+   void Save();
+ 
++  // Mori: see CommandStorageBackend::PreserveLastSession(). Call before anything
++  // is saved. DeleteLastSession() deletes these files too. They are kept by the
++  // cleartext backend, the one that is read from at the default encryption
++  // stage.
++  void PreserveLastSession(bool hold);
++  void HasHeldSessions(base::OnceCallback<void(bool)> callback);
++  void ReadHeldSessionsNext();
++  void ReleaseHeldSessions();
++
+   // Mori: Save(), then runs `done` on the backend's sequence, after the writes.
+   void SaveAndRunWhenWritten(base::OnceClosure done);
+ 
+--- a/components/sessions/core/tab_restore_service_impl.cc
++++ b/components/sessions/core/tab_restore_service_impl.cc
+@@ -601,6 +601,11 @@
+ 
+   void LoadTabsFromLastSession();
+ 
++  // Mori: see TabRestoreServiceImpl::AddSessionWindows().
++  void AddSessionWindows(
++      std::vector<std::unique_ptr<sessions::SessionWindow>> windows,
++      base::OnceClosure done);
++
+   void DeleteLastSession();
+ 
+   bool IsLoaded() const;
+@@ -892,6 +897,21 @@
+                      weak_factory_.GetWeakPtr()));
+ }
+ 
++void TabRestoreServiceImpl::PersistenceDelegate::AddSessionWindows(
++    std::vector<std::unique_ptr<sessions::SessionWindow>> windows,
++    base::OnceClosure done) {
++  LoadTabsFromLastSession();
++  std::vector<std::unique_ptr<tab_restore::Entry>> entries;
++  CreateEntriesFromWindows(&windows, &entries);
++  for (std::unique_ptr<tab_restore::Entry>& entry : std::views::reverse(entries)) {
++    tab_restore_service_helper_->AddEntry(std::move(entry), /*notify=*/false,
++                                          /*to_front=*/true);
++  }
++  tab_restore_service_helper_->PruneEntries();
++  tab_restore_service_helper_->NotifyEntriesChanged();
++  command_storage_manager_->SaveAndRunWhenWritten(std::move(done));
++}
++
+ void TabRestoreServiceImpl::PersistenceDelegate::DeleteLastSession() {
+   command_storage_manager_->DeleteLastSession();
+ }
+@@ -1941,6 +1961,16 @@
+   }
+ }
+ 
++void TabRestoreServiceImpl::AddSessionWindows(
++    std::vector<std::unique_ptr<SessionWindow>> windows,
++    base::OnceClosure done) {
++  if (!persistence_delegate_) {
++    std::move(done).Run();
++    return;
++  }
++  persistence_delegate_->AddSessionWindows(std::move(windows), std::move(done));
++}
++
+ void TabRestoreServiceImpl::UpdatePersistenceDelegate(
+     os_crypt_async::OSCryptAsync* os_crypt_async) {
+   // When a persistence delegate has been created, it must be shut down and
+--- a/components/sessions/core/tab_restore_service_impl.h
++++ b/components/sessions/core/tab_restore_service_impl.h
+@@ -68,6 +68,12 @@
+       SessionID id,
+       WindowOpenDisposition disposition) override;
+   void LoadTabsFromLastSession() override;
++
++  // Mori: makes the windows of a session nothing reopened the newest entries,
++  // then runs `done` once they are on disk, on a background sequence.
++  void AddSessionWindows(std::vector<std::unique_ptr<SessionWindow>> windows,
++                         base::OnceClosure done);
++
+   bool IsLoaded() const override;
+   void DeleteLastSession() override;
+   bool IsRestoring() const override;

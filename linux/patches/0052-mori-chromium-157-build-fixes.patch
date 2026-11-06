@@ -1,0 +1,68 @@
+--- a/chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.cc
++++ b/chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.cc
+@@ -104,12 +104,6 @@
+   animation_.SetSlideDuration(
+       gfx::Animation::RichAnimationDuration(base::Milliseconds(200)));
+   animation_.SetTweenType(gfx::Tween::EASE_IN_OUT);
+-  // Mori: the sidebar's tabs move on Zen's timing.
+-  if (animation_axis_ == AnimationAxis::kVertical) {
+-    animation_.SetSlideDuration(
+-        gfx::Animation::RichAnimationDuration(kMoriSidebarAnimation));
+-    animation_.SetTweenType(gfx::Tween::EASE_OUT);
+-  }
+ }
+ 
+ TabCollectionAnimatingLayoutManager::AnimationCoordinator::
+@@ -120,6 +114,12 @@
+   if (!std::ranges::contains(managers_, manager)) {
+     managers_.push_back(manager);
+   }
++  // Mori: the sidebar's tabs move on Zen's timing.
++  if (manager->animation_axis_ == AnimationAxis::kVertical) {
++    animation_.SetSlideDuration(
++        gfx::Animation::RichAnimationDuration(kMoriSidebarAnimation));
++    animation_.SetTweenType(gfx::Tween::EASE_OUT);
++  }
+ }
+ 
+ void TabCollectionAnimatingLayoutManager::AnimationCoordinator::
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -1746,8 +1746,11 @@
+     views().multi_contents_view->SetBackgroundRadii(content_corners);
+   } else {
+     views().multi_contents_view->SetBackgroundRadii(
+-        mori_content_card ? gfx::RoundedCornersF(mori::kContentCardRadius)
+-                          : gfx::RoundedCornersF());
++        // Mori: the page is an inset, rounded card beside the sidebar.
++        layout_data_->tab_strip_type == TabStripType::kVertical &&
++                !is_fullscreen(layout_data_->window_state)
++            ? gfx::RoundedCornersF(mori::kContentCardRadius)
++            : gfx::RoundedCornersF());
+   }
+ 
+   // Want to cut the vertical tabstrip and its decorations out of the top
+--- a/chrome/browser/sessions/session_service.h
++++ b/chrome/browser/sessions/session_service.h
+@@ -194,7 +194,8 @@
+   void OnGotHeldSessionsToDismiss(
+       std::vector<std::unique_ptr<sessions::SessionWindow>> windows,
+       SessionID active_window_id,
+-      bool read_error);
++      sessions::CommandStorageReadStatus read_status,
++      sessions::SessionReplayResult replay_result);
+   void ReleaseHeldSessions();
+ 
+   // Allow tests to access our inner structures for testing purposes.
+--- a/chrome/browser/sessions/session_service.cc
++++ b/chrome/browser/sessions/session_service.cc
+@@ -310,7 +310,8 @@
+ void SessionService::OnGotHeldSessionsToDismiss(
+     std::vector<std::unique_ptr<sessions::SessionWindow>> windows,
+     SessionID active_window_id,
+-    bool read_error) {
++    sessions::CommandStorageReadStatus read_status,
++    sessions::SessionReplayResult replay_result) {
+   // Reopen Closed Tab gets them, and they stay held until that is on disk.
+   base::OnceClosure release = base::BindPostTaskToCurrentDefault(base::BindOnce(
+       &SessionService::ReleaseHeldSessions, weak_factory_.GetWeakPtr()));

@@ -1,6 +1,6 @@
 --- a/chrome/browser/ui/views/frame/browser_view.cc
 +++ b/chrome/browser/ui/views/frame/browser_view.cc
-@@ -1219,6 +1219,13 @@
+@@ -1228,6 +1228,13 @@
    gfx::Rect contents_bounds = multi_contents_view_->ConvertRectToWidget(
        multi_contents_view_->GetLocalBounds());
  
@@ -14,7 +14,7 @@
    // If the location bar is visible use it to position the bounding box,
    // otherwise use the contents container.
    auto* const immersive_mode_controller =
-@@ -4774,6 +4781,19 @@
+@@ -4794,6 +4801,19 @@
      }
    }
  

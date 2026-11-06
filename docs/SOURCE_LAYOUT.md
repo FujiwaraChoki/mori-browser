@@ -17,6 +17,7 @@ The main desktop feature files are:
   autocomplete, commands, and keyboard bindings.
 - `mori_sidebar.*`, `mori_tab_list.*`, `mori_toolbar_layout.*`: window/sidebar
   layout, library/assistant entry points, and tab presentation.
+- `mori_session.*`: keeps the reopen-closed list consistent with session restore.
 - `mori_folders.*`, `mori_folder_tree.h`, `mori_folder_session.h`: persistent
   folders, tab membership, unload/removal behavior, and drag-and-drop targets.
 - `mori_settings.*`, `mori_themes.*`, `mori_color_mixer.*`, `mori_typography.h`:

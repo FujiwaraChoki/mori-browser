@@ -1,6 +1,7 @@
 #include "chrome/browser/ui/views/mori/mori_app_menu.h"
 
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/defaults.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
@@ -58,6 +59,10 @@ void BuildAppMenu(ui::SimpleMenuModel* model, BrowserWindowInterface* browser) {
   model->AddItemWithIcon(IDC_MANAGE_EXTENSIONS, u"Extensions", Icon("puzzle"));
   model->AddSeparator(ui::NORMAL_SEPARATOR);
   model->AddItemWithIcon(IDC_OPTIONS, u"Settings", Icon("settings"));
+  // macOS quits from its application menu.
+  if (browser_defaults::kShowExitMenuItem) {
+    model->AddItemWithIcon(IDC_EXIT, u"Quit Mori", Icon("log-out"));
+  }
 }
 
 }  // namespace mori

@@ -13,6 +13,7 @@
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "base/functional/bind.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "base/strings/string_util.h"
 #include "chrome/browser/ui/views/mori/mori_assistant.h"
@@ -24,6 +25,7 @@
 #include "chrome/browser/ui/views/mori/mori_settings.h"
 #include "chrome/browser/ui/views/mori/mori_tab_list.h"
 #include "chrome/browser/ui/views/mori/mori_tab_switcher.h"
+#include "chrome/browser/ui/views/mori/mori_toast.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/clipboard/clipboard.h"
@@ -76,6 +78,19 @@ void PeekClipboard(BrowserWindowInterface* browser) {
           browser->GetWeakPtr()));
 }
 
+// Ctrl+Shift+Q sits next to Ctrl+Shift+W and Tab, so one press only asks.
+void QuitOnSecondPress(BrowserWindowInterface* browser) {
+  constexpr base::TimeDelta kConfirmTime = base::Seconds(3);
+  static base::TimeTicks last_press;
+  const base::TimeTicks now = base::TimeTicks::Now();
+  if (!last_press.is_null() && now - last_press < kConfirmTime) {
+    chrome::ExecuteCommand(browser, IDC_EXIT);
+    return;
+  }
+  last_press = now;
+  ShowToast(browser, u"Press Ctrl+Shift+Q again to quit");
+}
+
 #if !BUILDFLAG(IS_MAC)
 constexpr int kCtrl = ui::EF_CONTROL_DOWN;
 constexpr int kShift = ui::EF_SHIFT_DOWN;
@@ -108,7 +123,7 @@ constexpr AcceleratorMapping kMoriAccelerators[] = {
     // Not on Windows, where Ctrl+Alt is AltGr and types characters (AltGr+S
     // is "ś" on Polish keyboards); the menu and command bar still have them.
     {ui::VKEY_S, kCtrl | kAlt, kCommandSleepBackgroundTabs},
-    {ui::VKEY_R, kCtrl | kAlt, IDC_SHOW_READING_MODE_SIDE_PANEL},
+    {ui::VKEY_R, kCtrl | kAlt, IDC_SHOW_READING_MODE},
 #endif
     // Arc: Ctrl+Tab goes through recent tabs, not the strip's order.
     {ui::VKEY_TAB, kCtrl, kCommandSwitchRecentTab},
@@ -121,6 +136,7 @@ constexpr AcceleratorMapping kMoriAccelerators[] = {
     // Arc: Boost this site (Chromium's bookmarks bar toggle otherwise).
     {ui::VKEY_B, kCtrl | kShift, kCommandBoostSite},
     {ui::VKEY_K, kCtrl | kShift, kCommandToggleAssistant},
+    {ui::VKEY_Q, kCtrl | kShift, kCommandQuit},
     // Places.
     {ui::VKEY_OEM_COMMA, kCtrl, IDC_OPTIONS},
     {ui::VKEY_Y, kCtrl, IDC_SHOW_HISTORY},
@@ -210,6 +226,9 @@ void ExecuteMoriCommand(BrowserWindowInterface* browser, int command_id) {
   switch (command_id) {
     case kCommandPictureInPicture:
       TogglePictureInPicture(browser);
+      break;
+    case kCommandQuit:
+      QuitOnSecondPress(browser);
       break;
     case kCommandNewFolder:
       NewFolder(browser);

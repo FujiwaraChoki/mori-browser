@@ -5,9 +5,10 @@ favorites and folders, a command bar, themes, and an assistant beside the page.
 The desktop interface is built with Chromium's Views toolkit in `linux/mori/`.
 Windows, Linux, and macOS share that source and the patches in `linux/patches/`.
 
-The current Windows build uses **Chromium 156.0.8078.47** with the matching
+The source targets **Chromium 157.0.8103.38** with the matching
 ungoogled-chromium base. Its exact revisions live in
-[windows/chromium.json](windows/chromium.json).
+[windows/chromium.json](windows/chromium.json). The 157 port is built and
+tested on Linux; Windows and macOS builds of it are pending.
 
 > [!WARNING]
 > **Security notice (2 November 2026):** the current Windows preview is based on
@@ -20,16 +21,16 @@ ungoogled-chromium base. Its exact revisions live in
 > to browse untrusted sites.
 
 **Windows download:** [Get the current Windows x64 preview](https://github.com/FujiwaraChoki/mori-browser/releases/tag/windows-156.0.8078.47-preview.1).
-Choose the `Wizard.exe` asset for the visible setup wizard. The release includes
+A Windows build of the 157 port has not been made yet. Choose the `Wizard.exe` asset for the visible setup wizard. The release includes
 SHA-256 checksums and build metadata; these preview installers are unsigned.
 
 ## Implementations and platform status
 
 | Implementation | Source | Status |
 | --- | --- | --- |
-| Desktop, Chromium Views | `linux/mori`, `linux/patches` | Main desktop implementation. Chromium 156 build and headless tests verified on Windows. |
+| Desktop, Chromium Views | `linux/mori`, `linux/patches` | Main desktop implementation. Chromium 157 build and headless tests verified on Linux. |
 | Windows build and installers | `windows` | Native per-user installer and visible setup wizard, with Mori branding and version checks. |
-| Linux and macOS Views builds | `linux/*.sh`, `mac/*.sh` | Host build scripts retained; use a matching upstream Chromium/ungoogled checkout. The Chromium 156 port still needs validation on these hosts. |
+| Linux and macOS Views builds | `linux/*.sh`, `mac/*.sh` | Host build scripts retained; use a matching upstream Chromium/ungoogled checkout. The Chromium 157 port is verified on Linux; macOS still needs validation. |
 | iOS app | `ios` | Independent SwiftUI/WKWebView application and Xcode project. |
 
 Retired desktop implementations remain available in Git history. The working

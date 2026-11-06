@@ -11,7 +11,7 @@ see [CI and local build runners](docs/CI.md). macOS CI is deferred.
 ## Windows: Chromium Views
 
 
-Build it with a full Chromium **156.0.8078.47** checkout and its dependencies
+Build it with a full Chromium **157.0.8103.38** checkout and its dependencies
 synced with `depot_tools`.
 
 Prerequisites are Visual Studio 2026 C++ Build Tools (including MFC/ATL),
@@ -20,11 +20,12 @@ Windows SDK 10.0.28000.2270 or newer with SDK Debugging Tools, Git for Windows
 and set `DEPOT_TOOLS_WIN_TOOLCHAIN=0`. The version, source revision, and matching
 ungoogled release are pinned in
 `windows/chromium.json`. The ungoogled patch repository lives in the checkout's
-`ungoogled-base` directory, pinned to `156.0.8078.47-1`.
+`ungoogled-base` directory, pinned to `157.0.8103.38-1`.
 
 Use a short checkout path to avoid Windows path-length failures. On this
-machine the upgraded checkout lives at `C:\mori-build-156`; the working
-155 checkout at `C:\mori-build` remains its read-only Git object cache.
+machine the 157 checkout goes at `C:\mori-build-157` (not created yet); the
+156 checkout at `C:\mori-build-156` and the 155 checkout at `C:\mori-build`
+can serve as read-only Git object caches.
 Prepare an upgrade in a separate directory with:
 
 ```powershell
@@ -36,8 +37,8 @@ not, which can break generated-file lookup. It contains `.gclient` and the
 `src` directory. For dependency updates, pin the revision by commit:
 
 ```powershell
-cd C:\mori-build-156
-gclient sync --no-history --revision src@1d17a2e2ee147bb7d6ae2ab6abdb3a2510c17775
+cd C:\mori-build-157
+gclient sync --no-history --revision src@a733b5afbb3ba618844ff8876b89ad1a774b2f18
 ```
 
 Sync dependencies **before** applying Mori; a later sync can overwrite patched
@@ -57,7 +58,7 @@ python windows/package.py --jobs 12
 ```
 
 This builds Chromium's `mini_installer` target and writes
-`dist/Mori-Setup-156.0.8078.47-x64.exe`, its SHA-256 checksum, and build metadata.
+`dist/Mori-Setup-157.0.8103.38-x64.exe`, its SHA-256 checksum, and build metadata.
 The application, installer, Windows shortcuts, and browser registration use
 the Mori name. The Windows icon and product images come from the original
 `mac/assets/AppIcon.png`; `windows/branding.py` converts the existing artwork
@@ -71,7 +72,7 @@ To create the visible setup wizard, with Inno Setup 6 installed, run:
 python windows/build-wizard.py
 ```
 
-This writes `dist/Mori-Setup-156.0.8078.47-x64-Wizard.exe` and its checksum.
+This writes `dist/Mori-Setup-157.0.8103.38-x64-Wizard.exe` and its checksum.
 Both installer builds verify their embedded version, Mori product name, and
 original Mori icon before publishing the output.
 
@@ -87,11 +88,11 @@ builds rather than writing the same outputs concurrently.
 The Mori source folder is linked into Chromium, so source edits are picked up
 by incremental builds.
 
-The output is `C:\mori-build-156\src\out\Default\chrome.exe`; keep the accompanying
+The output is `C:\mori-build-157\src\out\Default\chrome.exe`; keep the accompanying
 DLLs and runtime files together. Run with an isolated test profile:
 
 ```powershell
-C:\mori-build-156\src\out\Default\chrome.exe --user-data-dir="$env:TEMP\MoriTestProfile" --no-first-run
+C:\mori-build-157\src\out\Default\chrome.exe --user-data-dir="$env:TEMP\MoriTestProfile" --no-first-run
 ```
 
 The Windows build enables `proprietary_codecs=true` and
@@ -173,11 +174,18 @@ LLVM, Rust, and Linux sysroot. Follow the matching upstream packaging checkout's
 host dependency requirements. `linux/build.sh --setup-only` applies Mori's
 patches and generates Ninja files; `--toolchain-only` prepares the toolchain.
 
+Upstream portablelinux has no 157 release yet. Until it does, check out its
+`156.0.8078.79-1` tag and apply `linux/portablelinux-157.patch` from that
+checkout (`git apply ../linux/portablelinux-157.patch`). It moves the
+ungoogled-chromium submodule to `157.0.8103.38-1` (then run
+`git submodule update`), rebases the portable patches, keeps Chromium's Crubit
+changes (157 needs them), and renames the V8 metagen flag.
+
 The Linux Views output is
 `ungoogled-chromium-linux/build/src/out/Default/chrome`. See
 [linux/README.md](linux/README.md) for the headless harness and native import and
-passkey test targets. The current Chromium 156 patch port has been built on
-Windows; Linux host verification remains pending.
+passkey test targets. The Chromium 157 patch port is built and its headless
+suite passes on Linux; Windows and macOS builds of it are pending.
 
 ## macOS: Chromium Views
 
@@ -204,7 +212,7 @@ open -n dist/Mori.app --args --user-data-dir="$TMPDIR/MoriViewsTest" --no-first-
 Existing bundles go to the trash. Packaging applies the name and original Mori
 icon, signs nested helpers and the framework with their existing entitlements,
 and verifies the resulting bundle. Local ad-hoc signing is not notarization.
-The current Chromium 156 port still needs macOS host verification.
+The Chromium 157 port still needs macOS host verification.
 
 The source artwork is `mac/assets/AppIcon.svg`; `mac/build-icon.sh` regenerates
 PNG, ICNS, and the asset catalog with librsvg and Xcode. Windows packaging uses

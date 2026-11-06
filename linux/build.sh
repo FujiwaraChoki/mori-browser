@@ -112,13 +112,16 @@ GN
 # Chromium and fix ungoogled-chromium build issues.
 apply_mori_patches() {
     ln -sfn "${_mori_linux}/mori" "${_src_dir}/chrome/browser/ui/views/mori"
-    local p
+    # Later patches can touch the same lines as earlier ones, so a reverse
+    # dry run cannot tell what is applied. Record applied patch hashes instead.
+    local stamp="${_src_dir}/.mori-patches.applied" p hash
+    touch "${stamp}"
     for p in "${_mori_linux}"/patches/*.patch; do
         [ -e "${p}" ] || continue
-        if patch -d "${_src_dir}" -p1 -R --dry-run -s -f < "${p}" >/dev/null 2>&1; then
-            continue  # already applied
-        fi
+        hash="$(sha256sum "${p}" | cut -d' ' -f1)  $(basename "${p}")"
+        grep -qxF "${hash}" "${stamp}" && continue  # already applied
         patch -d "${_src_dir}" -p1 -N -s < "${p}"
+        echo "${hash}" >> "${stamp}"
     done
 }
 

@@ -1,15 +1,3 @@
---- a/chrome/browser/ui/BUILD.gn
-+++ b/chrome/browser/ui/BUILD.gn
-@@ -2766,6 +2766,9 @@
-       "views/mori/mori_overlay.h",
-       "views/mori/mori_peek.cc",
-       "views/mori/mori_peek.h",
-+      "views/mori/mori_picture_in_picture.cc",
-+      "views/mori/mori_picture_in_picture.h",
-+      "views/mori/mori_picture_in_picture_script.h",
-       "views/mori/mori_tab_switcher.cc",
-       "views/mori/mori_tab_switcher.h",
-       "views/mori/mori_tab_names.cc",
 --- a/chrome/browser/ui/tab_helpers.cc
 +++ b/chrome/browser/ui/tab_helpers.cc
 @@ -6,6 +6,7 @@
@@ -20,7 +8,7 @@
  
  #include <cstdint>
  #include <memory>
-@@ -330,6 +331,7 @@
+@@ -89,6 +90,7 @@
    mori::AttachBoosts(web_contents);
    // Mori: "Add to Mori" in the web store.
    mori::AttachWebStore(web_contents);
@@ -38,7 +26,7 @@
  
  #include <array>
  #include <optional>
-@@ -1740,6 +1741,7 @@
+@@ -1987,6 +1988,7 @@
  void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry,
                            const std::string& locale) {
    TRACE_EVENT0("browser", "chrome::RegisterProfilePrefs");
@@ -56,7 +44,7 @@
  #include "chrome/browser/repost_form_warning_controller.h"
  #include "chrome/browser/search/search.h"
  #include "chrome/browser/sessions/session_tab_helper_factory.h"
-@@ -304,6 +305,9 @@
+@@ -302,6 +303,9 @@
  content::PictureInPictureResult
  BrowserWebContentsDelegate::EnterPictureInPicture(
      content::WebContents* web_contents) {

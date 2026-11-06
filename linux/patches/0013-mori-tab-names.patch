@@ -55,7 +55,7 @@
  #include <stddef.h>
  
  #include <memory>
-@@ -613,6 +617,18 @@
+@@ -616,6 +620,18 @@
    sessions::SessionTabHelper* session_tab_helper =
        sessions::SessionTabHelper::FromWebContents(tab);
    const SessionID session_id(session_tab_helper->session_id());
@@ -85,7 +85,7 @@
  #include <optional>
  #include <string>
  
-@@ -297,7 +299,11 @@
+@@ -299,7 +301,11 @@
    bool IsPinned() const override { return tab_view_->pinned_; }
  
    bool ShouldPaintTabBackgroundColor() const override {
@@ -98,7 +98,7 @@
    }
  
    int GetStrokeThickness() const override {
-@@ -600,6 +606,13 @@
+@@ -634,6 +640,13 @@
    RecordMousePressedInTab();
    UpdateHoverCard(nullptr, TabSlotController::HoverCardUpdateType::kEvent);
  
@@ -112,9 +112,9 @@
    // Capture the selection model before selection changes.
    const ui::ListSelectionModel original_selection_model =
        controller->GetSelectionModel();
-@@ -1335,6 +1348,10 @@
-                               int hover_card_update_type) {
-   CHECK(collection_node_);
+@@ -1398,6 +1411,10 @@
+     return;
+   }
  
 +  // Mori: no hover cards (preview, memory use) on the sidebar's rows, as in
 +  // Arc and Mori 3; the row shows the title.

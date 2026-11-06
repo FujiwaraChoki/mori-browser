@@ -33,7 +33,9 @@ enum CommandId {
   kCommandToggleAssistant,
   kCommandNewFolder,
   kCommandPictureInPicture,
-  kCommandLast = kCommandPictureInPicture,
+  // Ctrl+Shift+Q: quits when pressed twice. The menus use IDC_EXIT directly.
+  kCommandQuit,
+  kCommandLast = kCommandQuit,
 };
 
 bool IsMoriCommand(int command_id);

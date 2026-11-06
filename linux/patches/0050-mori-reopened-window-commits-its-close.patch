@@ -1,0 +1,62 @@
+--- a/chrome/browser/sessions/session_service.h
++++ b/chrome/browser/sessions/session_service.h
+@@ -150,6 +150,11 @@
+   // Notification a window has finished closing.
+   void WindowClosed(SessionID window_id) override;
+ 
++  // Mori: writes the close `deferred_window_closes_` holds for this window, if
++  // any. Also for when the window has reopened under a new id, since otherwise
++  // it would come back twice at next launch.
++  void CommitDeferredWindowClose(SessionID window_id);
++
+   // Sets the type of window. In order for the contents of a window to be
+   // tracked SetWindowType must be invoked with a type we track
+   // (ShouldRestoreOfWindowType returns true).
+@@ -238,7 +243,6 @@
+ 
+   // Mori: see `deferred_window_closes_`.
+   void DeferWindowClose(SessionID window_id);
+-  void CommitDeferredWindowClose(SessionID window_id);
+   // The last window is closing too, so all of them closed together: hold every
+   // deferred close as pending, which keeps those windows for the next launch.
+   void MakeDeferredWindowClosesPending();
+--- a/chrome/browser/ui/browser_live_tab_context.cc
++++ b/chrome/browser/ui/browser_live_tab_context.cc
+@@ -21,6 +21,8 @@
+ #include "chrome/browser/glic/glic_tab_restore_helper.h"
+ #include "chrome/browser/performance_manager/public/background_tab_loading_policy.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/sessions/session_service.h"
++#include "chrome/browser/sessions/session_service_factory.h"
+ #include "chrome/browser/sessions/session_service_utils.h"
+ #include "chrome/browser/sessions/tab_restore_service_factory.h"
+ #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
+@@ -360,6 +362,14 @@
+     bool select,
+     bool is_restoring_group_or_window,
+     sessions::tab_restore::Type original_session_type) {
++  // Mori: this tab's window may have closed moments ago and still be in the
++  // session, waiting for its close to be written. It is open again now.
++  if (SessionService* session_service =
++          SessionServiceFactory::GetForProfileIfExisting(&profile_.get())) {
++    session_service->CommitDeferredWindowClose(
++        SessionID::FromSerializedValue(tab.browser_id));
++  }
++
+   tab_groups::TabGroupSyncService* tab_group_service =
+       tab_groups::TabGroupSyncServiceFactory::GetForProfile(&profile_.get());
+   CHECK(tab_group_service);
+@@ -467,6 +477,13 @@
+ 
+ sessions::LiveTab* BrowserLiveTabContext::ReplaceRestoredTab(
+     const sessions::tab_restore::Tab& tab) {
++  // Mori: as in AddRestoredTab.
++  if (SessionService* session_service =
++          SessionServiceFactory::GetForProfileIfExisting(browser_->GetProfile())) {
++    session_service->CommitDeferredWindowClose(
++        SessionID::FromSerializedValue(tab.browser_id));
++  }
++
+   const sessions::tab_restore::PlatformSpecificTabData* tab_platform_data =
+       tab.platform_data.get();
+   SessionStorageNamespaceHandle* storage_namespace =

@@ -1,14 +1,14 @@
 --- a/chrome/browser/ui/views/chrome_typography_provider.cc
 +++ b/chrome/browser/ui/views/chrome_typography_provider.cc
-@@ -3,6 +3,8 @@
- // found in the LICENSE file.
+@@ -4,6 +4,8 @@
  
  #include "chrome/browser/ui/views/chrome_typography_provider.h"
-+
-+#include <algorithm>
  
++#include <algorithm>
++
  #include "build/build_config.h"
  #include "chrome/browser/ui/color/chrome_color_id.h"
+ #include "chrome/browser/ui/views/chrome_typography.h"
 @@ -189,7 +191,8 @@
  int ChromeTypographyProvider::GetLineHeightImpl(int context, int style) const {
    if (style > views::style::STYLE_OVERRIDE_TYPOGRAPHY_START &&

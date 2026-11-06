@@ -22,7 +22,7 @@
  const char kExtensionsMenuUtmSource[] = "ext_extensions_menu";
 --- a/extensions/common/api/_api_features.json
 +++ b/extensions/common/api/_api_features.json
-@@ -342,7 +342,7 @@
+@@ -355,7 +355,7 @@
    }, {
      "channel": "stable",
      "contexts": ["web_page"],
@@ -31,7 +31,7 @@
    }, {
      // Used for webstore testing. See comment in
      // chrome/common/extensions/webstore_override.cc
-@@ -987,7 +987,7 @@
+@@ -991,7 +991,7 @@
    "webstorePrivate": [{
      "channel": "stable",
      "contexts": ["web_page"],
@@ -57,7 +57,7 @@
    "permissions": [
 --- a/chrome/browser/extensions/chrome_content_browser_client_extensions_part.cc
 +++ b/chrome/browser/extensions/chrome_content_browser_client_extensions_part.cc
-@@ -683,6 +683,13 @@
+@@ -702,6 +702,13 @@
      GetOriginsRequiringDedicatedProcess() {
    std::vector<url::Origin> list;
  
@@ -111,7 +111,20 @@
  void ExtensionDownloader::SetIdentityManager(
 --- a/extensions/browser/webstore_installer.cc
 +++ b/extensions/browser/webstore_installer.cc
-@@ -481,6 +481,22 @@
+@@ -98,6 +98,12 @@
+ 
+ constexpr base::TimeDelta kTimeRemainingThreshold = base::Seconds(1);
+ 
++// Mori: folder for downloading crx files from the webstore, so they don't go
++// via the usual downloads folder (ungoogled-chromium removes it with the
++// download code Mori restores).
++const base::FilePath::CharType kWebstoreDownloadFolder[] =
++    FILE_PATH_LITERAL("Webstore Downloads");
++
+ base::FilePath* g_download_directory_for_tests = nullptr;
+ 
+ [[maybe_unused]]
+@@ -477,6 +483,22 @@
  
  void WebstoreInstaller::DownloadCrx(const ExtensionId& extension_id,
                                      InstallSource source) {
@@ -134,7 +147,7 @@
  }
  
  // http://crbug.com/40957413
-@@ -635,6 +651,25 @@
+@@ -631,6 +653,25 @@
  void WebstoreInstaller::StartCrxInstaller(const DownloadItem& download) {
    DCHECK_CURRENTLY_ON(BrowserThread::UI);
    DCHECK(!crx_installer_.get());

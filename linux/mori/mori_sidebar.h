@@ -21,7 +21,8 @@ bool IsSidebarHiddenIn(BrowserWindowInterface* browser);
 
 // Read by the browser layout (`browser_view` is the BrowserView).
 bool IsSidebarHidden(const views::View* browser_view);
-// The hidden sidebar is showing over the page.
+// The hidden sidebar is laid out floating over the page (translated out of
+// sight until the pointer reveals it).
 bool IsSidebarPeeking(const views::View* browser_view);
 
 // The floating sidebar's distance from the window edges.

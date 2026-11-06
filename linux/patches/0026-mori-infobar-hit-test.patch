@@ -1,6 +1,6 @@
 --- a/chrome/browser/ui/views/frame/browser_view.cc
 +++ b/chrome/browser/ui/views/frame/browser_view.cc
-@@ -4607,6 +4607,15 @@
+@@ -4627,6 +4627,15 @@
  }
  
  int BrowserView::NonClientHitTest(const gfx::Point& point) {

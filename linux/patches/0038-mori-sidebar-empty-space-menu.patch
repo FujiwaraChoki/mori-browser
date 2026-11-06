@@ -16,19 +16,19 @@
        public OmniboxTabHelper::Observer,
        public tabs::VerticalTabStripStateController::Delegate,
        public OrganizerPanelHost,
-@@ -104,6 +106,12 @@
-   void SetIsExitingExpandOnHoverForLayout(bool is_exiting_expand_on_hover);
+@@ -94,6 +96,12 @@
    void SetTransitionButtonOpacity(float opacity);
    bool WillWrapDueToOverflow(int available_width) const;
-+
+ 
 +  // views::ContextMenuController:
 +  void ShowContextMenuForViewImpl(
 +      views::View* source,
 +      const gfx::Point& point,
 +      ui::mojom::MenuSourceType source_type) override;
- 
++
    // views::LayoutDelegate:
    views::ProposedLayout CalculateProposedLayout(
+       const views::SizeBounds& size_bounds) const override;
 --- a/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
 +++ b/chrome/browser/ui/views/frame/vertical_tab_strip_region_view.cc
 @@ -54,6 +54,7 @@
@@ -39,7 +39,7 @@
  #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_bottom_container.h"
  #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_focus_swipe_controller.h"
  #include "chrome/browser/ui/views/tabs/vertical/vertical_tab_strip_top_container.h"
-@@ -112,6 +113,7 @@
+@@ -130,6 +131,7 @@
                               TabStripOrientation::kVertical),
        resize_area_width_(kResizeAreaWidth),
        state_controller_(state_controller) {
@@ -47,7 +47,7 @@
    // For z-ordering purposes this needs to be on a layer.
    SetPaintToLayer();
    // Because corners may be transparent, this must be set to false.
-@@ -844,8 +846,16 @@
+@@ -855,8 +857,16 @@
    }
  }
  

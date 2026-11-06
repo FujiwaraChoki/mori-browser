@@ -22,7 +22,7 @@
  #include "chrome/browser/ui/views/omnibox/omnibox_placeholder_util.h"
  #include "chrome/browser/ui/views/omnibox/omnibox_popup_closer.h"
  #include "chrome/browser/ui/views/omnibox/omnibox_popup_presenter_base.h"
-@@ -283,7 +284,12 @@
+@@ -284,7 +285,12 @@
  void OmniboxViewViews::Init() {
    set_controller(this);
    SetTextInputType(GetPreferredTextInputType());
@@ -36,7 +36,7 @@
    GetRenderText()->set_symmetric_selection_visual_bounds(true);
    InstallPlaceholderText();
    scoped_template_url_service_observation_.Observe(
-@@ -437,6 +443,12 @@
+@@ -438,6 +444,12 @@
    std::optional<std::u16string> maybe_a11y_placeholder_text;
    omnibox::ComputePlaceholderText(location_bar_view_, placeholder_text,
                                    maybe_a11y_placeholder_text);
@@ -49,7 +49,7 @@
    SetPlaceholderText(placeholder_text);
    const std::u16string a11y_text =
        maybe_a11y_placeholder_text.value_or(placeholder_text);
-@@ -1395,6 +1407,14 @@
+@@ -1464,6 +1476,14 @@
  }
  
  bool OmniboxViewViews::OnMousePressed(const ui::MouseEvent& event) {
@@ -64,7 +64,7 @@
    PermitExternalProtocolHandler();
  
    // Clear focus of buttons, but do not clear keyword mode.
-@@ -1610,6 +1630,17 @@
+@@ -1736,6 +1756,17 @@
  }
  
  void OmniboxViewViews::OnGestureEvent(ui::GestureEvent* event) {
@@ -81,4 +81,4 @@
 +
    PermitExternalProtocolHandler();
  
-   const bool gesture_should_take_focus =
+   const bool is_popup_open =

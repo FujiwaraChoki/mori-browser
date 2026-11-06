@@ -1,6 +1,6 @@
 --- a/chrome/browser/app_controller_mac.mm
 +++ b/chrome/browser/app_controller_mac.mm
-@@ -2097,12 +2097,9 @@
+@@ -2099,12 +2099,9 @@
      // Failed to load profile, show Profile Picker instead.
      return;
    }

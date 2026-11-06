@@ -8,8 +8,8 @@
 +
  #include <algorithm>
  #include <map>
- #include <tuple>
-@@ -461,6 +463,10 @@
+ #include <ranges>
+@@ -462,6 +464,10 @@
                       int dip_size,
                       SkColor color) {
    CHECK(!icon.is_empty());
@@ -22,7 +22,7 @@
    }
 --- a/ui/gfx/BUILD.gn
 +++ b/ui/gfx/BUILD.gn
-@@ -383,6 +383,11 @@
+@@ -385,6 +385,11 @@
        "paint_throbber.cc",
        "paint_throbber.h",
        "paint_vector_icon.cc",

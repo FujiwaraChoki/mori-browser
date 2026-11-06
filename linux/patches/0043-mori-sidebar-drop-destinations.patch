@@ -8,7 +8,7 @@
  
  #include <algorithm>
  #include <memory>
-@@ -2536,6 +2537,22 @@
+@@ -2538,6 +2539,22 @@
        absl::StrFormat("TabStrip.%s.TabDragPinnedness", GetTabStripMode()),
        pinnedness);
  
@@ -33,17 +33,17 @@
      OnContextStoppedDragging();
 --- a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h
 +++ b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.h
-@@ -80,6 +80,7 @@
-   void ResetCollectionNode();
+@@ -82,6 +82,7 @@
    void OnCollapseStateChanged(tabs::VerticalTabStripCollapseState state);
  
+   const TabStripOrientation orientation_;
 +  raw_ptr<views::View> empty_favorites_hint_ = nullptr;
-   raw_ptr<TabCollectionNode> collection_node_;
+   raw_ptr<TabCollectionNode> collection_node_ = nullptr;
    const raw_ref<TabCollectionAnimatingLayoutManager> layout_manager_;
  
 --- a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
 +++ b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
-@@ -22,6 +22,7 @@
+@@ -21,6 +21,7 @@
  #include "ui/base/metadata/metadata_impl_macros.h"
  #include "ui/gfx/geometry/rect.h"
  #include "ui/views/controls/scroll_view.h"
@@ -51,10 +51,10 @@
  #include "ui/views/layout/delegating_layout_manager.h"
  #include "ui/views/layout/layout_types.h"
  #include "ui/views/layout/proposed_layout.h"
-@@ -69,6 +70,9 @@
+@@ -70,6 +71,9 @@
                       base::Unretained(this)));
  
-   if (collection_node_->orientation() == TabStripOrientation::kVertical) {
+   if (orientation_ == TabStripOrientation::kVertical) {
 +    auto hint = std::make_unique<views::Label>(u"Drop here to favorite");
 +    hint->SetCanProcessEventsWithinSubtree(false);
 +    empty_favorites_hint_ = AddChildView(std::move(hint));
@@ -69,8 +69,8 @@
 +    return empty_favorites_hint_ ? gfx::Size(0, 36) : gfx::Size();
    }
  
-   if (collection_node_->orientation() == TabStripOrientation::kHorizontal) {
-@@ -388,8 +392,17 @@
+   if (orientation_ == TabStripOrientation::kHorizontal) {
+@@ -385,8 +389,17 @@
    int y = 0;
    int children_on_row = children.size();
  

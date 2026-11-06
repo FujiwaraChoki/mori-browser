@@ -9,7 +9,7 @@
  #include <stddef.h>
  
  #include <algorithm>
-@@ -365,6 +367,8 @@
+@@ -370,6 +372,8 @@
    CHECK(profile_);
  
    bool first_tab = true;
@@ -18,7 +18,7 @@
    bool process_headless_commands = headless::ShouldProcessHeadlessCommands();
    custom_handlers::ProtocolHandlerRegistry* registry =
        ProtocolHandlerRegistryFactory::GetForBrowserContext(profile_);
-@@ -417,6 +421,20 @@
+@@ -422,6 +426,20 @@
                std::move(profile_keepalive)));
        continue;
      }
@@ -39,7 +39,7 @@
      // Active tab overwrites apply only to one tab per launch, and can only
      // happen if there is already a tab open to replace
      if (first_tab && browser->GetTabStripModel()->count() &&
-@@ -469,6 +487,11 @@
+@@ -478,6 +496,11 @@
      }
    }
  

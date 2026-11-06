@@ -10,7 +10,7 @@
  #include <cstdint>
  #include <memory>
  #include <optional>
-@@ -323,6 +326,11 @@
+@@ -82,6 +85,11 @@
    web_contents->SetUserData(&kTabContentsAttachedTabHelpersUserDataKey,
                              std::make_unique<base::SupportsUserData::Data>());
  

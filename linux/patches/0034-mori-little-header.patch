@@ -1,6 +1,6 @@
 --- a/chrome/browser/ui/views/toolbar/toolbar_view.cc
 +++ b/chrome/browser/ui/views/toolbar/toolbar_view.cc
-@@ -1395,7 +1395,9 @@
+@@ -1424,7 +1424,9 @@
        size = custom_tab_bar_->GetPreferredSize();
        break;
      case DisplayMode::kLocation:
@@ -11,7 +11,7 @@
        break;
      case DisplayMode::kNormal:
        size = AccessiblePaneView::CalculatePreferredSize(available_size);
-@@ -1425,7 +1427,9 @@
+@@ -1454,7 +1456,9 @@
        size = custom_tab_bar_->GetMinimumSize();
        break;
      case DisplayMode::kLocation:
@@ -24,15 +24,15 @@
        size = AccessiblePaneView::GetMinimumSize();
 --- a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
 +++ b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
-@@ -41,6 +41,7 @@
+@@ -43,6 +43,7 @@
  #include "chrome/browser/ui/ui_features.h"
  #include "chrome/browser/ui/views/frame/browser_frame_view.h"
  #include "chrome/browser/ui/views/frame/browser_view.h"
 +#include "chrome/browser/ui/views/mori/mori_little.h"
  #include "chrome/browser/ui/views/frame/browser_widget.h"
  #include "chrome/browser/ui/views/frame/glass_frame_service.h"
- #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
-@@ -703,6 +704,10 @@
+ #include "chrome/browser/ui/views/web_apps/frame_toolbar/web_app_frame_toolbar_utils.h"
+@@ -714,6 +715,10 @@
          browser_view_);
    }
  
@@ -43,7 +43,7 @@
    chrome::ExecuteCommandWithDisposition(browser, command,
                                          window_open_disposition);
    return true;
-@@ -724,6 +729,7 @@
+@@ -735,6 +740,7 @@
                           NSWindowStyleMaskTitled | NSWindowStyleMaskResizable;
      params->window_title_hidden = true;
    } else if (browser_view_->GetIsNormalType() ||
@@ -51,7 +51,7 @@
               browser_view_->GetIsWebAppType()) {
      params->window_class = remote_cocoa::mojom::WindowClass::kBrowser;
      params->style_mask |= NSWindowStyleMaskFullSizeContentView;
-@@ -732,7 +738,8 @@
+@@ -743,7 +749,8 @@
      params->titlebar_appears_transparent = true;
  
      // Hosted apps draw their own window title.
@@ -71,7 +71,7 @@
  #include "chrome/browser/ui/views/frame/browser_widget.h"
  #include "chrome/browser/ui/views/frame/caption_button_placeholder_container.h"
  #include "chrome/browser/ui/views/frame/glass_frame_service.h"
-@@ -461,8 +462,9 @@
+@@ -467,8 +468,9 @@
  
    // In popups, the titlebar is system-drawn and the caption buttons aren't part
    // of the client area.
@@ -93,7 +93,7 @@
  
  #include <stdint.h>
  
-@@ -4607,6 +4608,9 @@
+@@ -4627,6 +4628,9 @@
  }
  
  int BrowserView::NonClientHitTest(const gfx::Point& point) {

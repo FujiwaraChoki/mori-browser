@@ -104,7 +104,7 @@ std::vector<Group> Groups() {
         {u"Zoom in", IDC_ZOOM_PLUS},
         {u"Zoom out", IDC_ZOOM_MINUS},
         {u"Actual size", IDC_ZOOM_NORMAL},
-        {u"Reader view", IDC_SHOW_READING_MODE_SIDE_PANEL},
+        {u"Reader view", IDC_SHOW_READING_MODE},
         {u"Print", IDC_PRINT},
         {u"Capture", IDC_SHARING_HUB_SCREENSHOT},
         {u"Boost this site", kCommandBoostSite},
@@ -117,7 +117,11 @@ std::vector<Group> Groups() {
         {u"Show or hide sidebar", IDC_TOGGLE_VERTICAL_TABS},
         {u"Assistant", kCommandToggleAssistant},
         {u"Full screen", IDC_FULLSCREEN},
+#if BUILDFLAG(IS_MAC)
         {u"Quit", IDC_EXIT}}},
+#else
+        {u"Quit (press twice)", kCommandQuit}}},
+#endif
       {u"Places",
        {{u"Settings", IDC_OPTIONS},
         {u"History & bookmarks", IDC_SHOW_HISTORY},

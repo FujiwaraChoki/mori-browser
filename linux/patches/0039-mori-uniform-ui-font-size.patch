@@ -47,13 +47,3 @@
    item_vertical_margin = 4;
    minimum_text_item_height = 28;
    minimum_container_item_height = 28;
---- a/chrome/browser/ui/BUILD.gn
-+++ b/chrome/browser/ui/BUILD.gn
-@@ -2776,6 +2776,7 @@
-       "views/mori/mori_themes.h",
-       "views/mori/mori_toast.cc",
-       "views/mori/mori_toast.h",
-+      "views/mori/mori_typography.h",
-       "views/mori/mori_toolbar_layout.cc",
-       "views/mori/mori_toolbar_layout.h",
-       "views/mori/mori_web_store.cc",

@@ -1,6 +1,6 @@
 --- a/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
 +++ b/chrome/browser/ui/views/tabs/common/pinned_tab_container_view.cc
-@@ -395,7 +395,7 @@
+@@ -392,7 +392,7 @@
    if (empty_favorites_hint_) {
      const int width = size_bounds.width().is_bounded()
                            ? size_bounds.width().value() : 186;

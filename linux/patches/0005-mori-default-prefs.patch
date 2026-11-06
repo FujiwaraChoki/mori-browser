@@ -1,15 +1,15 @@
 --- a/chrome/browser/ui/tabs/tab_strip_prefs.cc
 +++ b/chrome/browser/ui/tabs/tab_strip_prefs.cc
-@@ -24,7 +24,8 @@
+@@ -25,7 +25,8 @@
    registry->RegisterBooleanPref(prefs::kOrganizerPanelPinnedToTabstrip, true);
    registry->RegisterBooleanPref(prefs::kEverythingMenuPinnedToTabstrip, true);
    registry->RegisterBooleanPref(prefs::kTabScrollButtonsPinnedToTabstrip, true);
 -  registry->RegisterBooleanPref(prefs::kVerticalTabsEnabled, false);
 +  // Mori: tabs live in the sidebar.
 +  registry->RegisterBooleanPref(prefs::kVerticalTabsEnabled, true);
-   registry->RegisterBooleanPref(
-       prefs::kVerticalTabsExpandOnHoverEnabled,
-       tabs::kVerticalTabsExpandOnHoverDefaultEnabled.Get());
+   registry->RegisterBooleanPref(prefs::kVerticalTabsExpandOnHoverEnabled, true);
+   registry->RegisterBooleanPref(prefs::kVerticalTabsEnabledFirstTime, false);
+   registry->RegisterBooleanPref(prefs::kVerticalTabsCollapsedState, false);
 --- a/components/bookmarks/browser/bookmark_utils.cc
 +++ b/components/bookmarks/browser/bookmark_utils.cc
 @@ -451,7 +451,8 @@
@@ -38,7 +38,7 @@
  
 --- a/chrome/browser/prefs/session_startup_pref.cc
 +++ b/chrome/browser/prefs/session_startup_pref.cc
-@@ -63,7 +63,9 @@
+@@ -66,7 +66,9 @@
  
  // static
  SessionStartupPref::Type SessionStartupPref::GetDefaultStartupType() {
@@ -86,7 +86,7 @@
    net::CertStatus GetCertStatus() const override;
 --- a/chrome/browser/profiles/profile.cc
 +++ b/chrome/browser/profiles/profile.cc
-@@ -332,7 +332,8 @@
+@@ -329,7 +329,8 @@
  void Profile::RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
    registry->RegisterBooleanPref(
        prefs::kSearchSuggestEnabled,

@@ -1,14 +1,14 @@
 --- a/ui/gfx/canvas.cc
 +++ b/ui/gfx/canvas.cc
-@@ -3,6 +3,8 @@
- // found in the LICENSE file.
+@@ -4,6 +4,8 @@
  
  #include "ui/gfx/canvas.h"
-+
-+#include "chrome/browser/ui/views/mori/mori_corners.h"
  
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++
  #include <cmath>
  #include <limits>
+ #include <string_view>
 @@ -332,8 +334,10 @@
  void Canvas::DrawRoundRect(const RectF& rect,
                             float radius,
@@ -24,15 +24,15 @@
  void Canvas::DrawPath(const SkPath& path, const cc::PaintFlags& flags) {
 --- a/ui/views/background.cc
 +++ b/ui/views/background.cc
-@@ -3,6 +3,8 @@
- // found in the LICENSE file.
+@@ -4,6 +4,8 @@
  
  #include "ui/views/background.h"
-+
-+#include "chrome/browser/ui/views/mori/mori_corners.h"
  
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++
  #include <algorithm>
  #include <optional>
+ #include <string>
 @@ -80,7 +82,7 @@
  
      const gfx::RoundedCornersF radii = radii_.value_or(
@@ -44,15 +44,15 @@
      flags.setAntiAlias(true);
 --- a/ui/views/painter.cc
 +++ b/ui/views/painter.cc
-@@ -3,6 +3,8 @@
- // found in the LICENSE file.
+@@ -4,6 +4,8 @@
  
  #include "ui/views/painter.h"
-+
-+#include "chrome/browser/ui/views/mori/mori_corners.h"
  
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++
  #include <utility>
  
+ #include "base/check.h"
 @@ -101,7 +103,7 @@
    const gfx::RoundedCornersF scaled_radii =
        gfx::ScaleRoundedCorners(radii_, scale);
@@ -73,15 +73,15 @@
  }
 --- a/ui/views/controls/highlight_path_generator.cc
 +++ b/ui/views/controls/highlight_path_generator.cc
-@@ -3,6 +3,8 @@
- // found in the LICENSE file.
+@@ -4,6 +4,8 @@
  
  #include "ui/views/controls/highlight_path_generator.h"
-+
-+#include "chrome/browser/ui/views/mori/mori_corners.h"
  
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++
  #include <algorithm>
  #include <utility>
+ 
 @@ -43,7 +45,8 @@
    // A rounded rectangle must be supplied if using this default implementation.
    std::optional<gfx::RRectF> round_rect = GetRoundRect(view);
@@ -94,46 +94,56 @@
  std::optional<gfx::RRectF> HighlightPathGenerator::GetRoundRect(
 --- a/ui/views/controls/menu/menu_item_view.cc
 +++ b/ui/views/controls/menu/menu_item_view.cc
-@@ -3,6 +3,8 @@
- // found in the LICENSE file.
+@@ -4,6 +4,8 @@
  
  #include "ui/views/controls/menu/menu_item_view.h"
-+
-+#include "chrome/browser/ui/views/mori/mori_corners.h"
  
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++
  #include <math.h>
  #include <stddef.h>
-@@ -1306,7 +1308,8 @@
+ 
+@@ -1349,7 +1351,9 @@
+          SkIntToScalar(background_info.bottom_radius)},
      };
-     SkRRect rrect;
-     rrect.setRectRadii(gfx::RectToSkRect(bounds), radii);
--    canvas->sk_canvas()->drawRRect(rrect, flags);
+     background_rrect.setRectRadii(gfx::RectToSkRect(bounds), radii);
+-    canvas->sk_canvas()->drawRRect(background_rrect, flags);
 +    // Mori: Zen's smooth corners (mori_corners.h).
-+    canvas->sk_canvas()->drawPath(mori::SmoothRRectPath(rrect), flags);
++    canvas->sk_canvas()->drawPath(mori::SmoothRRectPath(background_rrect),
++                                  flags);
    }
    const auto& config = MenuConfig::instance();
    if (type_ == Type::kHighlighted || is_alerted_ ||
-@@ -1360,7 +1363,8 @@
- 
-     SkRRect rounded_rect;
-     rounded_rect.setRectRadii(gfx::RectFToSkRect(highlight_bounds), radii);
--    canvas->sk_canvas()->drawRRect(rounded_rect, flags);
-+    // Mori: Zen's smooth corners (mori_corners.h).
-+    canvas->sk_canvas()->drawPath(mori::SmoothRRectPath(rounded_rect), flags);
+@@ -1414,13 +1418,16 @@
+       // Draw a plain rect clipped to the background, so the highlight follows
+       // the background's curve.
+       gfx::ScopedCanvas scoped_canvas(canvas);
+-      canvas->sk_canvas()->clipRRect(background_rrect, /*do_anti_alias=*/true);
++      // Mori: clip to the same smooth corners the background is drawn with.
++      canvas->sk_canvas()->clipPath(mori::SmoothRRectPath(background_rrect),
++                                    /*doAntiAlias=*/true);
+       canvas->sk_canvas()->drawRect(gfx::RectFToSkRect(highlight_bounds),
+                                     flags);
+     } else {
+       SkRRect rounded_rect;
+       rounded_rect.setRectRadii(gfx::RectFToSkRect(highlight_bounds), radii);
+-      canvas->sk_canvas()->drawRRect(rounded_rect, flags);
++      // Mori: Zen's smooth corners (mori_corners.h).
++      canvas->sk_canvas()->drawPath(mori::SmoothRRectPath(rounded_rect), flags);
+     }
    } else if (paint_as_selected) {
      gfx::Rect item_bounds = GetLocalBounds();
-     if (menu_item_background_.has_value()) {
 --- a/ui/views/animation/ink_drop_painted_layer_delegates.cc
 +++ b/ui/views/animation/ink_drop_painted_layer_delegates.cc
-@@ -3,6 +3,8 @@
- // found in the LICENSE file.
+@@ -4,6 +4,8 @@
  
  #include "ui/views/animation/ink_drop_painted_layer_delegates.h"
-+
-+#include "chrome/browser/ui/views/mori/mori_corners.h"
  
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++
  #include <vector>
  
+ #include "cc/paint/paint_canvas.h"
 @@ -171,13 +173,14 @@
    // First the fill color.
    ui::PaintRecorder recorder(context,
@@ -155,15 +165,15 @@
  }  // namespace views
 --- a/ui/views/controls/focus_ring.cc
 +++ b/ui/views/controls/focus_ring.cc
-@@ -3,6 +3,8 @@
- // found in the LICENSE file.
+@@ -4,6 +4,8 @@
  
  #include "ui/views/controls/focus_ring.h"
-+
-+#include "chrome/browser/ui/views/mori/mori_corners.h"
  
++#include "chrome/browser/ui/views/mori/mori_corners.h"
++
  #include <algorithm>
  #include <memory>
+ #include <optional>
 @@ -91,7 +93,8 @@
    if (client_rect.IsEmpty()) {
      client_rect.Outset(kMinFocusRingInset);

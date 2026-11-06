@@ -1,6 +1,6 @@
 --- a/chrome/browser/ui/views/frame/browser_view.cc
 +++ b/chrome/browser/ui/views/frame/browser_view.cc
-@@ -179,6 +179,7 @@
+@@ -181,6 +181,7 @@
  #include "chrome/browser/ui/views/frame/shadow_overlay_view.h"
  #include "chrome/browser/ui/views/frame/tab_modal_dialog_host.h"
  #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
@@ -8,7 +8,7 @@
  #include "chrome/browser/ui/views/frame/top_container_view.h"
  #include "chrome/browser/ui/views/frame/top_controls_slide_controller.h"
  #include "chrome/browser/ui/views/frame/vertical_tab_strip_background_blur_backdrop.h"
-@@ -965,6 +966,13 @@
+@@ -967,6 +968,13 @@
    // needs to come after toolbar in focus order (see EnsureFocusOrder()).
    infobar_container_ =
        AddChildView(std::make_unique<InfoBarContainerView>(this));
@@ -62,7 +62,7 @@
    SetBackground(
 --- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
 +++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
-@@ -1178,6 +1178,12 @@
+@@ -1281,6 +1281,12 @@
            gfx::Rect(params.visual_client_area.x(),
                      params.visual_client_area.y() + additional_offset,
                      params.visual_client_area.width(), infobar_height);

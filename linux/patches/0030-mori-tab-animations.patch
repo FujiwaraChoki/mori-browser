@@ -1,6 +1,6 @@
 --- a/chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.cc
 +++ b/chrome/browser/ui/views/tabs/common/tab_collection_animating_layout_manager.cc
-@@ -14,6 +14,7 @@
+@@ -15,6 +15,7 @@
  #include "ui/compositor/layer.h"
  #include "ui/gfx/animation/animation.h"
  #include "ui/gfx/animation/tween.h"
@@ -8,7 +8,7 @@
  #include "ui/views/controls/scroll_view.h"
  #include "ui/views/view.h"
  #include "ui/views/view_class_properties.h"
-@@ -23,6 +24,32 @@
+@@ -24,6 +25,32 @@
  DEFINE_UI_CLASS_PROPERTY_TYPE(
      TabCollectionAnimatingLayoutManager::SourceLayoutInfo*)
  
@@ -41,7 +41,7 @@
  DEFINE_UI_CLASS_PROPERTY_KEY(bool, kHasAnimatingLayoutManagerKey, false)
  
  namespace {
-@@ -85,6 +112,12 @@
+@@ -77,6 +104,12 @@
    animation_.SetSlideDuration(
        gfx::Animation::RichAnimationDuration(base::Milliseconds(200)));
    animation_.SetTweenType(gfx::Tween::EASE_IN_OUT);
@@ -53,8 +53,8 @@
 +  }
  }
  
- TabCollectionAnimatingLayoutManager::~TabCollectionAnimatingLayoutManager() =
-@@ -519,6 +552,8 @@
+ TabCollectionAnimatingLayoutManager::AnimationCoordinator::
+@@ -677,6 +710,8 @@
          // being opaque.
          if (child_view->layer() && (child_view->layer()->opacity() != 1.0f)) {
            child_view->layer()->SetOpacity(1.0f);
@@ -63,7 +63,7 @@
          }
        } else if (auto start_it = start_view_layout_map_.find(child_view);
                   start_it != start_view_layout_map_.end()) {
-@@ -533,6 +568,8 @@
+@@ -691,6 +726,8 @@
          // opaque.
          if (child_view->layer() && (child_view->layer()->opacity() != 1.0f)) {
            child_view->layer()->SetOpacity(1.0f);
@@ -72,7 +72,7 @@
          }
        } else if (!delegate_->ShouldSnapToTarget(*child_view)) {
          // Added child.
-@@ -561,6 +598,10 @@
+@@ -720,6 +757,10 @@
                value, initial_bounds, target_it->second.bounds);
            if (child_view->layer()) {
              child_view->layer()->SetOpacity(static_cast<float>(value));
@@ -83,7 +83,7 @@
            }
          }
        } else {
-@@ -592,6 +633,11 @@
+@@ -751,6 +792,11 @@
        // `RemoveNonAnimatingPendingDeleteViews()`.
        views::ChildLayout interpolated_child = start_it->second;
        gfx::Rect target_bounds = start_it->second.bounds;
@@ -95,10 +95,10 @@
        if (animation_axis_ == AnimationAxis::kVertical) {
          target_bounds.set_height(0);
        } else {
-@@ -604,9 +650,13 @@
+@@ -763,9 +809,13 @@
          }
        }
-       interpolated_child.bounds = gfx::Tween::RectValueBetween(
+       interpolated_child.bounds = host_offsets.InterpolateChildBounds(
 -          value, start_it->second.bounds, target_bounds);
 +          closing, start_it->second.bounds, target_bounds);
        if (child_view->layer()) {
