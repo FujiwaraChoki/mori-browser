@@ -20,6 +20,7 @@ pending.
 ```sh
 linux/fetch.sh                      # once per Chromium version
 JOBS=12 linux/build.sh              # build out/Default/chrome
+linux/install.sh                    # install to ~/.local (mori, app launcher)
 ```
 
 ## Default browser

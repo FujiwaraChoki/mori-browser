@@ -182,7 +182,11 @@ ungoogled-chromium submodule to `157.0.8103.38-1` (then run
 changes (157 needs them), and renames the V8 metagen flag.
 
 The Linux Views output is
-`ungoogled-chromium-linux/build/src/out/Default/chrome`. See
+`ungoogled-chromium-linux/build/src/out/Default/chrome`. `linux/install.sh`
+installs it for the current user: the runtime files Chromium lists for
+`//chrome:chrome` go to `~/.local/lib/mori`, with a `mori` launcher, a desktop
+entry and the Mori icon (`PREFIX` picks another location). It does not change
+the default browser. Quit Mori before running it again to update. See
 [linux/README.md](linux/README.md) for the headless harness and native import and
 passkey test targets. The Chromium 157 patch port is built and its headless
 suite passes on Linux; Windows and macOS builds of it are pending.
